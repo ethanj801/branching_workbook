@@ -3,11 +3,19 @@ import {
   closeProject as closeProjectApi,
   createProject,
   currentProject,
+  currentModel,
+  downloadModel,
+  encodeTokens,
+  listModels,
   listNodes,
   mutateNodes,
   openProject,
   streamCompletion,
+  streamModelLoad,
+  unloadModel,
+  type ModelLoadEvent,
   type ProjectInfo,
+  type TabbyModel,
 } from "./api";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -51,6 +59,7 @@ function branchNode(
   source: NodeSource,
   hidden: boolean,
   priorText: string,
+  modelId?: string,
 ): TreeNode {
   return {
     id: nodeId(),
@@ -60,7 +69,27 @@ function branchNode(
     hidden,
     createdAt: nowEpoch(),
     priorContextHash: contextHash(priorText),
+    modelId,
   };
+}
+
+function modelContextMax(model: TabbyModel | null): number | null {
+  return model?.parameters?.max_seq_len ?? null;
+}
+
+function formatModelLabel(model: TabbyModel | null): string {
+  if (!model) return "No model loaded";
+  const maxSeqLen = modelContextMax(model);
+  const cacheMode = model.parameters?.cache_mode;
+  const suffix = [maxSeqLen ? `${maxSeqLen.toLocaleString()} ctx` : null, cacheMode]
+    .filter(Boolean)
+    .join(" / ");
+  return suffix ? `${model.id} (${suffix})` : model.id;
+}
+
+function formatLoadEvent(event: ModelLoadEvent | null): string {
+  if (!event) return "";
+  return `${event.status} ${event.module}/${event.modules}`;
 }
 
 export default function App() {
@@ -71,11 +100,30 @@ export default function App() {
   const [candidates, setCandidates] = useState<string[]>([]);
   const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
   const [candidateBaseId, setCandidateBaseId] = useState<string | null>(null);
+  const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
   const [composition, setComposition] = useState("");
   const [branchCount, setBranchCount] = useState(3);
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
+  const [currentTabbyModel, setCurrentTabbyModel] = useState<TabbyModel | null>(
+    null,
+  );
+  const [availableModels, setAvailableModels] = useState<TabbyModel[]>([]);
+  const [loadingModels, setLoadingModels] = useState(true);
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(
+    null,
+  );
+  const [selectedModelName, setSelectedModelName] = useState("");
+  const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(4096);
+  const [loadCacheMode, setLoadCacheMode] = useState("Q6");
+  const [downloadRepoId, setDownloadRepoId] = useState(
+    "lucyknada/google_gemma-3-270m-exl3",
+  );
+  const [downloadRevision, setDownloadRevision] = useState("6.0bpw");
+  const [downloadFolder, setDownloadFolder] = useState("");
+  const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [newPath, setNewPath] = useState("/tmp/branching-workbook.bwbk");
@@ -84,12 +132,37 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
+  const contextMax = modelContextMax(currentTabbyModel);
+  const contextPct =
+    tokenCount !== null && contextMax ? tokenCount / contextMax : null;
+  const contextWarn = contextPct !== null && contextPct >= 0.9;
 
   const clearBranchPicker = useCallback(() => {
     setCandidates([]);
     setCandidatePrompt(null);
     setCandidateBaseId(null);
+    setCandidateModelId(null);
     setComposition("");
+  }, []);
+
+  const refreshModels = useCallback(async () => {
+    setLoadingModels(true);
+    try {
+      const [current, models] = await Promise.all([
+        currentModel(),
+        listModels(),
+      ]);
+      setCurrentTabbyModel(current);
+      setAvailableModels(models.data);
+      setSelectedModelName((existing) => {
+        if (existing) return existing;
+        return current?.id ?? models.data[0]?.id ?? "";
+      });
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setLoadingModels(false);
+    }
   }, []);
 
   const loadProject = useCallback(
@@ -128,6 +201,33 @@ export default function App() {
       cancelled = true;
     };
   }, [loadProject]);
+
+  useEffect(() => {
+    void refreshModels();
+  }, [refreshModels]);
+
+  useEffect(() => {
+    if (!currentTabbyModel || !buffer) {
+      setTokenCount(buffer ? null : 0);
+      return;
+    }
+
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      encodeTokens(buffer)
+        .then((payload) => {
+          if (!cancelled) setTokenCount(payload.length);
+        })
+        .catch(() => {
+          if (!cancelled) setTokenCount(null);
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [buffer, currentTabbyModel]);
 
   const commitBuffer = useCallback(
     async (
@@ -240,6 +340,76 @@ export default function App() {
     await commitBuffer();
   }
 
+  async function onRefreshModels() {
+    setError(null);
+    await refreshModels();
+  }
+
+  async function onLoadModel(modelName = selectedModelName) {
+    const trimmedModelName = modelName.trim();
+    if (!trimmedModelName || modelBusy) return;
+
+    setModelBusy(true);
+    setModelLoadEvent(null);
+    setError(null);
+    try {
+      await streamModelLoad(
+        {
+          model_name: trimmedModelName,
+          max_seq_len: Math.max(256, Math.trunc(loadMaxSeqLen) || 4096),
+          cache_mode: loadCacheMode,
+        },
+        setModelLoadEvent,
+      );
+      await refreshModels();
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
+  async function onUnloadModel() {
+    if (modelBusy || !currentTabbyModel) return;
+
+    setModelBusy(true);
+    setModelLoadEvent(null);
+    setError(null);
+    try {
+      await unloadModel();
+      setCurrentTabbyModel(null);
+      setTokenCount(null);
+      await refreshModels();
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
+  async function onDownloadModel(event: FormEvent) {
+    event.preventDefault();
+    const repoId = downloadRepoId.trim();
+    if (!repoId || modelBusy) return;
+
+    setModelBusy(true);
+    setModelLoadEvent(null);
+    setError(null);
+    try {
+      await downloadModel({
+        repo_id: repoId,
+        revision: downloadRevision.trim() || undefined,
+        folder_name: downloadFolder.trim() || undefined,
+      });
+      await refreshModels();
+      setSelectedModelName(downloadFolder.trim() || repoId.split("/").at(-1) || "");
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
   async function onSelectNode(nodeIdToSelect: string) {
     if (!tree || !currentId || streaming || saving || branchPickerOpen) return;
 
@@ -267,6 +437,10 @@ export default function App() {
 
   async function onGenerate() {
     if (streaming || saving || branchPickerOpen) return;
+    if (!currentTabbyModel) {
+      setError("Load a model before generating.");
+      return;
+    }
 
     const committed = await commitBuffer(buffer, "user_written");
     if (!committed) return;
@@ -276,6 +450,7 @@ export default function App() {
     setCandidates(Array.from({ length: n }, () => ""));
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(committed.currentId);
+    setCandidateModelId(currentTabbyModel.id);
     setComposition("");
     setError(null);
     setStreaming(true);
@@ -349,6 +524,7 @@ export default function App() {
         "generated",
         hidden,
         candidatePrompt,
+        candidateModelId ?? undefined,
       );
       nextNodes[node.id] = node;
       if (selectedSource === "generated" && index === selectedIndex) {
@@ -460,7 +636,7 @@ export default function App() {
             </div>
           </div>
           <div className="text-xs text-neutral-600">
-            phase 3 - fan-out mock
+            phase 5 - model workflow
           </div>
         </div>
 
@@ -469,6 +645,137 @@ export default function App() {
             {error}
           </div>
         )}
+
+        <section className="rounded border border-neutral-800 bg-neutral-900/70 p-3">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <div>
+              <div className="text-xs uppercase tracking-widest text-neutral-500">
+                TabbyAPI
+              </div>
+              <div className="mt-1 text-sm text-neutral-100">
+                {loadingModels ? "Checking model state..." : formatModelLabel(currentTabbyModel)}
+              </div>
+              <div
+                className={[
+                  "mt-1 text-xs",
+                  contextWarn ? "text-amber-400" : "text-neutral-500",
+                ].join(" ")}
+              >
+                Context:{" "}
+                {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
+                {" / "}
+                {contextMax === null ? "unknown" : contextMax.toLocaleString()}
+                {" tokens"}
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                onClick={() => void onRefreshModels()}
+                disabled={loadingModels || modelBusy}
+                className="rounded bg-neutral-800 px-3 py-2 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+              >
+                Refresh
+              </button>
+              <button
+                onClick={() => void onUnloadModel()}
+                disabled={!currentTabbyModel || modelBusy || streaming || branchPickerOpen}
+                className="rounded bg-neutral-800 px-3 py-2 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+              >
+                Unload
+              </button>
+            </div>
+          </div>
+
+          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
+            <div className="space-y-2">
+              <div className="text-xs text-neutral-500">Load local model</div>
+              <div className="flex flex-wrap gap-2">
+                <select
+                  value={selectedModelName}
+                  onChange={(event) => setSelectedModelName(event.target.value)}
+                  disabled={loadingModels || modelBusy}
+                  className="min-w-64 flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                >
+                  {availableModels.length === 0 && (
+                    <option value="">No local models found</option>
+                  )}
+                  {availableModels.map((model) => (
+                    <option key={model.id} value={model.id}>
+                      {model.id}
+                    </option>
+                  ))}
+                </select>
+                <input
+                  type="number"
+                  min={256}
+                  step={256}
+                  value={loadMaxSeqLen}
+                  onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
+                  disabled={modelBusy}
+                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                  title="max_seq_len"
+                />
+                <select
+                  value={loadCacheMode}
+                  onChange={(event) => setLoadCacheMode(event.target.value)}
+                  disabled={modelBusy}
+                  className="w-24 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                >
+                  <option value="Q4">Q4</option>
+                  <option value="Q6">Q6</option>
+                  <option value="Q8">Q8</option>
+                  <option value="FP16">FP16</option>
+                </select>
+                <button
+                  onClick={() => void onLoadModel()}
+                  disabled={!selectedModelName || modelBusy || streaming}
+                  className="rounded bg-neutral-100 px-4 py-2 text-sm text-neutral-950 disabled:opacity-40"
+                >
+                  {modelBusy && modelLoadEvent ? formatLoadEvent(modelLoadEvent) : "Load"}
+                </button>
+              </div>
+            </div>
+
+            <form onSubmit={(event) => void onDownloadModel(event)} className="space-y-2">
+              <div className="text-xs text-neutral-500">
+                Download from Hugging Face
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <input
+                  value={downloadRepoId}
+                  onChange={(event) => setDownloadRepoId(event.target.value)}
+                  disabled={modelBusy}
+                  placeholder="repo_id"
+                  className="min-w-64 flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                />
+                <input
+                  value={downloadRevision}
+                  onChange={(event) => setDownloadRevision(event.target.value)}
+                  disabled={modelBusy}
+                  placeholder="revision"
+                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                />
+                <input
+                  value={downloadFolder}
+                  onChange={(event) => setDownloadFolder(event.target.value)}
+                  disabled={modelBusy}
+                  placeholder="folder"
+                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                />
+                <button
+                  type="submit"
+                  disabled={!downloadRepoId.trim() || modelBusy || streaming}
+                  className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+                >
+                  {modelBusy && !modelLoadEvent ? "Working..." : "Download"}
+                </button>
+              </div>
+              <div className="text-[11px] text-neutral-600">
+                Keep this request open; current TabbyAPI cancels downloads on disconnect.
+              </div>
+            </form>
+          </div>
+        </section>
 
         {!project && (
           <div className="grid gap-4 md:grid-cols-2">
@@ -529,6 +836,12 @@ export default function App() {
                   Current path: {currentPath.length} node
                   {currentPath.length === 1 ? "" : "s"}
                 </div>
+                <div className={contextWarn ? "mt-1 text-amber-400" : "mt-1"}>
+                  Tokens:{" "}
+                  {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
+                  {" / "}
+                  {contextMax === null ? "unknown" : contextMax.toLocaleString()}
+                </div>
               </div>
 
               <div>
@@ -566,7 +879,9 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => void onGenerate()}
-                  disabled={saving || streaming || branchPickerOpen}
+                  disabled={
+                    saving || streaming || branchPickerOpen || !currentTabbyModel
+                  }
                   className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
                 >
                   {streaming ? "Generating..." : "Generate"}

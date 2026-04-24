@@ -22,6 +22,38 @@ from sse_starlette.sse import EventSourceResponse
 
 router = APIRouter()
 
+MOCK_MODEL_ID = "mock-gemma-3-270m-exl3"
+MOCK_MODELS = [
+    {
+        "id": MOCK_MODEL_ID,
+        "object": "model",
+        "created": int(time()),
+        "owned_by": "tabbyAPI",
+        "logging": None,
+        "parameters": None,
+    }
+]
+loaded_model: dict | None = {
+    "id": MOCK_MODEL_ID,
+    "object": "model",
+    "created": int(time()),
+    "owned_by": "tabbyAPI",
+    "logging": None,
+    "parameters": {
+        "max_seq_len": 4096,
+        "cache_size": 4096,
+        "cache_mode": "Q6",
+        "rope_scale": 1.0,
+        "rope_alpha": 1.0,
+        "max_batch_size": 256,
+        "chunk_size": 2048,
+        "prompt_template": None,
+        "prompt_template_content": None,
+        "use_vision": False,
+        "draft": None,
+    },
+}
+
 SAMPLE_CONTINUATIONS = [
     " The wind picked up just as the last light drained from the sky, and for a moment "
     "everything held perfectly still — the kind of stillness that always seems to come "
@@ -46,6 +78,26 @@ class CompletionRequest(BaseModel):
     temperature: float = 1.0
     top_p: float = 1.0
     stop: list[str] = Field(default_factory=list)
+
+
+class ModelLoadRequest(BaseModel):
+    model_name: str
+    max_seq_len: int | None = None
+    cache_size: int | None = None
+    cache_mode: str | None = None
+    tensor_parallel: bool | None = None
+
+
+class DownloadRequest(BaseModel):
+    repo_id: str
+    revision: str | None = None
+    folder_name: str | None = None
+
+
+class TokenEncodeRequest(BaseModel):
+    text: str
+    add_bos_token: bool = True
+    encode_special_tokens: bool = True
 
 
 def _chunk_envelope(request_id: str, choices: list[dict], model: str = "mock") -> str:
@@ -109,3 +161,87 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
 @router.post("/api/completions")
 async def completions(request: Request, data: CompletionRequest):
     return EventSourceResponse(_stream_mock_completion(request, data))
+
+
+@router.get("/api/tabby/model")
+async def current_model():
+    return loaded_model
+
+
+@router.get("/api/tabby/models")
+async def list_models():
+    return {"object": "list", "data": MOCK_MODELS}
+
+
+async def _stream_mock_model_load(data: ModelLoadRequest):
+    global loaded_model
+
+    for module in range(1, 4):
+        yield json.dumps(
+            {
+                "model_type": "model",
+                "module": module,
+                "modules": 3,
+                "status": "processing" if module < 3 else "finished",
+            }
+        )
+        await asyncio.sleep(0.03)
+
+    loaded_model = {
+        "id": data.model_name,
+        "object": "model",
+        "created": int(time()),
+        "owned_by": "tabbyAPI",
+        "logging": None,
+        "parameters": {
+            "max_seq_len": data.max_seq_len or 4096,
+            "cache_size": data.cache_size or data.max_seq_len or 4096,
+            "cache_mode": data.cache_mode or "Q6",
+            "rope_scale": 1.0,
+            "rope_alpha": 1.0,
+            "max_batch_size": 256,
+            "chunk_size": 2048,
+            "prompt_template": None,
+            "prompt_template_content": None,
+            "use_vision": False,
+            "draft": None,
+        },
+    }
+
+
+@router.post("/api/tabby/model/load")
+async def load_model(data: ModelLoadRequest):
+    return EventSourceResponse(_stream_mock_model_load(data))
+
+
+@router.post("/api/tabby/model/unload")
+async def unload_model():
+    global loaded_model
+    loaded_model = None
+    return {"unloaded": True}
+
+
+@router.post("/api/tabby/download")
+async def download_model(data: DownloadRequest):
+    folder = data.folder_name or data.repo_id.split("/")[-1]
+    model_id = folder
+    if not any(model["id"] == model_id for model in MOCK_MODELS):
+        MOCK_MODELS.append(
+            {
+                "id": model_id,
+                "object": "model",
+                "created": int(time()),
+                "owned_by": "tabbyAPI",
+                "logging": None,
+                "parameters": None,
+            }
+        )
+    return {"download_path": f"/mock-models/{folder}"}
+
+
+@router.post("/api/tabby/token/encode")
+async def encode_tokens(data: TokenEncodeRequest):
+    token_count = len(data.text.split())
+    if data.add_bos_token:
+        token_count += 1
+    return {"tokens": list(range(token_count)), "length": token_count}

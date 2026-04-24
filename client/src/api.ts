@@ -10,7 +10,8 @@ export type CompletionChunk = {
   id: string;
   object: string;
   created: number;
-  model: string;
+  model?: string;
+  model_name?: string;
   choices: CompletionChoice[];
 };
 
@@ -49,6 +50,64 @@ export type MutationBatch = {
   updates?: NodeModel[];
   deletes?: string[];
   main_path?: string[] | null;
+};
+
+export type TabbyModelParameters = {
+  max_seq_len?: number | null;
+  cache_size?: number | null;
+  cache_mode?: string | null;
+  rope_scale?: number | null;
+  rope_alpha?: number | null;
+  max_batch_size?: number | null;
+  chunk_size?: number | null;
+  prompt_template?: string | null;
+  prompt_template_content?: string | null;
+  use_vision?: boolean | null;
+  draft?: TabbyModel | null;
+};
+
+export type TabbyModel = {
+  id: string;
+  object: string;
+  created: number;
+  owned_by: string;
+  logging?: unknown | null;
+  parameters?: TabbyModelParameters | null;
+};
+
+export type TabbyModelList = {
+  object: "list";
+  data: TabbyModel[];
+};
+
+export type ModelLoadRequest = {
+  model_name: string;
+  max_seq_len?: number;
+  cache_size?: number;
+  cache_mode?: string;
+  tensor_parallel?: boolean;
+};
+
+export type ModelLoadEvent = {
+  model_type: string;
+  module: number;
+  modules: number;
+  status: string;
+};
+
+export type ModelDownloadRequest = {
+  repo_id: string;
+  revision?: string;
+  folder_name?: string;
+};
+
+export type ModelDownloadResponse = {
+  download_path: string;
+};
+
+export type TokenEncodeResponse = {
+  tokens: number[];
+  length: number;
 };
 
 async function requestJson<T>(
@@ -114,20 +173,12 @@ export function mutateNodes(batch: MutationBatch): Promise<{
   });
 }
 
-export async function streamCompletion(
-  body: CompletionRequestBody,
-  onChunk: (chunk: CompletionChunk) => void,
-  signal?: AbortSignal,
+async function streamJsonEvents<T>(
+  response: Response,
+  onEvent: (event: T) => void,
 ): Promise<void> {
-  const response = await fetch("/api/completions", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ...body, stream: true }),
-    signal,
-  });
-
   if (!response.ok || !response.body) {
-    throw new Error(`completion request failed: ${response.status}`);
+    throw new Error(`stream request failed: ${response.status}`);
   }
 
   const reader = response.body.getReader();
@@ -156,11 +207,72 @@ export async function streamCompletion(
       if (dataPayload === "[DONE]") return;
 
       try {
-        const chunk = JSON.parse(dataPayload) as CompletionChunk;
-        onChunk(chunk);
+        onEvent(JSON.parse(dataPayload) as T);
       } catch {
         // malformed frame — ignore
       }
     }
   }
+}
+
+export async function streamCompletion(
+  body: CompletionRequestBody,
+  onChunk: (chunk: CompletionChunk) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/api/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+
+  await streamJsonEvents(response, onChunk);
+}
+
+export function currentModel(): Promise<TabbyModel | null> {
+  return requestJson<TabbyModel | null>("/api/tabby/model");
+}
+
+export function listModels(): Promise<TabbyModelList> {
+  return requestJson<TabbyModelList>("/api/tabby/models");
+}
+
+export async function streamModelLoad(
+  body: ModelLoadRequest,
+  onEvent: (event: ModelLoadEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/api/tabby/model/load", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+    signal,
+  });
+
+  await streamJsonEvents(response, onEvent);
+}
+
+export function unloadModel(): Promise<{ unloaded: boolean }> {
+  return requestJson<{ unloaded: boolean }>("/api/tabby/model/unload", {
+    method: "POST",
+  });
+}
+
+export function downloadModel(
+  body: ModelDownloadRequest,
+): Promise<ModelDownloadResponse> {
+  return requestJson<ModelDownloadResponse>("/api/tabby/download", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
+export function encodeTokens(text: string): Promise<TokenEncodeResponse> {
+  return requestJson<TokenEncodeResponse>("/api/tabby/token/encode", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
 }

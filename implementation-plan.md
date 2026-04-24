@@ -5,7 +5,7 @@ Companion to `branching-workbook.md`. The spec says *what*; this says *in what o
 ## Guiding principles
 
 - **Thin vertical slices.** Each phase produces something runnable, not a wiring diagram. Never more than a few days of work before the app does something new end-to-end.
-- **Mock first, real GPU later.** ExLlamaV3 is CUDA-only. Phases 1–3 run entirely on the dev Mac against a mock SSE server in the FastAPI wrapper. TabbyAPI integration (Phase 4) is deliberately deferred until the client is interesting enough that integration bugs are cheap to find.
+- **Mock for local development, real GPU for integration.** ExLlamaV3 is CUDA-only. Phases 1–3 ran against a mock SSE server in the FastAPI wrapper. The mock remains useful for tests and offline UI work, but the product path is now the real TabbyAPI workflow through an SSH tunnel.
 - **Mock format is not invented.** To kill the mock-vs-real drift risk, the mock's SSE chunks are copied byte-for-byte from TabbyAPI's actual completions handler (sibling checkout at `../tabbyAPI`). Same `data: {...}\n\n` framing, same `[DONE]` terminator, same `choices[i].index` placement, same trailing `usage` chunk. The mock is TabbyAPI-shaped with canned content.
 - **Server is stateless wrt user work (§6.2).** The wrapper owns filesystem + SQLite + TabbyAPI proxy. It does *not* own the tree algorithm. All tree reshaping (§3.1 LCP split) is a pure client-side TS reducer; the server persists the resulting node diffs transactionally. This matches the spec's statelessness stance and makes later Electron/Tauri wrapping trivial.
 - **Port from the mockup, don't import it.** `branching-workbook-mockup.jsx` is a shape reference. `commitBranchToBuffer` and `TreeNode` are worth reading before writing the real equivalents — the structure is close, but the mockup skips ancestor-splitting and has no hash tracking. Spec wins ties.
@@ -16,9 +16,9 @@ Companion to `branching-workbook.md`. The spec says *what*; this says *in what o
 - **Frontend:** React + TypeScript + Vite. Tailwind for styling (matches the mockup). Vitest for unit tests of the tree algorithm.
 - **Dev proxy:** Vite `server.proxy` routes `/api/*` to FastAPI. Same-origin in dev and prod — no CORS setup, no EventSource-with-credentials quirks.
 - **Top-level orchestration:** `justfile` at repo root. `just dev` runs FastAPI and Vite in parallel.
-- **Inference:** TabbyAPI (sibling repo at `../tabbyAPI`), reached at `localhost:5000`. Behind a CUDA GPU. Not required until Phase 4.
+- **Inference:** TabbyAPI on a GPU host, reached through an SSH tunnel to a local laptop port. The wrapper derives the Tabby base URL from `BWBK_TABBY_COMPLETIONS_URL` or accepts `BWBK_TABBY_BASE_URL`.
 - **Storage:** SQLite `.bwbk` files, schema per §8.2.
-- **Tokenization:** server-side via TabbyAPI's `/v1/token/encode`, debounced ~200ms. Wired in Phase 5 (model loader). No token count shown in the UI before then.
+- **Tokenization:** server-side via TabbyAPI's `/v1/token/encode`, debounced in the client and surfaced as a context-budget readout.
 
 ## Repo layout (target)
 
@@ -95,24 +95,40 @@ This is the load-bearing phase. Tree reshaping and persistence land together —
 
 ### Phase 4 — Real TabbyAPI
 
-- `server/bwbk/proxy.py`: replaces `mock.py` as the `/api/completions` handler behind a config flag (`BWBK_BACKEND=mock|tabby`). `httpx.AsyncClient.stream` forwards to `http://localhost:5000/v1/completions`; client-side disconnect triggers upstream cancellation.
-- Stand up TabbyAPI on the CUDA machine with `lucyknada/google_gemma-3-270m-exl3`. Same-machine for now — no SSH tunnel until graduating to the H200.
+- `server/bwbk/proxy.py`: replaces `mock.py` as the `/api/completions` handler behind a config flag (`BWBK_BACKEND=mock|tabby`). `httpx.AsyncClient` forwards to the configured TabbyAPI tunnel URL; client-side disconnect triggers upstream cancellation.
+- Stand up TabbyAPI on a CUDA machine with `lucyknada/google_gemma-3-270m-exl3` at revision `6.0bpw`. TabbyAPI binds to remote `127.0.0.1:5000`; the laptop opens an SSH tunnel such as `ssh -N -L 5001:127.0.0.1:5000 root@host -p port -i ~/.ssh/id_ed25519`; the local app uses `BWBK_TABBY_COMPLETIONS_URL=http://127.0.0.1:5001/v1/completions`.
 - **Integration checks as deliverables:**
+  - **Tunnel/backend health:** verify `GET /v1/model`, `GET /v1/models`, and a small `n=2` streamed completion through the local tunnel.
   - **Prefix reuse:** fan out from point A, navigate back, fan out again, confirm the second prefill is materially faster (server logs or `usage` field). Catches accidental whitespace/BOM mutation that silently breaks content-hash reuse (§4.2/§5).
   - **Crash recovery:** kill TabbyAPI mid-stream. Client shows a clear error; tree state is intact; restart TabbyAPI and continue (§9.2).
+- **Status:** core real Tabby path is proven through the SSH tunnel: model/model-list checks work, `n > 1` SSE fan-out works, and the local wrapper can reach `/api/tabby/model`, `/api/tabby/models`, and `/api/tabby/token/encode`.
 - **Proves:** real SSE, real sampler config, real branching, real prefix reuse.
 
 ### Phase 5 — Model loader UI + tokenizer
 
-- Server endpoints: thin passthroughs to TabbyAPI's `/v1/model/load`, `/unload`, `/model`, `/models`, `/download`, `/token/encode` (§6.3). Stream load-progress SSE through.
-- Client: port `ModelBar` and `ModelModal` from the mockup.
-- Tokenizer wiring: debounced POST to `/api/token/encode` on buffer change, show "X / max_seq_len tokens" in the status strip.
+- Server endpoints: thin passthroughs to TabbyAPI's `/v1/model/load`, `/v1/model/unload`, `/v1/model`, `/v1/models`, `/v1/download`, `/v1/token/encode` (§6.3), exposed to the client as `/api/tabby/*`. Stream load-progress SSE through.
+- Mock endpoints: keep parity for `/api/tabby/model`, `/api/tabby/models`, `/api/tabby/model/load`, `/api/tabby/model/unload`, `/api/tabby/download`, and `/api/tabby/token/encode` so local tests and UI work do not require an active GPU.
+- Client: model status panel with current model, context budget, refresh, unload, local model load controls, and Hugging Face download controls.
+- Tokenizer wiring: debounced POST to `/api/tabby/token/encode` on buffer change, show "X / max_seq_len tokens" in the status strip.
+- **Status:** implemented and verified by `just check`; live wrapper checks against the active tunnel returned current model, model list, and token length successfully.
+- **Remaining follow-up:** full manual browser pass against `just dev` with `BWBK_BACKEND=tabby` once UI polish begins. Current TabbyAPI cancels downloads when the HTTP request disconnects, so the download UI/documentation says to keep the request open.
 
 ### Phase 6 — Samplers + presets
 
 - Server: sampler presets as JSON blobs in `project_meta` (promote to a dedicated `samplers` table if the UX justifies it).
 - Client: preset picker + preset edit form.
 - Merge the chosen preset into each `/api/completions` body.
+
+### Deployment Track — RunPod fire-and-forget setup
+
+This is not a product dependency. Branching Workbook must keep working with any GPU host running TabbyAPI behind an SSH tunnel. The RunPod track is a repeatable disposable-host setup path for convenience.
+
+- Research current RunPod templates and Docker images that already provide TabbyAPI plus ExLlamaV3, SSH access, persistent volume mounting, and a startup hook.
+- Prefer an existing maintained image/template if it can boot TabbyAPI with auth disabled, bind to `127.0.0.1:5000`, expose SSH, and leave model download/load to the Branching Workbook UI. Initial research found an existing Docker Hub image family `nschle/tabbyapi:*runpod` (https://hub.docker.com/r/nschle/tabbyapi), but it appears old enough that it needs validation before adoption.
+- If no existing template is suitable, create a small custom template/image whose only responsibilities are installing TabbyAPI dependencies, starting TabbyAPI on localhost, and documenting the SSH tunnel command.
+- RunPod templates support the knobs needed for this: Docker image, exposed ports such as `22/tcp`, environment variables, startup commands, container disk, and `/workspace` volume mounting (https://docs.runpod.io/pods/templates/manage-templates).
+- Do not put RunPod API automation into Branching Workbook unless explicitly requested. A separate helper script or template README is acceptable if it remains optional infrastructure.
+- Success criteria: start a fresh RunPod GPU instance, open one SSH tunnel from the laptop, run `just dev` with `BWBK_BACKEND=tabby`, download/load `lucyknada/google_gemma-3-270m-exl3` revision `6.0bpw` from the UI, and generate branches without manual shell edits on the pod.
 
 ### Phase 7 — Polish
 

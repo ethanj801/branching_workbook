@@ -8,7 +8,7 @@ The system is a **client application** that speaks to **TabbyAPI** as its infere
 
 The user's hardware target is an H200 running a 120B-class model at roughly 4 bpw with a Q6-quantized KV cache. Rough capacity math: weights occupy ~70 GB including output layer and workspace, leaving ~65 GB of the H200's 141 GB for KV cache, which at ~135 KB per token of Q6 KV amounts to on the order of 500K cached tokens. That is generous enough that cache exhaustion is unlikely for a single-user workflow.
 
-Connection between client and server is over an SSH tunnel. TabbyAPI binds to localhost on the GPU host; the client connects to `localhost:5000` on the laptop through `ssh -L 5000:localhost:5000 gpu-host`. All traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI's own bearer-token auth can be configured but becomes redundant with SSH. In the long term it ideally will be adaptable to different api sources, but this is not in the initial scope.
+Connection between the laptop and GPU host is over an SSH tunnel. TabbyAPI binds to localhost on the GPU host; the laptop opens a local forward such as `ssh -N -L 5000:127.0.0.1:5000 user@host -p port`, and Branching Workbook connects to the forwarded local URL. The React client talks to the local FastAPI wrapper under `/api/*`; the wrapper handles SQLite project persistence and thinly proxies TabbyAPI calls through the tunnel. All GPU traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI's own bearer/admin-token auth can be configured for non-tunnel deployments but is not required for the recommended SSH workflow.
 
 The rest of this document is organized around the abstractions that carry weight: the data model (section 3), the generation semantics (section 4), and how the client maps its operations onto TabbyAPI's endpoints (section 6). Cache behavior (section 5) is inherited from ExLlamaV3 and documented rather than designed. The UI (section 7) is deliberately sketched rather than fully specified, because the user expects to iterate on it heavily once the underlying primitives are working.
 
@@ -18,11 +18,11 @@ The user does not have any explicit technology requirements, but is most familia
 
 **In scope for v1**
 
-A single-user local creative-writing client with tree-structured branching generation, backed by a stock (lightly patched) TabbyAPI server. Fan-out of N parallel continuations from any point in the tree, streamed concurrently into a picker view with interleaved per-branch output. Buffer-authoritative editing — the user's text buffer is the source of truth, and the tree is reshaped to match edits rather than constraining them. Manual composition ("write your own" branch box, and free-form copy-paste amalgamation into the buffer). Cross-job prefix reuse so that navigating back to earlier points in the tree does not re-prefill shared context (provided by ExLlamaV3's default page-table behavior via TabbyAPI). Keyboard-first interaction. Model loading and HuggingFace model downloading via TabbyAPI's existing endpoints, surfaced in the client UI.
+A single-user local creative-writing client with tree-structured branching generation, backed by stock TabbyAPI. Fan-out of N parallel continuations from any point in the tree, streamed concurrently into a picker view with interleaved per-branch output. Buffer-authoritative editing — the user's text buffer is the source of truth, and the tree is reshaped to match edits rather than constraining them. Manual composition ("write your own" branch box, and free-form copy-paste amalgamation into the buffer). Cross-job prefix reuse so that navigating back to earlier points in the tree does not re-prefill shared context (provided by ExLlamaV3's default page-table behavior via TabbyAPI). Keyboard-first interaction. Model loading and HuggingFace model downloading via TabbyAPI's existing endpoints, surfaced in the client UI.
 
 **Explicitly out of scope for v1**
 
-Multimodal input. Collaborative editing. Git or version control integration. Mobile UI. LoRA or adapter hot-swapping. Model swap mid-session (one model per session, restart TabbyAPI to swap). Speculative decoding. Cross-session KV cache persistence (sessions start cold, always). Per-branch sampler configs (all N branches in a fan-out use the same sampler; distinctness comes from sampling noise). Per-branch cancellation mid-stream (stop-all or wait-for-all, no per-branch stop). Export formats beyond plain text of a single branch. Import from files (paste-only for bringing in existing text). Search. Chapter or outline structures. Markdown or rich-text formatting. Auto-summarization of context that exceeds the model's window. Undo across sessions. Author's notes, lorebooks, character cards. Multi-user awareness. A custom inference server — we use TabbyAPI as-is (with one small local patch, see section 6).
+Multimodal input. Collaborative editing. Git or version control integration. Mobile UI. LoRA or adapter hot-swapping. Model swap mid-session (one model per session, restart TabbyAPI to swap). Speculative decoding. Cross-session KV cache persistence (sessions start cold, always). Per-branch sampler configs (all N branches in a fan-out use the same sampler; distinctness comes from sampling noise). Per-branch cancellation mid-stream (stop-all or wait-for-all, no per-branch stop). Export formats beyond plain text of a single branch. Import from files (paste-only for bringing in existing text). Search. Chapter or outline structures. Markdown or rich-text formatting. Auto-summarization of context that exceeds the model's window. Undo across sessions. Author's notes, lorebooks, character cards. Multi-user awareness. A custom inference server — we use stock TabbyAPI as-is.
 
 **Out of scope, flagged for v2 consideration**
 
@@ -221,9 +221,9 @@ No per-node cache indicator in the tree view. Cache residence is opaque and evol
 
 ### 6.1 Transport
 
-TabbyAPI binds to `127.0.0.1:5000` (its default port) on the GPU host, exposing no network-reachable interface. The client establishes an SSH port forward (`ssh -L 5000:localhost:5000 gpu-host`) and connects to `localhost:5000` on the laptop. All traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI's own bearer-token auth can be disabled (since SSH already authenticates) or configured with a throwaway token — either works.
+TabbyAPI binds to `127.0.0.1:5000` (its default port) on the GPU host, exposing no network-reachable interface. The user establishes an SSH port forward (`ssh -N -L 5000:127.0.0.1:5000 user@host -p port`) and the local FastAPI wrapper connects to the forwarded laptop port. All traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI auth can be disabled for this workflow because SSH already authenticates the connection, or configured with a throwaway key for non-tunnel deployments.
 
-HTTP with JSON bodies for control endpoints. Server-sent events (SSE) for streaming generation output. Both are part of TabbyAPI's OpenAI-compatible API and work cleanly through the SSH tunnel.
+HTTP with JSON bodies for control endpoints. Server-sent events (SSE) for streaming generation output and model-load progress. Both work cleanly through the SSH tunnel. In the current app, React calls local wrapper routes (`/api/completions`, `/api/tabby/model`, `/api/tabby/models`, `/api/tabby/model/load`, `/api/tabby/model/unload`, `/api/tabby/download`, `/api/tabby/token/encode`) and the wrapper forwards to TabbyAPI.
 
 ### 6.2 Statelessness with respect to user work
 
@@ -233,7 +233,7 @@ This means closing the client and reopening it does not require any server coord
 
 ### 6.3 Endpoints used
 
-All endpoints below are TabbyAPI's own, documented at https://theroyallab.github.io/tabbyAPI/.
+All upstream endpoints below are TabbyAPI's own, documented at https://theroyallab.github.io/tabbyAPI/. Branching Workbook exposes them to the browser through equivalent local `/api/tabby/*` wrapper routes so the client remains same-origin and does not need direct knowledge of the tunnel URL.
 
 **`POST /v1/completions`** — the core endpoint. The client sends:
 
@@ -260,7 +260,9 @@ The response is an SSE stream of OpenAI-formatted chunks. Each chunk carries a `
 
 **`GET /v1/models`** — lists all models in TabbyAPI's configured `model_dir`.
 
-**`POST /v1/download`** — downloads a model from HuggingFace into `model_dir`. Payload includes `repo_id`, `revision` (branch or tag), and optional `folder_name`. Uses `huggingface_hub` under the hood; TabbyAPI can be configured to use `hf_transfer` for accelerated downloads (set `HF_HUB_ENABLE_HF_TRANSFER=1` in TabbyAPI's environment). Resume on interrupt is automatic.
+**`POST /v1/download`** — downloads a model from HuggingFace into `model_dir`. Payload includes `repo_id`, `revision` (branch or tag), and optional `folder_name`. Uses `huggingface_hub` under the hood; TabbyAPI can be configured to use `hf_transfer` for accelerated downloads (set `HF_HUB_ENABLE_HF_TRANSFER=1` in TabbyAPI's environment). Current TabbyAPI behavior ties the download task to the request: if the client disconnects, TabbyAPI cancels the download and cleans up partial files. Resume is available when issuing a new download request.
+
+**`POST /v1/token/encode`** — encodes text with the loaded model tokenizer and returns token IDs plus `length`. Branching Workbook uses the local wrapper route for a debounced context-budget readout.
 
 ### 6.4 How prefix handling and cache reuse actually work
 
@@ -327,9 +329,9 @@ A dedicated view or modal where the user can:
 - See the list of models currently present in TabbyAPI's `model_dir` (via `GET /v1/models`), with basic metadata.
 - Select one, configure load-time parameters (max_seq_len, cache_mode, tensor_parallel), and load it via `POST /v1/model/load`. TabbyAPI returns an SSE stream with load progress; the client surfaces a progress indicator. While no model is loaded, generation is disabled.
 - Unload the currently-loaded model via `POST /v1/model/unload`, freeing VRAM.
-- **Download a new model from HuggingFace** via `POST /v1/download`: enter a repo ID (e.g. `turboderp/Llama-3.1-70B-exl3`), an optional revision (branch or tag, defaulting to `main`), and an optional folder name. TabbyAPI's downloader handles parallel file downloads and resume. On completion the new model appears in the models list.
+- **Download a new model from HuggingFace** via `POST /v1/download`: enter a repo ID (e.g. `turboderp/Llama-3.1-70B-exl3`), an optional revision (branch or tag, defaulting to `main`), and an optional folder name. TabbyAPI's downloader handles parallel file downloads. On completion the new model appears in the models list.
 
-The download UI should make it obvious that downloads can take a long time (tens of minutes for large models) and that the user can close the modal and come back — downloads continue on TabbyAPI's side.
+The download UI should make it obvious that downloads can take a long time (tens of minutes for large models). With current TabbyAPI, the request must stay open: closing the app, reloading, or otherwise disconnecting cancels the download and cleans up partial files.
 
 **TabbyAPI configuration requirement:** For download acceleration, TabbyAPI's environment should have `HF_HUB_ENABLE_HF_TRANSFER=1` set and the `hf_transfer` Rust package installed. This is a server-side deployment detail, not something the client controls.
 
@@ -341,7 +343,7 @@ Mouse and keyboard. Buttons will be interfaced with by mouse click.
 
 A single readout in the UI chrome (status bar):
 
-- **Context budget**: current path's token count against the loaded model's max_seq_len. Visually warns when within 90% of the limit. Computed client-side using a local tokenizer (see implementation notes in section 10).
+- **Context budget**: current path's token count against the loaded model's max_seq_len. Visually warns when within 90% of the limit. The current implementation debounces calls to TabbyAPI's `/v1/token/encode` through the local wrapper; a local tokenizer cache can be added later if latency becomes a problem.
 
 Cache pressure indicator is cut for v1 — TabbyAPI doesn't expose the underlying `PageTable` internals via its public API, and probing them through backdoor endpoints adds complexity for a cosmetic readout. If cache pressure becomes important in practice, either add it to TabbyAPI upstream or run a small sidecar.
 
@@ -424,18 +426,17 @@ Not part of the functional requirements, but useful guidance.
 
 **Backend**: stock TabbyAPI. Deploy it on the GPU host per its standard installation instructions. Set `HF_HUB_ENABLE_HF_TRANSFER=1` in its environment for fast model downloads. Configure `model_dir`, `cache_mode`, `max_seq_len`, and `max_batch_size` (default 256 is fine for our use) in `config.yml`. Bind to `127.0.0.1` only. No patches required for v1 functionality.
 
-**Client**: React + TypeScript, bundled as a local web app served by a small local HTTP server (also Python, for minimal dep surface, or Node if preferred). The client is browser-only in v1, which is the fastest path to a working UI. Electron/Tauri wrapping is a later polish item. Roughly 2,000–4,000 lines of code for v1 depending on UI ambition.
+**Disposable GPU setup**: RunPod is one supported convenience path, not a product dependency. The desired RunPod experience is "start a pod, open one SSH tunnel, use the Branching Workbook UI to download/load models." This can be achieved with either a maintained TabbyAPI/ExLlamaV3 template or a small custom template/image. Any RunPod-specific scripts or template metadata should remain outside the core app and should not change the app's generic TabbyAPI-over-SSH boundary.
 
-**Database**: SQLite via the browser's `sql.js` or a thin local HTTP wrapper around stdlib `sqlite3`. Storing project files in the user's home directory, one `.bwbk` file per project.
+**Client**: React + TypeScript, served by Vite during development and talking to a local FastAPI wrapper under `/api/*`. The client is browser-only in v1, which is the fastest path to a working UI. Electron/Tauri wrapping is a later polish item.
 
-**Streaming**: EventSource API on the client side to consume TabbyAPI's SSE stream. Parse each chunk's `choices[i].index` field to route text to the right branch panel.
+**Database**: SQLite through the local FastAPI wrapper around stdlib `sqlite3`. Project files live on the laptop, one `.bwbk` file per project.
 
-**Tokenization for context-budget UI**: the client needs a tokenizer to estimate token counts against `max_seq_len`. Two options:
+**Streaming**: `fetch` plus `ReadableStream` on the client side, because generation and model-load streams require POST bodies. Parse each SSE frame's `choices[i].index` field to route generation text to the right branch panel.
 
-1. Load the model's `tokenizer.json` in the client via a JavaScript tokenizer library (e.g. `@huggingface/tokenizers` or `tiktoken`-style bindings). Fast, local, but requires downloading the tokenizer file to the client for each model.
-2. Send token-count queries to TabbyAPI's tokenize endpoint. Simpler but adds a network round-trip per count.
+**Tokenization for context-budget UI**: the current implementation sends debounced token-count queries to TabbyAPI's `/v1/token/encode` through the local wrapper. A future optimization can load the model's `tokenizer.json` in the client via a JavaScript tokenizer library and cache tokenizer files locally per model.
 
-Option 1 is better for UX. The client caches tokenizer files locally per model.
+The server-side tokenizer path is simpler and accurate for the currently loaded model. If latency becomes visible during editing, move to the local tokenizer cache.
 
 **Sampler preset schema**: a JSON blob with fields matching TabbyAPI's request parameter names (see section 4.3). The client lets the user build presets through a form UI, stores them in SQLite, and merges the chosen preset into each generate request body.
 
