@@ -35,8 +35,15 @@ fmt:
     cd server && uv run ruff format .
 
 # Run server pytest suite
-test:
+test-server:
     cd server && uv run pytest -q
+
+# Run client vitest suite
+test-client:
+    cd client && npm run test --silent
+
+# Run both test suites
+test: test-server test-client
 
 # Run lint + tests + client build
 check: lint test
