@@ -114,13 +114,40 @@ def _now_epoch() -> int:
 
 
 def _project_info(conn: sqlite3.Connection, path: str) -> ProjectInfo:
-    meta = {row["key"]: row["value"] for row in conn.execute("SELECT key, value FROM project_meta")}
+    meta = {
+        row["key"]: row["value"]
+        for row in conn.execute("SELECT key, value FROM project_meta")
+    }
     return ProjectInfo(
         path=path,
         title=meta.get("title"),
         created_at=meta.get("created_at"),
         version=meta.get("version", "1"),
     )
+
+
+def _validate_project(conn: sqlite3.Connection) -> None:
+    try:
+        meta = {
+            row["key"]: row["value"]
+            for row in conn.execute("SELECT key, value FROM project_meta")
+        }
+        root = conn.execute(
+            "SELECT id, parent_id FROM nodes WHERE id = 'root'"
+        ).fetchone()
+    except sqlite3.DatabaseError as ex:
+        raise HTTPException(
+            status_code=400, detail="Not a Branching Workbook project file."
+        ) from ex
+
+    if meta.get("version") != "1":
+        raise HTTPException(
+            status_code=400, detail="Not a Branching Workbook project file."
+        )
+    if root is None or root["parent_id"] is not None:
+        raise HTTPException(
+            status_code=400, detail="Project file is missing its root node."
+        )
 
 
 def _require_conn(request: Request) -> sqlite3.Connection:
@@ -245,12 +272,27 @@ def open_project(data: OpenProjectRequest, request: Request) -> ProjectInfo:
     path = Path(data.path).expanduser().resolve()
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"No such file: {path}")
+
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = open_db(path)
+        _validate_project(conn)
+        info = _project_info(conn, str(path))
+    except HTTPException:
+        if conn is not None:
+            conn.close()
+        raise
+    except (OSError, sqlite3.Error) as ex:
+        if conn is not None:
+            conn.close()
+        raise HTTPException(
+            status_code=400, detail="Unable to open project file."
+        ) from ex
+
     _close_current(request)
-    conn = open_db(path)
-    init_schema(conn)
     request.app.state.conn = conn
     request.app.state.project_path = str(path)
-    return _project_info(conn, str(path))
+    return info
 
 
 @router.post("/api/projects/close")

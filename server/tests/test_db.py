@@ -119,6 +119,34 @@ async def test_open_missing_path_404(client: AsyncClient):
     assert r.status_code == 404
 
 
+async def test_open_rejects_empty_non_project_file(client: AsyncClient, project_path: Path):
+    project_path.write_bytes(b"")
+
+    r = await client.post("/api/projects/open", json={"path": str(project_path)})
+
+    assert r.status_code == 400
+    assert (await client.get("/api/projects/current")).json() is None
+
+
+async def test_failed_open_keeps_current_project(client: AsyncClient):
+    with tempfile.TemporaryDirectory() as d:
+        good_path = Path(d) / "good.bwbk"
+        bad_path = Path(d) / "bad.bwbk"
+        bad_path.write_text("not sqlite")
+
+        await client.post(
+            "/api/projects", json={"path": str(good_path), "title": "Good"}
+        )
+        r = await client.post("/api/projects/open", json={"path": str(bad_path)})
+
+        assert r.status_code == 400
+        current = (await client.get("/api/projects/current")).json()
+        assert current["path"] == str(good_path.resolve())
+        assert current["title"] == "Good"
+        nodes = (await client.get("/api/nodes")).json()
+        assert [node["id"] for node in nodes] == ["root"]
+
+
 async def test_batch_creates_forward_references(
     client: AsyncClient, project_path: Path
 ):
