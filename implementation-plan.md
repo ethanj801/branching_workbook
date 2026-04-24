@@ -1,0 +1,131 @@
+# Implementation Plan
+
+Companion to `branching-workbook.md`. The spec says *what*; this says *in what order*.
+
+## Guiding principles
+
+- **Thin vertical slices.** Each phase produces something runnable, not a wiring diagram. Never more than a few days of work before the app does something new end-to-end.
+- **Mock first, real GPU later.** ExLlamaV3 is CUDA-only. Phases 1–3 run entirely on the dev Mac against a mock SSE server in the FastAPI wrapper. TabbyAPI integration (Phase 4) is deliberately deferred until the client is interesting enough that integration bugs are cheap to find.
+- **Mock format is not invented.** To kill the mock-vs-real drift risk, the mock's SSE chunks are copied byte-for-byte from TabbyAPI's actual completions handler (sibling checkout at `../tabbyAPI`). Same `data: {...}\n\n` framing, same `[DONE]` terminator, same `choices[i].index` placement, same trailing `usage` chunk. The mock is TabbyAPI-shaped with canned content.
+- **Server is stateless wrt user work (§6.2).** The wrapper owns filesystem + SQLite + TabbyAPI proxy. It does *not* own the tree algorithm. All tree reshaping (§3.1 LCP split) is a pure client-side TS reducer; the server persists the resulting node diffs transactionally. This matches the spec's statelessness stance and makes later Electron/Tauri wrapping trivial.
+- **Port from the mockup, don't import it.** `branching-workbook-mockup.jsx` is a shape reference. `commitBranchToBuffer` and `TreeNode` are worth reading before writing the real equivalents — the structure is close, but the mockup skips ancestor-splitting and has no hash tracking. Spec wins ties.
+
+## Stack (decided)
+
+- **Backend wrapper:** FastAPI + `uvicorn` + `httpx` (async SSE proxy), `sqlite3` stdlib, Python 3.11+.
+- **Frontend:** React + TypeScript + Vite. Tailwind for styling (matches the mockup). Vitest for unit tests of the tree algorithm.
+- **Dev proxy:** Vite `server.proxy` routes `/api/*` to FastAPI. Same-origin in dev and prod — no CORS setup, no EventSource-with-credentials quirks.
+- **Top-level orchestration:** `justfile` at repo root. `just dev` runs FastAPI and Vite in parallel.
+- **Inference:** TabbyAPI (sibling repo at `../tabbyAPI`), reached at `localhost:5000`. Behind a CUDA GPU. Not required until Phase 4.
+- **Storage:** SQLite `.bwbk` files, schema per §8.2.
+- **Tokenization:** server-side via TabbyAPI's `/v1/token/encode`, debounced ~200ms. Wired in Phase 5 (model loader). No token count shown in the UI before then.
+
+## Repo layout (target)
+
+```
+branching_workbook/
+├── justfile                 # dev / build / test
+├── server/                  # FastAPI wrapper
+│   ├── pyproject.toml
+│   └── bwbk/
+│       ├── main.py          # app, route wiring, Vite static serving in prod
+│       ├── db.py            # sqlite: open/create .bwbk, node CRUD (dumb persistence)
+│       ├── mock.py          # TabbyAPI-shaped canned SSE for dev
+│       └── proxy.py         # real TabbyAPI passthrough: SSE streaming + cancellation
+├── client/                  # Vite + React + TS
+│   ├── package.json
+│   ├── vite.config.ts       # server.proxy → localhost:8000
+│   └── src/
+│       ├── main.tsx
+│       ├── App.tsx
+│       ├── tree/            # §3.1 LCP split algorithm (pure functions)
+│       │   ├── reshape.ts   # buffer + activePath → node mutations
+│       │   ├── hash.ts      # xxhash3-64 for prior_context_hash
+│       │   └── reshape.test.ts
+│       ├── state/           # reducer: nodes, mainPath, buffer, currentId
+│       ├── components/      # TreeNode, BranchPanel, ModelBar, etc.
+│       └── api.ts           # SSE + fetch helpers
+├── branching-workbook.md
+├── branching-workbook-mockup.jsx
+├── implementation-plan.md   (this file)
+└── CLAUDE.md
+```
+
+## Phasing
+
+### Phase 0 — Scaffolding
+
+- First commit: spec, mockup, CLAUDE.md, this plan.
+- `server/`: `pyproject.toml` (fastapi, uvicorn, httpx). `bwbk/main.py` with a `/api/health` route.
+- `client/`: `npm create vite@latest` (React+TS), add Tailwind, delete boilerplate. `vite.config.ts` proxies `/api/*` → `http://localhost:8000`.
+- Root `justfile`: `just dev` runs both processes in parallel.
+- Deliverable: `just dev`, open `localhost:5173`, see "ok" from `/api/health`.
+
+### Phase 1 — Mock streaming into a single textarea
+
+- `server/bwbk/mock.py`: `POST /api/completions` streams SSE chunks copied verbatim from TabbyAPI's format. Respect `stream: true`, emit `index=0` only for now. Configurable delay between chunks. Honor client disconnect (cooperative cancellation).
+- `client/src/api.ts`: `fetch` + `ReadableStream` parser for SSE (EventSource doesn't support POST bodies). Dispatches per-`index` chunks to a handler.
+- Client UI: one big textarea for the buffer, "generate" button fires a completion, single append-only panel shows streaming text, "commit" pastes the panel into the buffer. No tree, no SQLite.
+- **Proves:** transport plumbing, SSE parsing, cooperative cancellation on disconnect.
+
+### Phase 2 — Tree algorithm + SQLite persistence
+
+This is the load-bearing phase. Tree reshaping and persistence land together — can't build one without the other.
+
+- `client/src/tree/reshape.ts`: pure TS function implementing the §3.1 algorithm. Inputs: `buffer`, `activePath` (list of nodes with text), existing sibling tree. Output: a list of node mutations (`create`, `split`, `hide`, `reparent`). No IO, fully deterministic.
+- `client/src/tree/hash.ts`: xxhash3-64 over root-to-parent text. Computed and stored on every new node (`prior_context_hash` per §3.3). Used later for stale-ancestor UI affordances when an ancestor is edited.
+- `client/src/tree/reshape.test.ts` (Vitest), with these fixtures at minimum:
+  - `test_pure_append` — append at end of active leaf
+  - `test_edit_inside_ancestor` — §3.1's "cat sat on the mat" → "chair" case
+  - `test_delete_into_ancestor` — delete back through multiple nodes
+  - `test_edit_recreates_sibling` — reattach to existing hidden branch
+  - `test_paste_replaces_whole_buffer` — LCP is empty
+  - `test_no_op_edit` — buffer == activePath
+- `server/bwbk/db.py`: §8.2 schema. Endpoints: `POST /api/projects` (create), `POST /api/projects/open`, `GET/POST/PATCH /api/nodes`. Transactional batch write for a mutation list. Server is pure persistence — no §3.1 logic here.
+- Client: "Open project" / "New project" dialog; `currentProjectPath` in state. Full in-memory tree from the mockup's `App` reducer, ported to TS. `TreeNode` component ported with types.
+- "Save" keybinding (Cmd/Ctrl+S) triggers commit — this is a §3.1 trigger per §7.2, not Phase 7 polish.
+- **Proves:** the load-bearing concept, with persistence across restarts. All downstream phases depend on this.
+
+### Phase 3 — Fan-out picker
+
+- Mock server: respect `n`, emit N interleaved streams with distinct canned continuations. Randomize chunk delays so interleaving feels realistic.
+- Client: `BranchPanel` grid (port from mockup), route SSE chunks by `choices[i].index`. "Write your own" box. Selecting a branch commits it and hides the rest as siblings per §4.6.
+- Global kill switch aborts the fetch; server stops streaming on disconnect.
+- **Proves:** N-branch UX, hide-not-delete semantics, cancellation under load.
+
+### Phase 4 — Real TabbyAPI
+
+- `server/bwbk/proxy.py`: replaces `mock.py` as the `/api/completions` handler behind a config flag (`BWBK_BACKEND=mock|tabby`). `httpx.AsyncClient.stream` forwards to `http://localhost:5000/v1/completions`; client-side disconnect triggers upstream cancellation.
+- Stand up TabbyAPI on the CUDA machine with `lucyknada/google_gemma-3-270m-exl3`. Same-machine for now — no SSH tunnel until graduating to the H200.
+- **Integration checks as deliverables:**
+  - **Prefix reuse:** fan out from point A, navigate back, fan out again, confirm the second prefill is materially faster (server logs or `usage` field). Catches accidental whitespace/BOM mutation that silently breaks content-hash reuse (§4.2/§5).
+  - **Crash recovery:** kill TabbyAPI mid-stream. Client shows a clear error; tree state is intact; restart TabbyAPI and continue (§9.2).
+- **Proves:** real SSE, real sampler config, real branching, real prefix reuse.
+
+### Phase 5 — Model loader UI + tokenizer
+
+- Server endpoints: thin passthroughs to TabbyAPI's `/v1/model/load`, `/unload`, `/model`, `/models`, `/download`, `/token/encode` (§6.3). Stream load-progress SSE through.
+- Client: port `ModelBar` and `ModelModal` from the mockup.
+- Tokenizer wiring: debounced POST to `/api/token/encode` on buffer change, show "X / max_seq_len tokens" in the status strip.
+
+### Phase 6 — Samplers + presets
+
+- Server: sampler presets as JSON blobs in `project_meta` (promote to a dedicated `samplers` table if the UX justifies it).
+- Client: preset picker + preset edit form.
+- Merge the chosen preset into each `/api/completions` body.
+
+### Phase 7 — Polish
+
+- Hidden-nodes view toggle.
+- Status indicators per §7.7.
+- Full keyboard shortcut set per §7.6 (Cmd+S commit already lives in Phase 2; this phase adds navigation, generate, cancel, branch-select hotkeys).
+
+## Out of scope for this plan
+
+Everything in §2 "out of scope for v1." §11 v2 candidates likewise.
+
+## Verification
+
+Each phase has a concrete runnable deliverable under **Proves:**. End-to-end sanity check at any phase: `just dev`, open `localhost:5173`, perform the phase's canonical action (generate, commit, open a project, load a model, etc.), watch it work.
+
+Unit tests: Vitest on `client/src/tree/reshape.ts` is the one place tests are non-negotiable in v1. The rest is thin enough that integration testing through the running app is sufficient.

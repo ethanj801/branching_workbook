@@ -1,0 +1,25 @@
+# OS
+.DS_Store
+
+# Python / uv
+__pycache__/
+*.py[cod]
+*$py.class
+server/.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Node / Vite
+client/node_modules/
+client/dist/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Claude Code plan files (personal)
+.claude/
+
+# Project artifacts (to be confirmed once implemented)
+*.bwbk
