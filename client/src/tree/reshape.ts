@@ -2,6 +2,7 @@ import { contextHash } from "./hash";
 import {
   concatPathText,
   pathFromRoot,
+  type NodeSource,
   type Tree,
   type TreeNode,
 } from "./types";
@@ -49,7 +50,7 @@ function findDescendantPathMatchingText(
 export type ReshapeOptions = {
   newId: () => string;
   now: () => number;
-  source?: "user_written" | "composed";
+  source?: NodeSource;
 };
 
 export type ReshapeResult = {
@@ -65,8 +66,8 @@ export type ReshapeResult = {
  *   2. If the anchor falls strictly inside a node, that node is split at the
  *      offset; first half becomes a new user-written node, second half keeps
  *      the original source and inherits the original's children.
- *   3. The divergent suffix becomes a new user-written (or composed) child of
- *      the anchor. If an existing child's text already matches the suffix
+ *   3. The divergent suffix becomes a new user-written/generated/composed child
+ *      of the anchor. If an existing child's text already matches the suffix
  *      (e.g., a hidden sibling from an earlier generation), reattach to it
  *      instead of duplicating.
  *
@@ -79,7 +80,7 @@ export function reshape(
   buffer: string,
   opts: ReshapeOptions,
 ): ReshapeResult {
-  const source: "user_written" | "composed" = opts.source ?? "user_written";
+  const source: NodeSource = opts.source ?? "user_written";
   const path = pathFromRoot(tree, currentId);
   const activeText = concatPathText(path);
   const lcpLen = longestCommonPrefix(buffer, activeText);
