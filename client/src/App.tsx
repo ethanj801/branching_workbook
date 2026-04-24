@@ -6,19 +6,22 @@ export default function App() {
     "The old lighthouse stood at the end of the pier, its beam sweeping across the harbor in long, slow arcs.",
   );
   const [candidate, setCandidate] = useState("");
+  const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
   const [streaming, setStreaming] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   async function onGenerate() {
     if (streaming) return;
+    const promptSnapshot = buffer;
     setCandidate("");
+    setCandidatePrompt(promptSnapshot);
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
     try {
       await streamCompletion(
-        { prompt: buffer, n: 1, max_tokens: 200 },
+        { prompt: promptSnapshot, n: 1, max_tokens: 200 },
         (chunk) => {
           for (const choice of chunk.choices) {
             if (choice.index === 0 && choice.text) {
@@ -42,9 +45,10 @@ export default function App() {
   }
 
   function onCommit() {
-    if (!candidate) return;
-    setBuffer((b) => b + candidate);
+    if (!candidate || candidatePrompt === null) return;
+    setBuffer(candidatePrompt + candidate);
     setCandidate("");
+    setCandidatePrompt(null);
   }
 
   return (
