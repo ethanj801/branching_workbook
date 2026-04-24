@@ -13,6 +13,39 @@ function longestCommonPrefix(a: string, b: string): number {
   return i;
 }
 
+function findDescendantPathMatchingText(
+  nodes: Record<string, TreeNode>,
+  anchorId: string,
+  text: string,
+): TreeNode[] | null {
+  const childrenOf = (nodeId: string) =>
+    Object.values(nodes).filter((n) => n.parentId === nodeId);
+
+  const search = (
+    node: TreeNode,
+    remaining: string,
+    path: TreeNode[],
+  ): TreeNode[] | null => {
+    if (!remaining.startsWith(node.text)) return null;
+
+    const nextRemaining = remaining.slice(node.text.length);
+    const nextPath = [...path, node];
+    if (nextRemaining === "") return nextPath;
+
+    for (const child of childrenOf(node.id)) {
+      const found = search(child, nextRemaining, nextPath);
+      if (found) return found;
+    }
+    return null;
+  };
+
+  for (const child of childrenOf(anchorId)) {
+    const found = search(child, text, []);
+    if (found) return found;
+  }
+  return null;
+}
+
 export type ReshapeOptions = {
   newId: () => string;
   now: () => number;
@@ -144,16 +177,19 @@ export function reshape(
     };
   }
 
-  // Reattach if an existing child already has the divergent text
-  const anchorChildren = Object.values(nodesCopy).filter(
-    (n) => n.parentId === anchorId,
+  // Reattach if an existing descendant path already has the divergent text.
+  const existingPath = findDescendantPathMatchingText(
+    nodesCopy,
+    anchorId,
+    divergent,
   );
-  const existing = anchorChildren.find((n) => n.text === divergent);
-  if (existing) {
-    nodesCopy[existing.id] = { ...existing, hidden: false };
+  if (existingPath) {
+    for (const node of existingPath) {
+      nodesCopy[node.id] = { ...node, hidden: false };
+    }
     return {
       tree: { nodes: nodesCopy, rootId: tree.rootId },
-      currentId: existing.id,
+      currentId: existingPath[existingPath.length - 1].id,
     };
   }
 

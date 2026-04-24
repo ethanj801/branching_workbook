@@ -145,6 +145,30 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     expect(out.tree.nodes["B"].text).toBe("world");
   });
 
+  it("reattaches to a matching multi-node branch instead of duplicating it", () => {
+    const root = makeNode("root", null, "");
+    const A = makeNode("A", "root", "hello ", "user_written");
+    const B = makeNode("B", "A", "world", "generated");
+    const H1 = makeNode("H1", "A", "earth", "generated", true);
+    const H2 = makeNode("H2", "H1", "rise", "generated", true);
+    const tree = makeTree([root, A, B, H1, H2]);
+    const buffer = "hello earthrise";
+
+    const out = reshape(tree, "B", buffer, { newId: nid, now });
+
+    expect(out.currentId).toBe("H2");
+    expect(Object.keys(out.tree.nodes).sort()).toEqual([
+      "A",
+      "B",
+      "H1",
+      "H2",
+      "root",
+    ]);
+    expect(out.tree.nodes["H1"].hidden).toBe(false);
+    expect(out.tree.nodes["H2"].hidden).toBe(false);
+    expect(concatPathText(pathFromRoot(out.tree, out.currentId))).toBe(buffer);
+  });
+
   it("test_paste_replaces_whole_buffer: LCP=0 makes a new sibling under the root", () => {
     const root = makeNode("root", null, "");
     const A = makeNode("A", "root", "hello world", "generated");
