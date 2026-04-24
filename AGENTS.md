@@ -91,3 +91,12 @@ just dev
 ```
 
 Do not put RunPod API automation in the product unless explicitly requested.
+
+## User-Global vs Project-Local Storage
+
+Two SQLite stores, deliberately separate:
+
+- **Project files (`.bwbk`)** — per-project, user picks the path. May live in a confidential folder. Contains `project_meta`, `nodes`. Per-project state like "which sampler preset is active" goes in `project_meta` under a well-known key (`active_sampler_preset_id`). See `server/bwbk/db.py`.
+- **User-global store (`userdata.sqlite`)** — cross-project. Resolved via `platformdirs` (`~/Library/Application Support/bwbk/userdata.sqlite` on macOS). Contains `sampler_presets`, `settings`. See `server/bwbk/userdata.py`. Tests override via `BWBK_USERDATA_DIR`.
+
+Never write project paths, project titles, or any project-identifying state into the user-global store — confidential projects must stay confined to their own folder. If a future feature (e.g. "recent projects") would cross this boundary, keep it opt-in per project.

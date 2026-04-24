@@ -115,9 +115,11 @@ This is the load-bearing phase. Tree reshaping and persistence land together —
 
 ### Phase 6 — Samplers + presets
 
-- Server: sampler presets as JSON blobs in `project_meta` (promote to a dedicated `samplers` table if the UX justifies it).
-- Client: preset picker + preset edit form.
-- Merge the chosen preset into each `/api/completions` body.
+- **Storage split (decided):** sampler presets are **user-global** and live in a separate SQLite file under `platformdirs`' app-support directory (`~/Library/Application Support/bwbk/userdata.sqlite` on macOS). They travel across every project. The *active* preset id is **per-project** — stored in that project's `project_meta` under `active_sampler_preset_id` — so confidential project folders don't leak their "which preset is active" choice into the global store. Tests override the userdata path via `BWBK_USERDATA_DIR`.
+- Server: `bwbk.userdata` owns the global connection + seeds three starter presets (Creative / Balanced / Deterministic) using TabbyAPI's canonical `BaseSamplerRequest` field names. `bwbk.samplers` exposes `/api/samplers/presets` CRUD plus `GET/PUT /api/samplers/active`. Unused `user_preferences` table removed from the project schema.
+- Client: sampler field catalog in `client/src/samplers/fields.ts` mirrors TabbyAPI's actual accepted fields (temperature, min_p/top_p/top_k/top_a, typical_p, tfs, XTC, DRY, penalties, `min_temp`/`max_temp`/`temp_exponent` for dynamic temp, smoothing, temperature_last, max/min_tokens). Ooba-only fields that TabbyAPI ignores (seed, top_n_sigma, epsilon/eta_cutoff, smoothing_curve) are deliberately excluded. `mergePreset()` drops neutral-valued fields so TabbyAPI's own defaults stand.
+- UI: right-side `SamplerDrawer` with preset dropdown + Save / Save as / Delete / Neutralize, plus a compact preset strip near Generate showing active preset + dirty marker. Generate merges the draft body into the `/api/completions` request and snapshots the resolved sampler onto each generated node's `sampler_snapshot`.
+- **Status:** implemented and verified by `just check` (ruff clean, 38 pytest, 24 vitest, build). Manual browser pass still useful before closing fully out.
 
 ### Deployment Track — RunPod fire-and-forget setup
 

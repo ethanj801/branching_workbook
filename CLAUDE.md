@@ -30,7 +30,9 @@ Read `branching-workbook.md` end-to-end before making design decisions, but thes
 
 - **Client/server split.** Client is local (laptop). Server is stock TabbyAPI on a GPU host, reached over an SSH tunnel (`ssh -L 5000:localhost:5000 gpu-host`). No custom server for v1 (§6.1, §10).
 - **Planned client stack (§10).** React + TypeScript served by a small local HTTP wrapper (Python preferred — user's strongest language). Browser-only in v1; Electron/Tauri is post-v1.
-- **Storage (§8).** One SQLite file per project (`.bwbk`), schema sketched in §8.2. Samplers stored as JSON blobs, not normalized columns. Tree is node-per-row with `parent_id`; the main path is flagged via `is_main_path`.
+- **Storage (§8).** Two stores, kept strictly separate:
+  - **Per-project:** one SQLite file per project (`.bwbk`), schema in §8.2. The user chooses the path (may be a confidential folder). Tree is node-per-row with `parent_id`; main path is flagged via `is_main_path`. Sampler snapshots stored as JSON blobs. The per-project "active sampler preset id" lives in `project_meta`.
+  - **User-global:** sampler presets and other cross-project preferences live in `~/Library/Application Support/bwbk/userdata.sqlite` (via `platformdirs` — see §8.2b). `server/bwbk/userdata.py` owns the connection and seeds starter presets. Tests point it elsewhere via `BWBK_USERDATA_DIR`. Never write project paths, project titles, or anything that identifies a project into this store — confidential projects must not leak.
 - **Streaming.** Client uses the EventSource API against TabbyAPI's SSE; route by `choices[i].index`.
 - **Tokenization.** Local JS tokenizer loaded from the model's `tokenizer.json` (preferred over round-tripping TabbyAPI's tokenize endpoint).
 - **Endpoints the client uses (§6.3):** `POST /v1/completions`, `POST /v1/model/load`, `POST /v1/model/unload`, `GET /v1/model`, `GET /v1/models`, `POST /v1/download`. All are TabbyAPI-native; no custom endpoints.

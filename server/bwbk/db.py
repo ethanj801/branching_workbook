@@ -44,12 +44,12 @@ CREATE TABLE IF NOT EXISTS nodes (
 CREATE INDEX IF NOT EXISTS idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX IF NOT EXISTS idx_nodes_main
     ON nodes(is_main_path) WHERE is_main_path = 1;
-
-CREATE TABLE IF NOT EXISTS user_preferences (
-    key   TEXT PRIMARY KEY,
-    value TEXT
-);
 """
+# User-global preferences (e.g. sampler presets) live in `bwbk.userdata`,
+# NOT in the project DB, so confidential project folders don't have to carry
+# cross-project settings. Per-project state that *does* belong here (like the
+# currently-active sampler preset id) goes in `project_meta` under
+# well-known keys (`active_sampler_preset_id`).
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:

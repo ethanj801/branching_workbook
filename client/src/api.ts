@@ -15,13 +15,55 @@ export type CompletionChunk = {
   choices: CompletionChoice[];
 };
 
+// Superset of the TabbyAPI fields we'll ever send in one request.
+// The client builds this by merging `{ prompt, n }` with the active sampler
+// preset (filtered to known-supported keys by `sanitizeSamplerBody`).
 export type CompletionRequestBody = {
   prompt: string;
   n?: number;
   max_tokens?: number;
+  min_tokens?: number;
   temperature?: number;
+  temperature_last?: boolean;
   top_p?: number;
+  top_k?: number;
+  top_a?: number;
+  min_p?: number;
+  tfs?: number;
+  typical?: number;
+  typical_p?: number;
+  xtc_threshold?: number;
+  xtc_probability?: number;
+  frequency_penalty?: number;
+  presence_penalty?: number;
+  repetition_penalty?: number;
+  penalty_range?: number;
+  repetition_decay?: number;
+  smoothing_factor?: number;
+  dry_multiplier?: number;
+  dry_base?: number;
+  dry_allowed_length?: number;
+  dry_range?: number;
+  dry_sequence_breakers?: string | string[];
+  min_temp?: number;
+  max_temp?: number;
+  temp_exponent?: number;
   stop?: string[];
+};
+
+export type SamplerBody = Omit<CompletionRequestBody, "prompt" | "n">;
+
+export type SamplerPreset = {
+  id: string;
+  name: string;
+  body: SamplerBody;
+  is_starter: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ActivePreset = {
+  preset_id: string | null;
 };
 
 export type ProjectInfo = {
@@ -274,5 +316,50 @@ export function encodeTokens(text: string): Promise<TokenEncodeResponse> {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ text }),
+  });
+}
+
+export function listPresets(): Promise<SamplerPreset[]> {
+  return requestJson<SamplerPreset[]>("/api/samplers/presets");
+}
+
+export function createPreset(
+  name: string,
+  body: SamplerBody,
+): Promise<SamplerPreset> {
+  return requestJson<SamplerPreset>("/api/samplers/presets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, body }),
+  });
+}
+
+export function updatePreset(
+  presetId: string,
+  patch: { name?: string; body?: SamplerBody },
+): Promise<SamplerPreset> {
+  return requestJson<SamplerPreset>(`/api/samplers/presets/${presetId}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+}
+
+export function deletePreset(presetId: string): Promise<{ deleted: boolean }> {
+  return requestJson<{ deleted: boolean }>(
+    `/api/samplers/presets/${presetId}`,
+    { method: "DELETE" },
+  );
+}
+
+export function getActivePreset(): Promise<ActivePreset> {
+  return requestJson<ActivePreset>("/api/samplers/active");
+}
+
+export function setActivePreset(presetId: string | null): Promise<ActivePreset> {
+  return requestJson<ActivePreset>("/api/samplers/active", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ preset_id: presetId }),
   });
 }

@@ -1,22 +1,32 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import {
   closeProject as closeProjectApi,
   createProject,
+  createPreset,
   currentProject,
   currentModel,
+  deletePreset,
   downloadModel,
   encodeTokens,
+  getActivePreset,
   listModels,
   listNodes,
+  listPresets,
   mutateNodes,
   openProject,
+  setActivePreset,
   streamCompletion,
   streamModelLoad,
   unloadModel,
+  updatePreset,
   type ModelLoadEvent,
   type ProjectInfo,
+  type SamplerBody,
+  type SamplerPreset,
   type TabbyModel,
 } from "./api";
+import SamplerDrawer from "./samplers/SamplerDrawer";
+import { mergePreset, neutralBody } from "./samplers/fields";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
@@ -60,6 +70,7 @@ function branchNode(
   hidden: boolean,
   priorText: string,
   modelId?: string,
+  samplerSnapshot?: SamplerBody,
 ): TreeNode {
   return {
     id: nodeId(),
@@ -70,7 +81,18 @@ function branchNode(
     createdAt: nowEpoch(),
     priorContextHash: contextHash(priorText),
     modelId,
+    samplerSnapshot,
   };
+}
+
+function bodiesEqual(a: SamplerBody, b: SamplerBody): boolean {
+  const keysA = Object.keys(a) as (keyof SamplerBody)[];
+  const keysB = Object.keys(b) as (keyof SamplerBody)[];
+  if (keysA.length !== keysB.length) return false;
+  for (const key of keysA) {
+    if (JSON.stringify(a[key]) !== JSON.stringify(b[key])) return false;
+  }
+  return true;
 }
 
 function modelContextMax(model: TabbyModel | null): number | null {
@@ -101,6 +123,8 @@ export default function App() {
   const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
   const [candidateBaseId, setCandidateBaseId] = useState<string | null>(null);
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
+  const [candidateSamplerSnapshot, setCandidateSamplerSnapshot] =
+    useState<SamplerBody | null>(null);
   const [composition, setComposition] = useState("");
   const [branchCount, setBranchCount] = useState(3);
   const [streaming, setStreaming] = useState(false);
@@ -129,6 +153,11 @@ export default function App() {
   const [newPath, setNewPath] = useState("/tmp/branching-workbook.bwbk");
   const [newTitle, setNewTitle] = useState("Branching Workbook");
   const [openPath, setOpenPath] = useState("");
+  const [presets, setPresets] = useState<SamplerPreset[]>([]);
+  const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
+  const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
+  const [samplerBusy, setSamplerBusy] = useState(false);
+  const [samplerOpen, setSamplerOpen] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
@@ -137,13 +166,53 @@ export default function App() {
     tokenCount !== null && contextMax ? tokenCount / contextMax : null;
   const contextWarn = contextPct !== null && contextPct >= 0.9;
 
+  const activePreset = useMemo(
+    () => presets.find((preset) => preset.id === activePresetId) ?? null,
+    [presets, activePresetId],
+  );
+  const presetBaseline: SamplerBody = useMemo(
+    () => activePreset?.body ?? {},
+    [activePreset],
+  );
+  const draftDirty = useMemo(
+    () => activePreset !== null && !bodiesEqual(draftBody, presetBaseline),
+    [activePreset, draftBody, presetBaseline],
+  );
+
   const clearBranchPicker = useCallback(() => {
     setCandidates([]);
     setCandidatePrompt(null);
     setCandidateBaseId(null);
     setCandidateModelId(null);
+    setCandidateSamplerSnapshot(null);
     setComposition("");
   }, []);
+
+  const refreshPresets = useCallback(async () => {
+    try {
+      const fetched = await listPresets();
+      setPresets(fetched);
+      return fetched;
+    } catch (err) {
+      setError(formatError(err));
+      return [];
+    }
+  }, []);
+
+  const applyActivePreset = useCallback(
+    (
+      presetsList: SamplerPreset[],
+      nextActiveId: string | null,
+    ) => {
+      setActivePresetIdState(nextActiveId);
+      const picked =
+        nextActiveId === null
+          ? null
+          : presetsList.find((p) => p.id === nextActiveId) ?? null;
+      setDraftBody(picked ? { ...picked.body } : neutralBody());
+    },
+    [],
+  );
 
   const refreshModels = useCallback(async () => {
     setLoadingModels(true);
@@ -174,8 +243,22 @@ export default function App() {
       setCurrentId(loaded.currentId);
       setBuffer(concatPathText(pathFromRoot(loaded.tree, loaded.currentId)));
       clearBranchPicker();
+
+      // Pull the project's active preset (lives in its project_meta) and
+      // seed the draft from whichever preset is selected. Failures here are
+      // non-fatal — a stale active_preset_id that points at a deleted preset
+      // just means "no active preset yet".
+      try {
+        const [allPresets, active] = await Promise.all([
+          refreshPresets(),
+          getActivePreset(),
+        ]);
+        applyActivePreset(allPresets, active.preset_id);
+      } catch (err) {
+        setError(formatError(err));
+      }
     },
-    [clearBranchPicker],
+    [applyActivePreset, clearBranchPicker, refreshPresets],
   );
 
   useEffect(() => {
@@ -205,6 +288,13 @@ export default function App() {
   useEffect(() => {
     void refreshModels();
   }, [refreshModels]);
+
+  useEffect(() => {
+    // Presets are user-global, so load them once on mount. `loadProject`
+    // re-loads them when a project opens so rename/delete from another
+    // window eventually reconciles.
+    void refreshPresets();
+  }, [refreshPresets]);
 
   useEffect(() => {
     if (!currentTabbyModel || !buffer) {
@@ -329,11 +419,91 @@ export default function App() {
       setCurrentId(null);
       setBuffer("");
       clearBranchPicker();
+      // Active preset is per-project; forget it when the project closes so a
+      // subsequent project open doesn't briefly show the wrong "active" name.
+      applyActivePreset(presets, null);
     } catch (err) {
       setError(formatError(err));
     } finally {
       setLoadingProject(false);
     }
+  }
+
+  async function onSelectPreset(nextId: string | null) {
+    applyActivePreset(presets, nextId);
+    if (!project) return;
+    setSamplerBusy(true);
+    setError(null);
+    try {
+      await setActivePreset(nextId);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSamplerBusy(false);
+    }
+  }
+
+  async function onSaveChanges() {
+    if (!activePreset) return;
+    setSamplerBusy(true);
+    setError(null);
+    try {
+      const saved = await updatePreset(activePreset.id, { body: draftBody });
+      const next = presets.map((p) => (p.id === saved.id ? saved : p));
+      setPresets(next);
+      setDraftBody({ ...saved.body });
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSamplerBusy(false);
+    }
+  }
+
+  async function onSaveAs(name: string) {
+    setSamplerBusy(true);
+    setError(null);
+    try {
+      const created = await createPreset(name, draftBody);
+      const next = [...presets, created].sort((a, b) => {
+        if (a.is_starter !== b.is_starter) return a.is_starter ? -1 : 1;
+        return a.name.toLowerCase().localeCompare(b.name.toLowerCase());
+      });
+      setPresets(next);
+      if (project) {
+        await setActivePreset(created.id);
+        applyActivePreset(next, created.id);
+      } else {
+        applyActivePreset(next, created.id);
+      }
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSamplerBusy(false);
+    }
+  }
+
+  async function onDeletePreset(presetId: string) {
+    setSamplerBusy(true);
+    setError(null);
+    try {
+      await deletePreset(presetId);
+      const next = presets.filter((p) => p.id !== presetId);
+      setPresets(next);
+      if (activePresetId === presetId) {
+        applyActivePreset(next, null);
+        if (project) {
+          await setActivePreset(null);
+        }
+      }
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSamplerBusy(false);
+    }
+  }
+
+  function onNeutralizeDraft() {
+    setDraftBody(neutralBody());
   }
 
   async function onSave() {
@@ -447,10 +617,15 @@ export default function App() {
 
     const n = Math.max(1, Math.min(6, Math.trunc(branchCount) || 1));
     const promptSnapshot = committed.buffer;
+    // Resolve the sampler snapshot *now* so a user tweaking the drawer
+    // mid-stream doesn't retroactively change what a persisted node says
+    // produced it.
+    const samplerSnapshot = mergePreset(draftBody);
     setCandidates(Array.from({ length: n }, () => ""));
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(committed.currentId);
     setCandidateModelId(currentTabbyModel.id);
+    setCandidateSamplerSnapshot(samplerSnapshot);
     setComposition("");
     setError(null);
     setStreaming(true);
@@ -458,7 +633,7 @@ export default function App() {
 
     try {
       await streamCompletion(
-        { prompt: promptSnapshot, n, max_tokens: 200 },
+        { prompt: promptSnapshot, n, ...samplerSnapshot },
         (chunk) => {
           for (const choice of chunk.choices) {
             if (choice.index < 0 || choice.index >= n || !choice.text) continue;
@@ -525,6 +700,7 @@ export default function App() {
         hidden,
         candidatePrompt,
         candidateModelId ?? undefined,
+        candidateSamplerSnapshot ?? undefined,
       );
       nextNodes[node.id] = node;
       if (selectedSource === "generated" && index === selectedIndex) {
@@ -827,6 +1003,23 @@ export default function App() {
           </div>
         )}
 
+        <SamplerDrawer
+          open={samplerOpen}
+          presets={presets}
+          activePresetId={activePresetId}
+          draft={draftBody}
+          busy={samplerBusy}
+          dirty={draftDirty}
+          projectOpen={project !== null}
+          onClose={() => setSamplerOpen(false)}
+          onSelectPreset={(id) => void onSelectPreset(id)}
+          onDraftChange={setDraftBody}
+          onSaveChanges={() => void onSaveChanges()}
+          onSaveAs={(name) => void onSaveAs(name)}
+          onDeletePreset={(id) => void onDeletePreset(id)}
+          onNeutralize={onNeutralizeDraft}
+        />
+
         {project && tree && currentId && (
           <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
             <main className="space-y-4">
@@ -853,6 +1046,39 @@ export default function App() {
                   disabled={branchPickerOpen}
                   spellCheck={false}
                 />
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2">
+                <span className="text-xs uppercase tracking-widest text-neutral-500">
+                  Sampler
+                </span>
+                <select
+                  value={activePresetId ?? ""}
+                  onChange={(event) =>
+                    void onSelectPreset(event.target.value || null)
+                  }
+                  disabled={samplerBusy || streaming || branchPickerOpen}
+                  className="min-w-40 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                >
+                  <option value="">(none)</option>
+                  {presets.map((preset) => (
+                    <option key={preset.id} value={preset.id}>
+                      {preset.name}
+                    </option>
+                  ))}
+                </select>
+                {draftDirty && (
+                  <span className="text-xs text-amber-400" title="Unsaved changes">
+                    *
+                  </span>
+                )}
+                <button
+                  onClick={() => setSamplerOpen(true)}
+                  disabled={samplerBusy}
+                  className="ml-auto rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+                >
+                  Edit
+                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">

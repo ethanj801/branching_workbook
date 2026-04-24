@@ -351,9 +351,9 @@ Cache pressure indicator is cut for v1 — TabbyAPI doesn't expose the underlyin
 
 ### 8.1 Per-project SQLite
 
-One project = one SQLite file on the user's laptop. The user picks a directory; the client creates and manages `.bwbk` (or similar extension) files there.
+One project = one SQLite file on the user's laptop. The user picks a directory; the client creates and manages `.bwbk` (or similar extension) files there. Nothing user-global is ever written into a project file — some projects live in confidential folders and must stay self-contained.
 
-### 8.2 Schema sketch
+### 8.2 Per-project schema sketch
 
 ```sql
 CREATE TABLE project_meta (
@@ -361,7 +361,7 @@ CREATE TABLE project_meta (
     value TEXT
 );
 -- e.g. ('version', '1'), ('created_at', '...'), ('title', '...'),
---      ('default_sampler', '{...json...}'), ('default_max_tokens', '512')
+--      ('active_sampler_preset_id', '<uuid>')
 
 CREATE TABLE nodes (
     id                   TEXT PRIMARY KEY,       -- UUID
@@ -379,14 +379,39 @@ CREATE TABLE nodes (
 
 CREATE INDEX idx_nodes_parent ON nodes(parent_id);
 CREATE INDEX idx_nodes_main   ON nodes(is_main_path) WHERE is_main_path = 1;
+```
 
-CREATE TABLE user_preferences (
+Samplers are stored as JSON blobs rather than normalized columns to keep the schema flexible as new sampler types are added.
+
+### 8.2b User-global store
+
+User preferences that should travel with the user — not the project — live in a separate SQLite file under the platform's app-support directory (via `platformdirs`):
+
+- macOS: `~/Library/Application Support/bwbk/userdata.sqlite`
+- Linux (XDG): `~/.local/share/bwbk/userdata.sqlite`
+- Windows: `%LOCALAPPDATA%\bwbk\userdata.sqlite`
+
+Schema:
+
+```sql
+CREATE TABLE sampler_presets (
+    id          TEXT PRIMARY KEY,   -- UUID
+    name        TEXT NOT NULL UNIQUE,
+    body        TEXT NOT NULL,      -- JSON, superset of TabbyAPI sampler fields
+    is_starter  INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 ```
 
-Samplers are stored as JSON blobs rather than normalized columns to keep the schema flexible as new sampler types are added.
+Three starter presets (Creative / Balanced / Deterministic) are seeded on first init. The *active* preset id is per-project and lives in that project's `project_meta` under `active_sampler_preset_id`, so a confidential project's "which preset is active" choice never leaks into the global store.
+
+Tests override the store location via the `BWBK_USERDATA_DIR` env var; production never reads it.
 
 ### 8.3 Persistence semantics
 
