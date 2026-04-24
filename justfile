@@ -34,6 +34,10 @@ lint:
 fmt:
     cd server && uv run ruff format .
 
-# Run Python lint and JS type-check
-check: lint
+# Run server pytest suite
+test:
+    cd server && uv run pytest -q
+
+# Run lint + tests + client build
+check: lint test
     cd client && npm run build --silent
