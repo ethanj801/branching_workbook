@@ -116,6 +116,33 @@ async def test_completions_assembles_into_continuous_text(client: AsyncClient):
     assert text.startswith(" ")
 
 
+async def test_completions_streams_interleaved_fanout_indexes(client: AsyncClient):
+    async with client.stream(
+        "POST",
+        "/api/completions",
+        json={"prompt": "hello", "n": 3, "max_tokens": 40},
+    ) as r:
+        body = ""
+        async for chunk in r.aiter_text():
+            body += chunk
+
+    events, done = _parse_sse(body)
+    assert done
+
+    by_index = {0: "", 1: "", 2: ""}
+    final_indexes: set[int] = set()
+    for ev in events:
+        choice = ev["choices"][0]
+        assert choice["index"] in by_index
+        by_index[choice["index"]] += choice["text"]
+        if choice["finish_reason"] is not None:
+            final_indexes.add(choice["index"])
+
+    assert set(by_index) == final_indexes
+    assert all(text.startswith(" ") for text in by_index.values())
+    assert all(len(text) > 10 for text in by_index.values())
+
+
 async def test_completions_respects_max_tokens_budget(client: AsyncClient):
     """max_tokens caps how much is streamed — approximated as max_tokens*4 chars."""
     small = 10

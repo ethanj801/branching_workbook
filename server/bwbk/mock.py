@@ -6,7 +6,8 @@ checkout at ../tabbyAPI: endpoints/OAI/utils/completion.py), so the client can
 be built and tested without a real inference backend. When the real proxy
 replaces this in Phase 4, nothing on the client should need to change.
 
-Phase 1 scope: only index=0 is emitted. Phase 3 will respect `n > 1`.
+Supports `n > 1` by emitting interleaved chunks with per-branch choice indexes,
+matching the client contract used by the real TabbyAPI proxy later.
 """
 
 import asyncio
@@ -64,31 +65,44 @@ def _chunk_envelope(request_id: str, choices: list[dict], model: str = "mock") -
 async def _stream_mock_completion(request: Request, data: CompletionRequest):
     request_id = uuid4().hex
     chunk_delay = 0.03  # ~30ms between chunks, feels live
-
-    text = random.choice(SAMPLE_CONTINUATIONS)
-
-    # Emit 3–8 char slices to approximate token-sized chunks
-    i = 0
-    emitted = 0
+    branch_count = max(1, data.n)
     char_budget = data.max_tokens * 4  # rough char-to-token conversion
-    while i < len(text) and emitted < char_budget:
-        if await request.is_disconnected():
-            return
-        n_chars = random.randint(3, 8)
-        delta = text[i : i + n_chars]
-        i += n_chars
-        emitted += len(delta)
-        yield _chunk_envelope(
-            request_id,
-            [{"index": 0, "text": delta, "finish_reason": None}],
-        )
-        await asyncio.sleep(chunk_delay)
 
-    finish = "stop" if i >= len(text) else "length"
-    yield _chunk_envelope(
-        request_id,
-        [{"index": 0, "text": "", "finish_reason": finish}],
-    )
+    texts = [
+        SAMPLE_CONTINUATIONS[index % len(SAMPLE_CONTINUATIONS)]
+        for index in range(branch_count)
+    ]
+    offsets = [0 for _ in range(branch_count)]
+    emitted = [0 for _ in range(branch_count)]
+    finished = [False for _ in range(branch_count)]
+
+    # Emit 3-8 char slices per branch to approximate token-sized chunks.
+    while not all(finished):
+        for index, text in enumerate(texts):
+            if finished[index]:
+                continue
+            if await request.is_disconnected():
+                return
+
+            if offsets[index] >= len(text) or emitted[index] >= char_budget:
+                finished[index] = True
+                finish = "stop" if offsets[index] >= len(text) else "length"
+                yield _chunk_envelope(
+                    request_id,
+                    [{"index": index, "text": "", "finish_reason": finish}],
+                )
+                continue
+
+            n_chars = random.randint(3, 8)
+            delta = text[offsets[index] : offsets[index] + n_chars]
+            offsets[index] += n_chars
+            emitted[index] += len(delta)
+            yield _chunk_envelope(
+                request_id,
+                [{"index": index, "text": delta, "finish_reason": None}],
+            )
+            await asyncio.sleep(chunk_delay)
+
     yield "[DONE]"
 
 
