@@ -4,14 +4,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Repository state
 
-This repo is **pre-implementation**. It contains only two artifacts:
+This repo now has a working local implementation, not just the spec/mockup.
 
-- `branching-workbook.md` — the functional specification (the source of truth for all design decisions).
-- `branching-workbook-mockup.jsx` — a single-file, self-contained React mockup that renders a visual approximation of the v1 UI. It is a design prop, not the eventual codebase: it uses `useState` with seed data, fakes streaming with `setTimeout`, and imports from `react` + `lucide-react` with Tailwind utility classes inline. There is no build system, `package.json`, test runner, or lockfile — the JSX is meant to be pasted into a React sandbox, not run from this directory.
-
-No git commits exist yet (`git status` on `master` shows untracked files only). There are no build, test, or lint commands to run.
-
-When asked to implement the real client, treat the `.md` as binding and the `.jsx` as a shape reference for layout/interactions — not code to extend in place.
+- `branching-workbook.md` remains the functional specification and source of truth for design decisions.
+- `branching-workbook-mockup.jsx` remains a shape reference only. Do not import or extend it directly.
+- `server/` contains the FastAPI wrapper, SQLite project persistence, mock completions endpoint, and TabbyAPI proxy.
+- `client/` contains the Vite + React + TypeScript app, tree reshape logic, persistence adapters, and tests.
+- `AGENTS.md` contains durable agent guidance for the disposable-GPU/SSH-tunnel backend workflow. Read it before changing TabbyAPI integration behavior.
 
 ## The load-bearing concepts in the spec
 

@@ -18,6 +18,13 @@ def _tabby_completions_url() -> str:
     return os.getenv("BWBK_TABBY_COMPLETIONS_URL", DEFAULT_TABBY_COMPLETIONS_URL)
 
 
+def _tabby_headers() -> dict[str, str]:
+    api_key = os.getenv("BWBK_TABBY_API_KEY")
+    if not api_key:
+        return {}
+    return {"x-api-key": api_key}
+
+
 @router.post("/api/completions")
 async def completions(request: Request, body: dict[str, Any]):
     payload = {**body, "stream": True}
@@ -26,7 +33,12 @@ async def completions(request: Request, body: dict[str, Any]):
 
     try:
         upstream = await client.send(
-            client.build_request("POST", _tabby_completions_url(), json=payload),
+            client.build_request(
+                "POST",
+                _tabby_completions_url(),
+                json=payload,
+                headers=_tabby_headers(),
+            ),
             stream=True,
         )
     except httpx.HTTPError as ex:
