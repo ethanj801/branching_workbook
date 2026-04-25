@@ -11,6 +11,13 @@
   --line-dark: #d6cdbb;
   --accent: #292524;
   --accent-soft: #e7e5e4;
+  /* `--state` is the one cool-leaning accent we use to indicate active /
+     current / focus across the otherwise warm-monochrome palette. Keep
+     usage rare so it stays legible. `--state-soft` is the same hue at
+     low alpha for subtle row highlights. */
+  --state: #3f5566;
+  --state-soft: rgba(63, 85, 102, 0.12);
+  --state-edge: rgba(63, 85, 102, 0.32);
   --green: #047857;
   --warn: #a16207;
   --shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
@@ -146,11 +153,21 @@ textarea:disabled {
   display: grid;
   flex: 1;
   min-height: 0;
-  grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr);
+  /* Column widths are driven inline (drag-resizable, per session). */
 }
 
-.bw-workspace[data-picker="true"] {
-  grid-template-columns: minmax(10rem, 15rem) minmax(0, 1fr) minmax(18rem, 24rem);
+.bw-splitter {
+  cursor: col-resize;
+  background: transparent;
+  border-left: 1px solid var(--line);
+  border-right: 1px solid transparent;
+  transition: background 140ms ease, border-color 140ms ease;
+}
+
+.bw-splitter:hover,
+.bw-splitter:active {
+  background: var(--state-soft);
+  border-left-color: var(--state-edge);
 }
 
 .bw-tree {
@@ -186,23 +203,87 @@ textarea:disabled {
   padding: 0.25rem;
 }
 
-.bw-tree-row {
+.bw-tree-row-wrap {
+  display: flex;
+  align-items: stretch;
   width: calc(100% - var(--depth));
   margin-left: var(--depth);
+  gap: 0;
+}
+
+.bw-tree-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  flex: 0 0 1rem;
   border: 0;
-  border-radius: 0.12rem;
   background: transparent;
-  padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  color: var(--ink-muted);
+  cursor: pointer;
+  padding: 0;
+  margin-top: 0.32rem;
+  margin-bottom: 0.32rem;
+  border-radius: 0.12rem;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.bw-tree-caret:hover {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.bw-tree-caret-empty {
+  cursor: default;
+  pointer-events: none;
+}
+
+.bw-tree-row {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  border-radius: 0.18rem;
+  background: transparent;
+  padding: 0.3rem 0.55rem 0.3rem 0.4rem;
   text-align: left;
-  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition: background 140ms ease, color 140ms ease;
+}
+
+/* A 2px left edge marks the active path; the current node fills it with
+   the state accent. Non-path nodes get no edge at all so the rail reads
+   as a single column with the canonical path highlighted. */
+.bw-tree-row::before {
+  content: "";
+  position: absolute;
+  left: 0.18rem;
+  top: 0.36rem;
+  bottom: 0.36rem;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 140ms ease;
+}
+
+.bw-tree-row[data-path="true"]::before {
+  background: var(--state-edge);
 }
 
 .bw-tree-row:hover {
-  background: rgba(231, 229, 228, 0.5);
+  background: rgba(0, 0, 0, 0.03);
 }
 
 .bw-tree-row[data-current="true"] {
-  background: rgba(231, 229, 228, 0.82);
+  background: var(--state-soft);
+}
+
+.bw-tree-row[data-current="true"]::before {
+  background: var(--state);
+}
+
+.bw-tree-row[data-current="true"] .bw-tree-preview {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .bw-tree-row[data-path="true"] .bw-tree-preview {
@@ -210,7 +291,8 @@ textarea:disabled {
 }
 
 .bw-tree-row[data-hidden="true"] {
-  opacity: 0.48;
+  opacity: 0.42;
+  font-style: italic;
 }
 
 .bw-tree-preview {
@@ -218,7 +300,7 @@ textarea:disabled {
   overflow: hidden;
   color: var(--ink-muted);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   line-height: 1.45;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -282,6 +364,12 @@ textarea:disabled {
   font-style: italic;
 }
 
+.bw-node-name-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
 .bw-node-name,
 .bw-node-name-input {
   width: 100%;
@@ -290,42 +378,57 @@ textarea:disabled {
   background: transparent;
   color: var(--ink);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 1.25rem;
-  line-height: 1.35;
+  font-size: 1.45rem;
+  line-height: 1.25;
+  letter-spacing: -0.005em;
   outline: 0;
-  padding: 0 0 0.25rem;
+  padding: 0 0 0.2rem;
   text-align: left;
 }
 
 .bw-node-name {
-  display: flex;
+  display: inline-flex;
   align-items: baseline;
   gap: 0.55rem;
+  width: auto;
+  min-width: 0;
 }
 
 .bw-node-name:hover {
   border-color: var(--line-dark);
 }
 
-.bw-node-name .empty {
+/* Empty / unnamed: stop pretending it's a heading. Render a small,
+   sans-serif "name this section" affordance that doesn't fight the
+   manuscript text below. */
+.bw-node-name.is-empty {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
   color: var(--ink-faint);
-  font-style: italic;
+}
+
+.bw-node-name.is-empty:hover {
+  color: var(--state);
+  border-color: var(--state-edge);
+}
+
+.bw-node-name .empty {
+  font-style: normal;
 }
 
 .bw-node-name .mark {
-  color: var(--ink-faint);
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  font-size: 0.65rem;
-  opacity: 0;
-  text-transform: uppercase;
-}
-
-.bw-node-name:hover .mark {
-  opacity: 1;
+  display: none;
 }
 
 .bw-node-name-input {
-  border-color: var(--ink-faint);
+  border-color: var(--state-edge);
+}
+
+.bw-node-name-input:focus {
+  border-color: var(--state);
 }
 
 .bw-actionbar {
@@ -335,6 +438,11 @@ textarea:disabled {
   border-top: 1px solid var(--line);
   background: rgba(246, 243, 234, 0.84);
   padding: 0.55rem 1.5rem;
+  font-size: 0.78rem;
+}
+
+.bw-actionbar .bw-button {
+  font-size: 0.78rem;
 }
 
 .bw-field {
@@ -342,7 +450,7 @@ textarea:disabled {
   align-items: center;
   gap: 0.38rem;
   color: var(--ink-muted);
-  font-size: 0.68rem;
+  font-size: 0.78rem;
 }
 
 .bw-input,
@@ -416,21 +524,40 @@ textarea:disabled {
   padding: 0.75rem;
 }
 
+/* Branch cards. Direction A: distinct manuscript-paper fill, soft
+   shadow, hover lift, Use as primary action on hover so the card itself
+   is the target. The compose card stays visually separated as a
+   different action class. */
 .bw-branch-card {
+  position: relative;
   overflow: hidden;
-  border: 1px solid var(--line);
-  border-radius: 0.12rem;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.22rem;
   background: var(--editor);
-  box-shadow: 0 1px 0 rgba(38, 31, 25, 0.04);
+  box-shadow: 0 1px 2px rgba(38, 31, 25, 0.04);
+  transition: box-shadow 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.bw-branch-card:hover {
+  border-color: var(--state-edge);
+  box-shadow: 0 6px 14px -8px rgba(38, 31, 25, 0.18);
 }
 
 .bw-branch-card + .bw-branch-card,
 .bw-compose-card {
-  margin-top: 0.75rem;
+  margin-top: 0.7rem;
+}
+
+/* The compose card is always-visible authorship — give it the rail tone
+   so it doesn't compete with the live generated branches. */
+.bw-compose-card {
+  background: rgba(231, 224, 209, 0.32);
+  border-style: dashed;
 }
 
 .bw-branch-card[data-empty="true"] {
   border-style: dashed;
+  background: rgba(0, 0, 0, 0.015);
 }
 
 .bw-branch-head {
@@ -438,20 +565,52 @@ textarea:disabled {
   align-items: center;
   justify-content: space-between;
   gap: 0.5rem;
-  border-bottom: 1px solid var(--line);
-  background: rgba(250, 250, 249, 0.6);
-  padding: 0.38rem 0.65rem;
+  padding: 0.5rem 0.75rem 0.2rem;
+}
+
+.bw-branch-head .bw-kicker {
+  font-size: 0.6rem;
+  letter-spacing: 0.16em;
+}
+
+/* The Use button is the central action on a card. Default state is
+   quiet so three side-by-side cards don't shout; hovering the card
+   promotes its own Use to primary. */
+.bw-branch-head .bw-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 0.78rem;
+  height: 1.65rem;
+  min-height: 1.65rem;
+  padding: 0 0.65rem;
+}
+
+.bw-branch-card:hover .bw-branch-head .bw-button:not(:disabled) {
+  border-color: var(--state);
+  background: var(--state);
+  color: #fbf6e9;
+}
+
+.bw-branch-card:hover .bw-branch-head .bw-button:disabled {
+  border-color: transparent;
+}
+
+.bw-compose-card .bw-branch-head .bw-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fbf6e9;
 }
 
 .bw-branch-text {
-  min-height: 5rem;
+  min-height: 4.5rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding: 0.8rem 0.9rem;
+  padding: 0 0.95rem 0.85rem;
   color: var(--ink);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 0.92rem;
-  line-height: 1.55;
+  font-size: 0.94rem;
+  line-height: 1.58;
 }
 
 .bw-empty {
@@ -514,6 +673,74 @@ textarea:disabled {
   border-radius: 0.24rem;
   background: rgba(251, 247, 236, 0.76);
   padding: 0.85rem;
+}
+
+/* Welcome / no-project frontispiece. Vertically centered, larger title,
+   minimal chrome. The intent is to make the first impression feel like
+   the cover of a book rather than a settings page. */
+.bw-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2rem;
+  min-height: calc(100vh - 8rem);
+  margin: 0 auto;
+  padding: 0;
+  text-align: center;
+  width: min(36rem, calc(100% - 3rem));
+}
+
+.bw-welcome-head {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bw-welcome .bw-kicker {
+  color: var(--ink-faint);
+  letter-spacing: 0.22em;
+}
+
+.bw-welcome-title {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 3.25rem;
+  font-weight: 500;
+  line-height: 1.05;
+  letter-spacing: -0.012em;
+  margin: 0.4rem 0 0;
+}
+
+.bw-welcome-lede {
+  margin: 0;
+  max-width: 32rem;
+  color: var(--ink-muted);
+  font-size: 0.96rem;
+  line-height: 1.6;
+}
+
+.bw-welcome-lede code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.85em;
+  background: rgba(0, 0, 0, 0.04);
+  padding: 0.05em 0.35em;
+  border-radius: 3px;
+  color: var(--ink);
+}
+
+.bw-welcome-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.bw-status-sep {
+  color: var(--line-dark);
+  font-size: 0.8rem;
+  user-select: none;
 }
 
 @media (max-width: 960px) {

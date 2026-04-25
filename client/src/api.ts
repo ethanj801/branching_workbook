@@ -171,6 +171,25 @@ async function requestJson<T>(
   return (await response.json()) as T;
 }
 
+async function streamRequestError(response: Response): Promise<Error> {
+  let message = `stream request failed: ${response.status}`;
+  try {
+    const payload = (await response.json()) as { detail?: unknown; error?: unknown };
+    const detail = payload.detail ?? payload.error;
+    if (typeof detail === "string") message = detail;
+  } catch {
+    // Keep the status-based message if the response is not JSON.
+  }
+  return new Error(message);
+}
+
+function streamErrorMessage(payload: unknown): string | null {
+  if (payload === null || typeof payload !== "object") return null;
+  const maybeError = payload as { error?: unknown; detail?: unknown };
+  const message = maybeError.error ?? maybeError.detail;
+  return typeof message === "string" ? message : null;
+}
+
 export function createProject(
   path: string,
   title?: string,
@@ -200,6 +219,25 @@ export function currentProject(): Promise<ProjectInfo | null> {
   return requestJson<ProjectInfo | null>("/api/projects/current");
 }
 
+// Native OS file dialog endpoints. The browser cannot show a real
+// filesystem picker, so the local FastAPI wrapper drives one via
+// AppleScript and hands back the chosen path. The path is never logged
+// or persisted — it is the response body and nothing more. A null path
+// means the user cancelled the dialog.
+export type DialogPath = { path: string | null };
+
+export function dialogPickProject(): Promise<DialogPath> {
+  return requestJson<DialogPath>("/api/projects/dialog/open", {
+    method: "POST",
+  });
+}
+
+export function dialogPickNewProject(): Promise<DialogPath> {
+  return requestJson<DialogPath>("/api/projects/dialog/create", {
+    method: "POST",
+  });
+}
+
 export function listNodes(): Promise<NodeModel[]> {
   return requestJson<NodeModel[]>("/api/nodes");
 }
@@ -221,7 +259,7 @@ async function streamJsonEvents<T>(
   onEvent: (event: T) => void,
 ): Promise<void> {
   if (!response.ok || !response.body) {
-    throw new Error(`stream request failed: ${response.status}`);
+    throw await streamRequestError(response);
   }
 
   const reader = response.body.getReader();
@@ -249,11 +287,16 @@ async function streamJsonEvents<T>(
       if (!dataPayload) continue;
       if (dataPayload === "[DONE]") return;
 
+      let payload: unknown;
       try {
-        onEvent(JSON.parse(dataPayload) as T);
+        payload = JSON.parse(dataPayload);
       } catch {
         // malformed frame — ignore
+        continue;
       }
+      const errorMessage = streamErrorMessage(payload);
+      if (errorMessage) throw new Error(errorMessage);
+      onEvent(payload as T);
     }
   }
 }

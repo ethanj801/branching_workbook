@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -14,6 +15,7 @@ router = APIRouter()
 
 DEFAULT_TABBY_BASE_URL = "http://127.0.0.1:5000"
 DEFAULT_TABBY_COMPLETIONS_URL = "http://127.0.0.1:5000/v1/completions"
+DEFAULT_TABBY_STREAM_READ_TIMEOUT_SECONDS = 60.0
 
 
 def _tabby_completions_url() -> str:
@@ -44,6 +46,33 @@ def _tabby_headers() -> dict[str, str]:
     if not api_key:
         return {}
     return {"x-api-key": api_key}
+
+
+def _tabby_stream_read_timeout_seconds() -> float:
+    raw = os.getenv("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS")
+    if raw is None:
+        return DEFAULT_TABBY_STREAM_READ_TIMEOUT_SECONDS
+    try:
+        value = float(raw)
+    except ValueError as ex:
+        raise RuntimeError("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS must be a number") from ex
+    if value <= 0:
+        raise RuntimeError("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS must be greater than zero")
+    return value
+
+
+def _tabby_stream_timeout() -> httpx.Timeout:
+    read_timeout = _tabby_stream_read_timeout_seconds()
+    return httpx.Timeout(
+        connect=10.0,
+        read=read_timeout,
+        write=30.0,
+        pool=10.0,
+    )
+
+
+def _sse_error_frame(message: str) -> bytes:
+    return f"data: {json.dumps({'error': message})}\n\n".encode()
 
 
 async def _read_error_detail(response: httpx.Response) -> str:
@@ -91,7 +120,8 @@ async def _request_json(
 
 
 async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
-    client = httpx.AsyncClient(timeout=None)
+    read_timeout = _tabby_stream_read_timeout_seconds()
+    client = httpx.AsyncClient(timeout=_tabby_stream_timeout())
     upstream: httpx.Response | None = None
 
     try:
@@ -104,6 +134,12 @@ async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
             ),
             stream=True,
         )
+    except httpx.TimeoutException as ex:
+        await client.aclose()
+        raise HTTPException(
+            status_code=504,
+            detail=f"TabbyAPI stream timed out after {read_timeout:g}s without a response",
+        ) from ex
     except httpx.HTTPError as ex:
         await client.aclose()
         raise HTTPException(status_code=502, detail=f"TabbyAPI request failed: {ex}") from ex
@@ -119,10 +155,17 @@ async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
 
     async def stream_upstream():
         try:
-            async for chunk in upstream.aiter_bytes():
-                if await request.is_disconnected():
-                    break
-                yield chunk
+            try:
+                async for chunk in upstream.aiter_bytes():
+                    if await request.is_disconnected():
+                        break
+                    yield chunk
+            except httpx.TimeoutException:
+                yield _sse_error_frame(
+                    f"TabbyAPI stream timed out after {read_timeout:g}s without data"
+                )
+            except httpx.HTTPError as ex:
+                yield _sse_error_frame(f"TabbyAPI stream failed: {ex}")
         finally:
             await upstream.aclose()
             await client.aclose()

@@ -224,7 +224,7 @@ No per-node cache indicator in the tree view. Cache residence is opaque and evol
 
 ### 6.1 Transport
 
-TabbyAPI binds to `127.0.0.1:5000` (its default port) on the GPU host, exposing no network-reachable interface. The user establishes an SSH port forward (`ssh -N -L 5000:127.0.0.1:5000 user@host -p port`) and the local FastAPI wrapper connects to the forwarded laptop port. All traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI auth can be disabled for this workflow because SSH already authenticates the connection, or configured with a throwaway key for non-tunnel deployments.
+TabbyAPI binds to `127.0.0.1:5000` (its default port) on the GPU host, exposing no network-reachable interface. The user establishes an SSH port forward and the local FastAPI wrapper connects to the forwarded laptop port. The documented macOS path uses local `5001` (`ssh -N -L 5001:127.0.0.1:5000 user@host -p port`) because AirPlay Receiver can shadow local `5000`; other platforms can use `5000` if it is free. All traffic is SSH-encrypted; authentication is the user's SSH key. TabbyAPI auth can be disabled for this workflow because SSH already authenticates the connection, or configured with a throwaway key for non-tunnel deployments.
 
 HTTP with JSON bodies for control endpoints. Server-sent events (SSE) for streaming generation output and model-load progress. Both work cleanly through the SSH tunnel. In the current app, React calls local wrapper routes (`/api/completions`, `/api/tabby/model`, `/api/tabby/models`, `/api/tabby/model/load`, `/api/tabby/model/unload`, `/api/tabby/download`, `/api/tabby/token/encode`) and the wrapper forwards to TabbyAPI.
 
@@ -253,7 +253,7 @@ All upstream endpoints below are TabbyAPI's own, documented at https://theroyall
 }
 ```
 
-The response is an SSE stream of OpenAI-formatted chunks. Each chunk carries a `choices` array where each entry has an `index` field identifying which branch produced it and a `text` field with the newly-generated tokens. The client routes chunks to branch panels by `index`.
+The response is an SSE stream of OpenAI-formatted chunks. Each chunk carries a `choices` array where each entry has an `index` field identifying which branch produced it and a `text` field with the newly-generated tokens. The client routes chunks to branch panels by `index`. The local wrapper applies a bounded read timeout to streamed Tabby calls (`BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS`, default 60s) so GPU/server stalls surface as visible client errors instead of unbounded spinners.
 
 **`POST /v1/model/load`** — loads a model. Payload includes `model_name`, `max_seq_len`, `cache_mode` (FP16/Q8/Q6/Q4), and `tensor_parallel` flag if applicable. Returns an SSE stream reporting load progress.
 
@@ -344,15 +344,7 @@ The download UI should make it obvious that downloads can take a long time (tens
 
 ### 7.6 Interaction style
 
-Mouse and keyboard. Buttons will be interfaced with by mouse click.
-
-### 7.7 Status indicators
-
-A single readout in the UI chrome (status bar):
-
-- **Context budget**: current path's token count against the loaded model's max_seq_len. Visually warns when within 90% of the limit. The current implementation debounces calls to TabbyAPI's `/v1/token/encode` through the local wrapper; a local tokenizer cache can be added later if latency becomes a problem.
-
-Cache pressure indicator is cut for v1 — TabbyAPI doesn't expose the underlying `PageTable` internals via its public API, and probing them through backdoor endpoints adds complexity for a cosmetic readout. If cache pressure becomes important in practice, either add it to TabbyAPI upstream or run a small sidecar.
+Mouse-driven. Buttons will be interfaced with by mouse click. A dedicated commit-buffer key (Cmd/Ctrl+S) is the only required keybinding; a broader keyboard shortcut set is not part of v1.
 
 ## 8. Storage
 

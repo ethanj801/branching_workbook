@@ -6,6 +6,7 @@ import {
   useState,
   type CSSProperties,
   type FormEvent,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
 import {
   closeProject as closeProjectApi,
@@ -14,6 +15,8 @@ import {
   currentProject,
   currentModel,
   deletePreset,
+  dialogPickNewProject,
+  dialogPickProject,
   downloadModel,
   encodeTokens,
   getActivePreset,
@@ -182,20 +185,18 @@ function NodeNameEditor({
     );
   }
 
+  const hasName = !!node.name?.trim();
   return (
     <button
       type="button"
-      className="bw-node-name"
+      className={`bw-node-name${hasName ? "" : " is-empty"}`}
       onClick={() => {
         if (!disabled) setEditing(true);
       }}
       disabled={disabled}
-      title="Rename current node"
+      title={hasName ? "Rename this section" : "Name this section"}
     >
-      <span className={node.name?.trim() ? "" : "empty"}>
-        {node.name?.trim() || "Untitled"}
-      </span>
-      <span className="mark">edit</span>
+      <span>{hasName ? node.name : "Name this section"}</span>
     </button>
   );
 }
@@ -241,14 +242,16 @@ export default function App() {
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [newPath, setNewPath] = useState("/tmp/branching-workbook.bwbk");
-  const [newTitle, setNewTitle] = useState("Branching Workbook");
-  const [openPath, setOpenPath] = useState("");
   const [presets, setPresets] = useState<SamplerPreset[]>([]);
   const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
   const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
   const [samplerBusy, setSamplerBusy] = useState(false);
   const [samplerOpen, setSamplerOpen] = useState(false);
+  const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>(
+    {},
+  );
+  const [treeWidth, setTreeWidth] = useState(288);
+  const [pickerWidth, setPickerWidth] = useState(352);
   const abortRef = useRef<AbortController | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
@@ -461,20 +464,78 @@ export default function App() {
         event.preventDefault();
         void commitBuffer();
       }
+      if (event.key === "Escape") {
+        if (modelPanelOpen) {
+          setModelPanelOpen(false);
+        } else if (samplerOpen) {
+          setSamplerOpen(false);
+        }
+      }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [commitBuffer]);
+  }, [commitBuffer, modelPanelOpen, samplerOpen]);
 
-  async function onCreateProject(event: FormEvent) {
+  function startColumnDrag(
+    event: ReactMouseEvent<HTMLDivElement>,
+    setter: (n: number) => void,
+    current: number,
+    direction: 1 | -1,
+    min: number,
+    max: number,
+  ) {
     event.preventDefault();
-    if (!newPath.trim()) return;
+    const startX = event.clientX;
+    const startWidth = current;
+    function onMove(ev: MouseEvent) {
+      const delta = (ev.clientX - startX) * direction;
+      const next = Math.max(min, Math.min(max, startWidth + delta));
+      setter(next);
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function toggleCollapsed(id: string) {
+    setCollapsedNodes((prev) => {
+      const next = { ...prev };
+      if (next[id]) delete next[id];
+      else next[id] = true;
+      return next;
+    });
+  }
+
+  // Default the project title to the chosen filename's stem. The user
+  // can rename later; we never derive title from anything we recorded.
+  function titleFromPath(path: string): string {
+    const base = path.split("/").pop() ?? path;
+    return base.replace(/\.bwbk$/i, "") || "Branching Workbook";
+  }
+
+  async function onCreateProject() {
+    setError(null);
+    let chosen: string | null;
+    try {
+      const picked = await dialogPickNewProject();
+      chosen = picked.path;
+    } catch (err) {
+      setError(formatError(err));
+      return;
+    }
+    if (!chosen) return;
 
     setLoadingProject(true);
-    setError(null);
     try {
-      const info = await createProject(newPath.trim(), newTitle.trim());
+      const info = await createProject(chosen, titleFromPath(chosen));
       await loadProject(info);
     } catch (err) {
       setError(formatError(err));
@@ -483,14 +544,21 @@ export default function App() {
     }
   }
 
-  async function onOpenProject(event: FormEvent) {
-    event.preventDefault();
-    if (!openPath.trim()) return;
+  async function onOpenProject() {
+    setError(null);
+    let chosen: string | null;
+    try {
+      const picked = await dialogPickProject();
+      chosen = picked.path;
+    } catch (err) {
+      setError(formatError(err));
+      return;
+    }
+    if (!chosen) return;
 
     setLoadingProject(true);
-    setError(null);
     try {
-      const info = await openProject(openPath.trim());
+      const info = await openProject(chosen);
       await loadProject(info);
     } catch (err) {
       setError(formatError(err));
@@ -895,26 +963,60 @@ export default function App() {
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     const isCurrent = node.id === currentId;
     const isOnPath = currentPathIds.has(node.id);
+    const hasChildren = childNodes.length > 0;
+    const isCollapsed = !!collapsedNodes[node.id];
 
     return (
       <div key={node.id}>
-        <button
-          type="button"
-          onClick={() => void onSelectNode(node.id)}
-          disabled={streaming || saving || branchPickerOpen}
-          className="bw-tree-row"
-          data-current={isCurrent}
-          data-path={isOnPath}
-          data-hidden={node.hidden}
+        <div
+          className="bw-tree-row-wrap"
           style={{ "--depth": `${depth * 0.85}rem` } as CSSProperties}
         >
-          <span className="bw-tree-preview">{nodeLabel(node)}</span>
-          <span className="bw-tree-meta">
-            <span>{node.source.replace("_", " ")}</span>
-            <span>{childNodes.length ? `${childNodes.length} branch` : "leaf"}</span>
-          </span>
-        </button>
-        {childNodes.map((child) => renderTreeNode(child.id, depth + 1))}
+          {hasChildren ? (
+            <button
+              type="button"
+              className="bw-tree-caret"
+              aria-label={isCollapsed ? "Expand" : "Collapse"}
+              aria-expanded={!isCollapsed}
+              onClick={(event) => {
+                event.stopPropagation();
+                toggleCollapsed(node.id);
+              }}
+            >
+              <svg
+                viewBox="0 0 10 10"
+                width="10"
+                height="10"
+                aria-hidden="true"
+                style={{
+                  transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
+                  transition: "transform 120ms ease",
+                }}
+              >
+                <path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              </svg>
+            </button>
+          ) : (
+            <span className="bw-tree-caret bw-tree-caret-empty" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            onClick={() => void onSelectNode(node.id)}
+            disabled={streaming || saving || branchPickerOpen}
+            className="bw-tree-row"
+            data-current={isCurrent}
+            data-path={isOnPath}
+            data-hidden={node.hidden}
+          >
+            <span className="bw-tree-preview">{nodeLabel(node)}</span>
+            <span className="bw-tree-meta">
+              <span>{node.source.replace("_", " ")}</span>
+              {hasChildren && <span>{childNodes.length} branch</span>}
+            </span>
+          </button>
+        </div>
+        {!isCollapsed &&
+          childNodes.map((child) => renderTreeNode(child.id, depth + 1))}
       </div>
     );
   }
@@ -935,23 +1037,27 @@ export default function App() {
           >
             {loadingModels ? "checking model" : formatModelLabel(currentTabbyModel)}
           </button>
-          <span className={contextWarn ? "text-[color:var(--warn)]" : ""}>
-            <strong>
-              {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
-            </strong>
-            {" / "}
-            {contextMax === null ? "unknown" : contextMax.toLocaleString()}
-            {" tokens"}
-          </span>
           {project && (
-            <button
-              type="button"
-              className="bw-link-button"
-              onClick={() => void onCloseProject()}
-              disabled={saving || streaming}
-            >
-              close
-            </button>
+            <>
+              <span className="bw-status-sep" aria-hidden="true">·</span>
+              <span className={contextWarn ? "text-[color:var(--warn)]" : ""}>
+                <strong>
+                  {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
+                </strong>
+                {" / "}
+                {contextMax === null ? "unknown" : contextMax.toLocaleString()}
+                {" tokens"}
+              </span>
+              <span className="bw-status-sep" aria-hidden="true">·</span>
+              <button
+                type="button"
+                className="bw-link-button"
+                onClick={() => void onCloseProject()}
+                disabled={saving || streaming}
+              >
+                close project
+              </button>
+            </>
           )}
         </div>
       </header>
@@ -1039,28 +1145,35 @@ export default function App() {
                         </option>
                       ))}
                     </select>
-                    <div className="flex flex-wrap gap-2">
-                      <input
-                        type="number"
-                        min={256}
-                        step={256}
-                        value={loadMaxSeqLen}
-                        onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
-                        disabled={modelBusy}
-                        className="bw-input w-32"
-                        title="max_seq_len"
-                      />
-                      <select
-                        value={loadCacheMode}
-                        onChange={(event) => setLoadCacheMode(event.target.value)}
-                        disabled={modelBusy}
-                        className="bw-select w-28"
-                      >
-                        <option value="Q4">Q4</option>
-                        <option value="Q6">Q6</option>
-                        <option value="Q8">Q8</option>
-                        <option value="FP16">FP16</option>
-                      </select>
+                    <div className="flex flex-wrap items-end gap-2">
+                      <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
+                        Context length
+                        <input
+                          type="number"
+                          min={256}
+                          step={256}
+                          value={loadMaxSeqLen}
+                          onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
+                          disabled={modelBusy}
+                          className="bw-input w-32"
+                          title="max_seq_len"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
+                        Cache (K/V)
+                        <select
+                          value={loadCacheMode}
+                          onChange={(event) => setLoadCacheMode(event.target.value)}
+                          disabled={modelBusy}
+                          className="bw-select w-28"
+                          title="K/V cache quantization"
+                        >
+                          <option value="Q4">Q4</option>
+                          <option value="Q6">Q6</option>
+                          <option value="Q8">Q8</option>
+                          <option value="FP16">FP16</option>
+                        </select>
+                      </label>
                       <button
                         type="button"
                         onClick={() => void onLoadModel()}
@@ -1128,56 +1241,32 @@ export default function App() {
       {!project && (
         <main className="bw-editor">
           <div className="bw-manuscript-scroll">
-            <section className="bw-manuscript">
-              <div className="mb-8">
+            <section className="bw-manuscript bw-welcome">
+              <div className="bw-welcome-head">
                 <div className="bw-kicker">Project</div>
-                <h1 className="mt-2 font-serif text-4xl leading-tight">
-                  Open a workbook
-                </h1>
+                <h1 className="bw-welcome-title">Open a workbook</h1>
+                <p className="bw-welcome-lede">
+                  A workbook is a single <code>.bwbk</code> file. Choose where it
+                  lives — the app never remembers paths between sessions.
+                </p>
               </div>
-              <div className="bw-form-grid two">
-                <form onSubmit={(event) => void onCreateProject(event)} className="bw-panel">
-                  <div className="bw-kicker">Create</div>
-                  <div className="mt-3 grid gap-2">
-                    <input
-                      className="bw-input w-full"
-                      value={newPath}
-                      onChange={(event) => setNewPath(event.target.value)}
-                      placeholder="/path/to/project.bwbk"
-                    />
-                    <input
-                      className="bw-input w-full"
-                      value={newTitle}
-                      onChange={(event) => setNewTitle(event.target.value)}
-                      placeholder="Project title"
-                    />
-                    <button
-                      type="submit"
-                      disabled={loadingProject}
-                      className="bw-button bw-button-primary justify-self-start"
-                    >
-                      Create
-                    </button>
-                  </div>
-                </form>
-                <form onSubmit={(event) => void onOpenProject(event)} className="bw-panel">
-                  <div className="bw-kicker">Open</div>
-                  <div className="mt-3 grid gap-2">
-                    <input
-                      className="bw-input w-full"
-                      value={openPath}
-                      onChange={(event) => setOpenPath(event.target.value)}
-                      placeholder="/path/to/project.bwbk"
-                    />
-                    <button
-                      type="submit"
-                      disabled={loadingProject}
-                      className="bw-button justify-self-start"
-                    >
-                      Open
-                    </button>
-                  </div>
-                </form>
+              <div className="bw-welcome-actions">
+                <button
+                  type="button"
+                  onClick={() => void onCreateProject()}
+                  disabled={loadingProject}
+                  className="bw-button bw-button-primary"
+                >
+                  New workbook…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onOpenProject()}
+                  disabled={loadingProject}
+                  className="bw-button"
+                >
+                  Open existing…
+                </button>
               </div>
             </section>
           </div>
@@ -1185,14 +1274,19 @@ export default function App() {
       )}
 
       {project && tree && currentId && (
-        <div className="bw-workspace" data-picker={branchPickerOpen}>
+        <div
+          className="bw-workspace"
+          data-picker={branchPickerOpen}
+          style={{
+            gridTemplateColumns: branchPickerOpen
+              ? `${treeWidth}px 6px minmax(0, 1fr) 6px ${pickerWidth}px`
+              : `${treeWidth}px 6px minmax(0, 1fr)`,
+          }}
+        >
           <aside className="bw-tree">
             <div className="bw-rail-head">
               <div>
                 <div className="bw-kicker">Tree</div>
-                <div className="mt-1 text-xs text-[color:var(--ink-muted)]">
-                  {currentPath.length} on path
-                </div>
               </div>
               <label className="flex items-center gap-2 text-xs text-[color:var(--ink-muted)]">
                 <input
@@ -1208,6 +1302,16 @@ export default function App() {
               {Object.keys(tree.nodes).length.toLocaleString()} nodes
             </div>
           </aside>
+
+          <div
+            className="bw-splitter"
+            role="separator"
+            aria-orientation="vertical"
+            aria-label="Resize tree column"
+            onMouseDown={(event) =>
+              startColumnDrag(event, setTreeWidth, treeWidth, 1, 180, 480)
+            }
+          />
 
           <main className="bw-editor">
             <div className="bw-manuscript-scroll">
@@ -1317,6 +1421,17 @@ export default function App() {
             </footer>
           </main>
 
+          {branchPickerOpen && (
+            <div
+              className="bw-splitter"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize branches column"
+              onMouseDown={(event) =>
+                startColumnDrag(event, setPickerWidth, pickerWidth, -1, 240, 640)
+              }
+            />
+          )}
           {branchPickerOpen && (
             <aside className="bw-picker">
               <div className="bw-picker-head">

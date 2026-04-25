@@ -96,6 +96,7 @@ This is the load-bearing phase. Tree reshaping and persistence land together —
 ### Phase 4 — Real TabbyAPI
 
 - `server/bwbk/proxy.py`: replaces `mock.py` as the `/api/completions` handler behind a config flag (`BWBK_BACKEND=mock|tabby`). `httpx.AsyncClient` forwards to the configured TabbyAPI tunnel URL; client-side disconnect triggers upstream cancellation.
+- Streamed Tabby proxy calls have a bounded read timeout (`BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS`, default 60s) so upstream GPU/Tabby hangs become visible UI errors instead of infinite spinners.
 - Stand up TabbyAPI on a CUDA machine with `lucyknada/google_gemma-3-270m-exl3` at revision `6.0bpw`. TabbyAPI binds to remote `127.0.0.1:5000`; the laptop opens an SSH tunnel such as `ssh -N -L 5001:127.0.0.1:5000 root@host -p port -i ~/.ssh/id_ed25519`; the local app uses `BWBK_TABBY_COMPLETIONS_URL=http://127.0.0.1:5001/v1/completions`.
 - **Integration checks as deliverables:**
   - **Tunnel/backend health:** verify `GET /v1/model`, `GET /v1/models`, and a small `n=2` streamed completion through the local tunnel.
@@ -136,18 +137,27 @@ This is not a product dependency. Branching Workbook must keep working with any 
 ### Phase 7 — Polish
 
 - Hidden-nodes view toggle.
-- Status indicators per §7.7.
-- Full keyboard shortcut set per §7.6 (Cmd+S commit already lives in Phase 2; this phase adds navigation, generate, cancel, branch-select hotkeys).
+- **Project open/create UX.** Replace the typed-path flow with a native OS
+  file dialog driven from the local FastAPI wrapper. The wrapper must not
+  record, log, or persist any project paths, project titles, or other
+  project-identifying data — confidential project folders may not leak. No
+  recents list, no MRU cache, no telemetry of any kind. The dialog is the
+  single source of truth and the path lives only in the running session.
+- **Visual alignment + design polish.** Continue aligning the real app with
+  `branching-workbook-mockup.jsx` (proportions, branch-card density, tree
+  readability, model-modal ergonomics) and pursue further design improvements
+  and stylistic balancing beyond a literal port. This work requires a real
+  rendered-browser feedback loop; do not iterate blind.
 - **Partial status:** first UI pass is committed. The app shell now uses the
-  mockup's basic structure (top model/status strip, left tree rail, central
-  manuscript buffer, bottom generate bar, right branch picker) with the original
-  smooth stone/paper palette rather than the earlier dark dashboard. Node names
-  are persisted in project SQLite and editable inline above the buffer.
-- **Remaining UI follow-up:** continue aligning the real app with
-  `branching-workbook-mockup.jsx` by tightening proportions, branch-card
-  density, tree readability, model modal ergonomics, and project open/create
-  flow. The current browser project-open flow still uses typed paths; a native
-  file picker or app-shell equivalent is still needed.
+  mockup's basic structure (top model strip, left tree rail, central
+  manuscript buffer, bottom generate bar, right branch picker) with the
+  smooth stone/paper palette rather than the earlier dark dashboard. Node
+  names are persisted in project SQLite and editable inline above the buffer.
+- **Current working-tree status:** the native macOS dialog path, foldable tree
+  rows, resizable columns, sampler numeric inputs, Escape-to-close behavior,
+  model loader labels, screenshot harness, and streamed Tabby timeout path are
+  implemented and passing `just check`. Remaining Phase 7 work is real-browser
+  verification and any visual/behavioral corrections found there.
 
 ## Out of scope for this plan
 

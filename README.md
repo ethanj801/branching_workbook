@@ -50,13 +50,9 @@ curl http://127.0.0.1:5000/v1/model
 
 ### 4. Open The SSH Tunnel From The Laptop
 
-If local port `5000` is free:
-
-```bash
-ssh -N -L 5000:127.0.0.1:5000 root@<pod-ip> -p <ssh-port> -i ~/.ssh/id_ed25519
-```
-
-If local port `5000` is already occupied, use `5001` instead:
+**Use local port `5001`.** On modern macOS, port `5000` is occupied by AirPlay
+Receiver (`Server: AirTunes/...`), which silently shadows the tunnel — GETs
+return 403 and streaming POSTs hang. We default to `5001` to sidestep this.
 
 ```bash
 ssh -N -L 5001:127.0.0.1:5000 root@<pod-ip> -p <ssh-port> -i ~/.ssh/id_ed25519
@@ -64,34 +60,23 @@ ssh -N -L 5001:127.0.0.1:5000 root@<pod-ip> -p <ssh-port> -i ~/.ssh/id_ed25519
 
 Keep that tunnel terminal open while using the app.
 
+> If you've explicitly disabled AirPlay Receiver (System Settings → General →
+> AirDrop & Handoff → AirPlay Receiver = Off) and confirmed port `5000` is
+> free, you can substitute `-L 5000:127.0.0.1:5000` and use `5000` everywhere
+> below instead. The rest of this README assumes the recommended `5001` path.
+
 ### 5. Verify The Tunnel Locally
-
-If you used local port `5000`:
-
-```bash
-curl http://127.0.0.1:5000/health
-curl http://127.0.0.1:5000/v1/model
-```
-
-If you used local port `5001`:
 
 ```bash
 curl http://127.0.0.1:5001/health
 curl http://127.0.0.1:5001/v1/model
 ```
 
+If `/v1/model` returns a JSON model object, the tunnel is good. If you see
+`Server: AirTunes/...` in the response headers, you're hitting AirPlay — pick
+a different local port and retry.
+
 ### 6. Start Branching Workbook Locally
-
-If you used local port `5000`:
-
-```bash
-PATH=/opt/homebrew/bin:$PATH \
-BWBK_BACKEND=tabby \
-BWBK_TABBY_COMPLETIONS_URL=http://127.0.0.1:5000/v1/completions \
-just dev
-```
-
-If you used local port `5001`:
 
 ```bash
 PATH=/opt/homebrew/bin:$PATH \
@@ -99,6 +84,10 @@ BWBK_BACKEND=tabby \
 BWBK_TABBY_COMPLETIONS_URL=http://127.0.0.1:5001/v1/completions \
 just dev
 ```
+
+`BWBK_TABBY_COMPLETIONS_URL` **must** match whichever local port you picked in
+step 4. The proxy defaults to `5000` if unset, so omitting this variable on a
+`5001` tunnel will silently fail.
 
 Open:
 

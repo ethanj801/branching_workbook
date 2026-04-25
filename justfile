@@ -48,3 +48,8 @@ test: test-server test-client
 # Run lint + tests + client build
 check: lint test
     cd client && npm run build --silent
+
+# Capture UI screenshots for visual iteration
+# Requires `just dev` running in another shell.
+shots:
+    cd client && node scripts/screenshots.mjs

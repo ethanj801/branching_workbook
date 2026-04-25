@@ -6,9 +6,9 @@ Last updated: 2026-04-25
 
 - Repo: `/Users/EthanJ/Documents/github/branching_workbook`
 - Git branch: `master`
-- Phase status: **Phases 0-6 complete; Phase 7 polish started.** Next work is continuing the UI/open-project polish plus the optional RunPod fire-and-forget deployment track.
-- Latest implementation commit before this handoff update: `aa0aca4` (`Polish workbook UI and persist node names`).
-- Working tree at handoff-update time: documentation edits pending commit.
+- Phase status: **Phases 0-6 complete; Phase 7 polish in progress.** Next work is browser-verifying the remaining branch streaming behavior against real Tabby.
+- Latest completed commit: `94a7e98` (`Continue phase 7 polish`).
+- Working tree is expected to be clean after the Phase 7 polish commit.
 
 ## What Is Implemented
 
@@ -38,6 +38,7 @@ Last updated: 2026-04-25
 - `client/src/api.ts` has shared SSE parsing via `fetch` + `ReadableStream`.
 - `/api/completions` is the single browser generation entrypoint.
 - Fan-out is one `/v1/completions` request with `n > 1`; chunks are routed by `choices[i].index`.
+- Streamed Tabby calls now have a 60s read timeout by default via `BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS`. If TabbyAPI accepts the request but stops sending bytes, the proxy emits a structured SSE error frame and the client surfaces it instead of spinning forever.
 - Important URL detail:
   - completions uses `BWBK_TABBY_COMPLETIONS_URL` exactly
   - other `/api/tabby/*` routes derive a base URL from `BWBK_TABBY_COMPLETIONS_URL` or `BWBK_TABBY_BASE_URL`
@@ -110,6 +111,13 @@ Last updated: 2026-04-25
 - Important course correction: do **not** continue the fake aged-paper / ruled-paper direction. The desired reference is `branching-workbook-mockup.jsx`: smooth `#f6f3ea` chrome, `#fbfaf5` editor, `#f2eee3` side rails, tiny uppercase labels, restrained borders, serif only for manuscript text and node title.
 - Current node names are editable inline above the buffer and persist to SQLite. Tree labels prefer `node.name` and fall back to text preview.
 - `client/src/samplers/SamplerDrawer.tsx` was restyled to match the light paper/stone UI, but it still needs a real browser pass.
+- Additional Phase 7 work in commit `94a7e98`:
+  - native macOS project open/create dialogs through the local FastAPI wrapper (`server/bwbk/dialog.py`)
+  - tree disclosure fold/collapse, resizable columns, and removal of the `N on path` subtitle
+  - sampler drawer numeric inputs next to sliders
+  - Escape closes model modal and sampler drawer
+  - model loader labels for `Context length` and `Cache (K/V)`
+  - Playwright screenshot helper (`client/scripts/screenshots.mjs`, `just shots`)
 
 ## Verification
 
@@ -119,7 +127,7 @@ Last updated: 2026-04-25
   - client vitest
   - client production build
 - Current observed counts:
-  - server tests: `39 passed`
+  - server tests: `49 passed`
   - client tests: `25 passed`
 
 ### Previously live-verified against the GPU tunnel
@@ -171,6 +179,11 @@ just dev
 - Browser note:
   - `http://localhost:5173/` worked
   - `http://127.0.0.1:5173/` refused in this environment
+- RunPod/Ampere note:
+  - tunnel local port is `5001`, not `5000`
+  - macOS AirPlay Receiver can shadow `5000`, accept TCP, return 403 on GET, and hang streaming POSTs
+  - exllamav3 compute-cap mismatch was observed on Ada (`sm_89`) with a `cu128` wheel that shipped `sm_86`; model load/tokenize worked but completions hung
+  - A4000/Ampere pod resolved that specific hang
 
 ## Docs Status
 
@@ -206,12 +219,12 @@ just dev
   - Delete clears the active preset when appropriate
   - Generate sends only non-neutral sampler fields and snapshots them on the new node
 - Phase 7 polish:
-  - continue matching `branching-workbook-mockup.jsx` proportions and smooth style
-  - fix project open/create UX; current browser flow still requires typed filesystem paths and should get a native file picker or app-shell equivalent
+  - continue matching `branching-workbook-mockup.jsx` proportions and smooth style, plus further design improvements and stylistic balancing beyond a literal port
+  - browser-check project open/create via the native dialog
   - browser-check inline node rename persistence
-  - status indicators
-  - full keyboard shortcut set
+  - re-test `n > 1` branch generation now that the live Tabby hang was resolved; if it still looks sequential, instrument proxy timestamps and `choices[*].index`
   - any remaining tree/branch UX cleanup
+  - **explicitly dropped from v1:** status indicators (§7.7 removed from spec) and the broader keyboard shortcut set (§7.6 reduced to the existing Cmd/Ctrl+S commit binding)
 - RunPod fire-and-forget template:
   - still an optional infrastructure track
   - prefer an existing maintained image/template if it boots cleanly
@@ -281,4 +294,4 @@ What is known so far:
 
 ## Short Version
 
-Phases 0-6 are in the tree and Phase 7 has started. `aa0aca4` moved the app toward the original mockup layout and added persisted, inline-editable node names. `just check` is green with 39 server tests and 25 client tests. Next: continue UI polish against `branching-workbook-mockup.jsx`, fix open/create project UX so users are not typing paths, do a real-browser pass against the live RunPod/Tabby tunnel, then decide whether to commit more polish or resume RunPod template validation.
+Phases 0-6 are in the tree and Phase 7 is in progress. The current working tree contains mockup-aligned UI polish, persisted inline node names, native macOS project dialogs, resizable/foldable tree chrome, sampler numeric inputs, RunPod 5001 docs, and a streamed Tabby read-timeout path. `just check` is green with 49 server tests and 25 client tests. Next: browser-test the current Phase 7 slice against the live RunPod/Tabby tunnel, especially `n > 1` branch streaming.

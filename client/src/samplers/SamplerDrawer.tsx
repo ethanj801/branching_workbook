@@ -112,26 +112,38 @@ function SliderControl({
   // slider
   return (
     <div>
-      <div className="mb-1 flex items-baseline justify-between gap-2">
+      <div className="mb-1 flex items-baseline gap-2">
         <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
-        <span
-          className={`text-[11px] ${
-            isNeutral ? "text-[color:var(--ink-faint)]" : "text-[color:var(--ink)]"
-          }`}
-        >
-          {numericValue}
-        </span>
+        {!isNeutral && (
+          <span className="text-[10px] uppercase tracking-wider text-[color:var(--ink-faint)]">
+            edited
+          </span>
+        )}
       </div>
-      <input
-        type="range"
-        min={field.min}
-        max={field.max}
-        step={field.step}
-        value={numericValue}
-        onChange={(event) => onChange(Number(event.target.value))}
-        disabled={disabled}
-        className="w-full accent-[var(--accent)] disabled:opacity-40"
-      />
+      <div className="flex items-center gap-2">
+        <input
+          type="range"
+          min={field.min}
+          max={field.max}
+          step={field.step}
+          value={numericValue}
+          onChange={(event) => onChange(Number(event.target.value))}
+          disabled={disabled}
+          className="flex-1 accent-[var(--accent)] disabled:opacity-40"
+        />
+        <input
+          type="number"
+          min={field.min}
+          max={field.max}
+          step={field.step}
+          value={numericValue}
+          onChange={(event) => onChange(Number(event.target.value))}
+          disabled={disabled}
+          className={`bw-input w-20 text-xs ${
+            isNeutral ? "text-[color:var(--ink-muted)]" : "text-[color:var(--ink)]"
+          }`}
+        />
+      </div>
     </div>
   );
 }
@@ -185,10 +197,16 @@ export default function SamplerDrawer({
           <div className="flex items-center justify-between">
             <div>
               <div className="bw-kicker">Samplers</div>
-              <div className="mt-1 font-serif text-xl text-[color:var(--ink)]">
-                {activePreset ? activePreset.name : "(no preset selected)"}
-                {dirty && <span className="ml-1 text-[color:var(--warn)]">*</span>}
-              </div>
+              {activePreset ? (
+                <div className="mt-1 font-serif text-xl text-[color:var(--ink)]">
+                  {activePreset.name}
+                  {dirty && <span className="ml-1 text-[color:var(--warn)]">*</span>}
+                </div>
+              ) : (
+                <div className="mt-1 text-sm text-[color:var(--ink-muted)]">
+                  No preset active
+                </div>
+              )}
             </div>
             <button
               onClick={onClose}
