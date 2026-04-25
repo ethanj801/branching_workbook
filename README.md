@@ -104,6 +104,39 @@ Use the model panel to:
 - load the model
 - generate
 
+## Gotchas
+
+### Branches stream one-at-a-time
+
+Branching Workbook sends one TabbyAPI completion request with `n > 1` and
+routes streamed chunks by `choices[*].index`. If the branch cards appear to
+fill one after another, the usual cause is not the client or SSH tunnel — it is
+the loaded Tabby/ExLlamaV3 cache budget.
+
+ExLlamaV3 can keep multiple branch jobs active only when the cache can fit the
+shared prompt plus each active branch's reserved output chunk. Approximate rule:
+
+```text
+required active cache ~= prompt_tokens + branch_count * chunk_size
+```
+
+TabbyAPI's EXL3 backend defaults `chunk_size` to `2048` unless overridden at
+model load time. On a small `4096` context/cache load, that can force branches
+to run sequentially. Loading the same model with a larger context/cache made
+the stream interleave normally in testing.
+
+Practical guidance:
+
+- For short prompts, sequential-looking output is less important because the
+  jobs complete quickly.
+- For longer prompts or larger `n`, load the model with enough context/cache
+  headroom for `prompt_tokens + branch_count * chunk_size`.
+- If you need interleaving on a very small context/cache load, lower TabbyAPI's
+  `chunk_size` when loading the model; this favors branch concurrency but can
+  reduce long-prompt or long-single-completion throughput.
+- Increasing loaded context/cache mainly costs VRAM. A 1k prompt does not
+  become a 128k prefill just because the model was loaded with a 128k context.
+
 ## Repo Notes
 
 - Main spec: [branching-workbook.md](/Users/EthanJ/Documents/github/branching_workbook/branching-workbook.md)
