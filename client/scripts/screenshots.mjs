@@ -192,15 +192,62 @@ async function main() {
     await snap(page, "05-branch-picker-streaming");
 
     // 6. Branch picker after stream completes (ready to pick).
-    await page.waitForSelector('.bw-picker-head .bw-kicker:has-text("BRANCHES")');
     await page.waitForFunction(
-      () =>
-        document.querySelector(".bw-picker-head [class*='ink-muted']")?.textContent ===
-        "ready",
+      () => {
+        const buttons = [...document.querySelectorAll(".bw-actionbar button")];
+        return buttons.some((button) => button.textContent?.trim() === "Generate");
+      },
       null,
       { timeout: 15000 },
     );
     await snap(page, "06-branch-picker-ready");
+
+    console.log("branch tray collapsed");
+    await page.locator('button[aria-label="Hide branch tray"]').click();
+    await page.waitForSelector('button[aria-label="Show branch tray"]');
+    await page.waitForTimeout(150);
+    await snap(page, "07-branch-tray-collapsed");
+    await page.locator('button[aria-label="Show branch tray"]').click();
+    await page.waitForSelector(".bw-picker");
+
+    console.log("tree collapsed");
+    await page.locator('button[aria-label="Hide tree panel"]').click();
+    await page.waitForSelector('button[aria-label="Show tree panel"]');
+    await page.waitForTimeout(150);
+    await snap(page, "08-tree-collapsed");
+    await page.locator('button[aria-label="Show tree panel"]').click();
+    await page.waitForSelector(".bw-tree");
+
+    console.log("tree context menu");
+    const currentTreeRow = page.locator(".bw-tree-row[data-current='true']").first();
+    await currentTreeRow.click({ button: "right" });
+    await page.waitForSelector(".bw-context-menu");
+    await snap(page, "09-tree-context-menu");
+    await page.locator(".bw-context-menu button").click();
+    await page.waitForSelector(".bw-context-menu", { state: "detached" });
+    await currentTreeRow.click({ button: "right" });
+    await page.waitForSelector(".bw-context-menu");
+    await page.locator(".bw-context-menu button").click();
+    await page.waitForSelector(".bw-context-menu", { state: "detached" });
+
+    console.log("branch saved");
+    const firstSave = page.locator(".bw-branch-actions button", { hasText: "Save" }).first();
+    await firstSave.click();
+    await page.locator(".bw-branch-actions button", { hasText: "Saved" }).first().waitFor();
+    await page.waitForTimeout(150);
+    await snap(page, "10-branch-saved");
+
+    console.log("branch used");
+    const beforeUse = await page.locator(".bw-buffer").inputValue();
+    await page.locator(".bw-branch-actions button", { hasText: "Use" }).first().click();
+    await page.waitForFunction(
+      (prior) => {
+        const buffer = document.querySelector(".bw-buffer");
+        return buffer instanceof HTMLTextAreaElement && buffer.value.length > prior.length;
+      },
+      beforeUse,
+    );
+    await snap(page, "11-branch-used");
   } finally {
     await context.close();
     await browser.close();

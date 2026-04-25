@@ -153,6 +153,7 @@ textarea:disabled {
   display: grid;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
   /* Column widths are driven inline (drag-resizable, per session). */
 }
 
@@ -168,6 +169,134 @@ textarea:disabled {
 .bw-splitter:active {
   background: var(--state-soft);
   border-left-color: var(--state-edge);
+}
+
+.bw-tree-splitter,
+.bw-picker-splitter {
+  position: relative;
+}
+
+.bw-edge-toggle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  z-index: 2;
+  display: inline-flex;
+  width: 1.25rem;
+  height: 2.35rem;
+  align-items: center;
+  justify-content: center;
+  transform: translate(-50%, -50%);
+  border: 1px solid var(--line-dark);
+  border-radius: 999px;
+  background: var(--chrome);
+  color: var(--ink-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(38, 31, 25, 0.08);
+}
+
+.bw-edge-toggle:hover {
+  border-color: var(--state-edge);
+  background: var(--editor);
+  color: var(--ink);
+}
+
+.bw-rail-handle {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  justify-self: stretch;
+  border: 0;
+  background: #ece6d8;
+  color: var(--ink);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  transition: background 140ms ease, color 140ms ease;
+  writing-mode: vertical-rl;
+  z-index: 1;
+}
+
+.bw-rail-handle:hover {
+  background: var(--state-soft);
+  color: var(--ink);
+}
+
+.bw-rail-handle-left {
+  border-right: 1px solid var(--line);
+}
+
+.bw-rail-handle-right {
+  border-left: 1px solid var(--line);
+}
+
+.bw-rail-toggle {
+  display: inline-flex;
+  width: 1.4rem;
+  height: 1.4rem;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 0.12rem;
+  background: transparent;
+  color: var(--ink-muted);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.bw-rail-toggle:hover {
+  border-color: var(--line-dark);
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--ink);
+}
+
+.bw-hidden-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  white-space: nowrap;
+}
+
+.bw-hidden-toggle input {
+  width: 0.82rem;
+  height: 0.82rem;
+  accent-color: var(--state);
+}
+
+.bw-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 8.5rem;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.16rem;
+  background: var(--editor);
+  box-shadow: 0 8px 22px -18px rgba(38, 31, 25, 0.45);
+  padding: 0.2rem;
+}
+
+.bw-context-menu button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 0.1rem;
+  background: transparent;
+  color: var(--ink);
+  padding: 0.42rem 0.55rem;
+  text-align: left;
+  font-size: 0.76rem;
+}
+
+.bw-context-menu button:hover {
+  background: var(--state-soft);
 }
 
 .bw-tree {
@@ -186,6 +315,23 @@ textarea:disabled {
   gap: 0.75rem;
   border-bottom: 1px solid rgba(231, 224, 209, 0.85);
   padding: 0.5rem 0.75rem;
+}
+
+.bw-picker-title {
+  min-width: 0;
+}
+
+.bw-picker-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+
+.bw-picker-actions .bw-button {
+  height: 1.6rem;
+  min-height: 1.6rem;
+  padding: 0 0.5rem;
+  font-size: 0.72rem;
 }
 
 .bw-kicker {
@@ -333,11 +479,11 @@ textarea:disabled {
 
 .bw-manuscript {
   position: relative;
-  width: min(42.5rem, calc(100% - 3rem));
+  width: min(62rem, calc(100% - clamp(2rem, 8vw, 9rem)));
   min-height: calc(100vh - 12rem);
-  margin: 3rem auto 3.5rem;
+  margin: clamp(2rem, 5vh, 4.5rem) auto 3.5rem;
   background: transparent;
-  padding: 0 4rem 0 4rem;
+  padding: 0 clamp(1.25rem, 4vw, 4.5rem);
 }
 
 .bw-manuscript::before {
@@ -355,8 +501,8 @@ textarea:disabled {
   background: transparent;
   color: var(--ink);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
-  font-size: 1.0625rem;
-  line-height: 1.65;
+  font-size: clamp(1.08rem, 0.72rem + 0.42vw, 1.26rem);
+  line-height: 1.68;
 }
 
 .bw-buffer::placeholder {
@@ -511,10 +657,12 @@ textarea:disabled {
 
 .bw-picker {
   display: flex;
+  min-width: 0;
   min-height: 0;
   flex-direction: column;
   border-left: 1px solid var(--line);
   background: var(--rail);
+  overflow: hidden;
 }
 
 .bw-picker-body {
@@ -543,21 +691,17 @@ textarea:disabled {
   box-shadow: 0 6px 14px -8px rgba(38, 31, 25, 0.18);
 }
 
-.bw-branch-card + .bw-branch-card,
-.bw-compose-card {
+.bw-branch-card + .bw-branch-card {
   margin-top: 0.7rem;
-}
-
-/* The compose card is always-visible authorship — give it the rail tone
-   so it doesn't compete with the live generated branches. */
-.bw-compose-card {
-  background: rgba(231, 224, 209, 0.32);
-  border-style: dashed;
 }
 
 .bw-branch-card[data-empty="true"] {
   border-style: dashed;
   background: rgba(0, 0, 0, 0.015);
+}
+
+.bw-branch-card[data-collapsed="true"] {
+  background: rgba(251, 250, 245, 0.62);
 }
 
 .bw-branch-head {
@@ -573,32 +717,70 @@ textarea:disabled {
   letter-spacing: 0.16em;
 }
 
-/* The Use button is the central action on a card. Default state is
-   quiet so three side-by-side cards don't shout; hovering the card
-   promotes its own Use to primary. */
-.bw-branch-head .bw-button {
-  border-color: transparent;
+.bw-branch-summary {
+  display: grid;
+  width: 100%;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.45rem;
+  border: 0;
   background: transparent;
+  color: var(--ink);
+  padding: 0.58rem 0.72rem;
+  text-align: left;
+}
+
+.bw-branch-summary:hover {
+  background: rgba(0, 0, 0, 0.025);
+}
+
+.bw-branch-caret {
+  display: inline-flex;
+  width: 0.9rem;
+  justify-content: center;
   color: var(--ink-muted);
+  font-size: 0.95rem;
+  line-height: 1;
+}
+
+.bw-branch-summary-text {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 0.8rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-branch-panel {
+  border-top: 1px solid rgba(214, 205, 187, 0.58);
+}
+
+.bw-branch-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.25rem;
+  padding: 0 0.75rem 0.75rem;
+}
+
+.bw-branch-actions .bw-button {
   font-size: 0.78rem;
   height: 1.65rem;
   min-height: 1.65rem;
   padding: 0 0.65rem;
 }
 
-.bw-branch-card:hover .bw-branch-head .bw-button:not(:disabled) {
+.bw-branch-actions .bw-button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.bw-branch-card:hover .bw-branch-actions .bw-button:not(:disabled) {
   border-color: var(--state);
   background: var(--state);
-  color: #fbf6e9;
-}
-
-.bw-branch-card:hover .bw-branch-head .bw-button:disabled {
-  border-color: transparent;
-}
-
-.bw-compose-card .bw-branch-head .bw-button {
-  border-color: var(--accent);
-  background: var(--accent);
   color: #fbf6e9;
 }
 
@@ -606,7 +788,7 @@ textarea:disabled {
   min-height: 4.5rem;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  padding: 0 0.95rem 0.85rem;
+  padding: 0.75rem 0.95rem 0.85rem;
   color: var(--ink);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   font-size: 0.94rem;

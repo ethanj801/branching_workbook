@@ -56,6 +56,12 @@ type CommitResult = {
   buffer: string;
 };
 
+type TreeContextMenu = {
+  nodeId: string;
+  x: number;
+  y: number;
+};
+
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
 }
@@ -202,7 +208,9 @@ function NodeNameEditor({
 }
 
 const DEFAULT_MAX_TOKENS = 256;
-const COMMON_CONTEXT_SIZES = "8,192  |  16,384  |  32,768  |  65,536  |  131,072";
+const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
+const COMMON_CONTEXT_SIZES = "8192  |  16384  |  32768  |  65536  |  131072";
+const COLLAPSED_RAIL_WIDTH = 40;
 
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
@@ -215,7 +223,9 @@ export default function App() {
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
   const [candidateSamplerSnapshot, setCandidateSamplerSnapshot] =
     useState<SamplerBody | null>(null);
-  const [composition, setComposition] = useState("");
+  const [savedCandidateIds, setSavedCandidateIds] = useState<
+    Record<number, string>
+  >({});
   const [branchCount, setBranchCount] = useState(3);
   const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS);
   const [streaming, setStreaming] = useState(false);
@@ -232,7 +242,7 @@ export default function App() {
     null,
   );
   const [selectedModelName, setSelectedModelName] = useState("");
-  const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(4096);
+  const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(DEFAULT_LOAD_MAX_SEQ_LEN);
   const [loadCacheMode, setLoadCacheMode] = useState("Q6");
   const [downloadRepoId, setDownloadRepoId] = useState(
     "lucyknada/google_gemma-3-270m-exl3",
@@ -247,12 +257,20 @@ export default function App() {
   const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
   const [samplerBusy, setSamplerBusy] = useState(false);
   const [samplerOpen, setSamplerOpen] = useState(false);
+  const [treeMenu, setTreeMenu] = useState<TreeContextMenu | null>(null);
   const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>(
     {},
   );
+  const [collapsedBranches, setCollapsedBranches] = useState<
+    Record<number, boolean>
+  >({});
+  const [treeVisible, setTreeVisible] = useState(true);
+  const [pickerVisible, setPickerVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
   const [pickerWidth, setPickerWidth] = useState(352);
   const abortRef = useRef<AbortController | null>(null);
+  const bufferRef = useRef<HTMLTextAreaElement | null>(null);
+  const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
@@ -279,7 +297,8 @@ export default function App() {
     setCandidateBaseId(null);
     setCandidateModelId(null);
     setCandidateSamplerSnapshot(null);
-    setComposition("");
+    setSavedCandidateIds({});
+    setCollapsedBranches({});
   }, []);
 
   const refreshPresets = useCallback(async () => {
@@ -422,7 +441,7 @@ export default function App() {
         setError("Create or open a project before saving.");
         return null;
       }
-      if (streaming || saving || branchPickerOpen) return null;
+      if (streaming || saving) return null;
 
       setSaving(true);
       setError(null);
@@ -455,7 +474,7 @@ export default function App() {
         setSaving(false);
       }
     },
-    [branchPickerOpen, buffer, currentId, project, saving, streaming, tree],
+    [buffer, currentId, project, saving, streaming, tree],
   );
 
   useEffect(() => {
@@ -469,13 +488,24 @@ export default function App() {
           setModelPanelOpen(false);
         } else if (samplerOpen) {
           setSamplerOpen(false);
+        } else if (treeMenu) {
+          setTreeMenu(null);
         }
       }
     }
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [commitBuffer, modelPanelOpen, samplerOpen]);
+  }, [commitBuffer, modelPanelOpen, samplerOpen, treeMenu]);
+
+  useEffect(() => {
+    if (!treeMenu) return;
+    function onPointerDown() {
+      setTreeMenu(null);
+    }
+    window.addEventListener("pointerdown", onPointerDown);
+    return () => window.removeEventListener("pointerdown", onPointerDown);
+  }, [treeMenu]);
 
   function startColumnDrag(
     event: ReactMouseEvent<HTMLDivElement>,
@@ -685,7 +715,10 @@ export default function App() {
       await streamModelLoad(
         {
           model_name: trimmedModelName,
-          max_seq_len: Math.max(256, Math.trunc(loadMaxSeqLen) || 4096),
+          max_seq_len: Math.max(
+            256,
+            Math.trunc(loadMaxSeqLen) || DEFAULT_LOAD_MAX_SEQ_LEN,
+          ),
           cache_mode: loadCacheMode,
         },
         setModelLoadEvent,
@@ -740,7 +773,7 @@ export default function App() {
   }
 
   async function onSelectNode(nodeIdToSelect: string) {
-    if (!tree || !currentId || streaming || saving || branchPickerOpen) return;
+    if (!tree || !currentId || streaming || saving) return;
 
     const committed = await commitBuffer();
     if (!committed) return;
@@ -765,7 +798,7 @@ export default function App() {
   }
 
   async function onGenerate() {
-    if (streaming || saving || branchPickerOpen) return;
+    if (streaming || saving) return;
     if (!currentTabbyModel) {
       setError("Load a model before generating.");
       return;
@@ -785,7 +818,9 @@ export default function App() {
     setCandidateBaseId(committed.currentId);
     setCandidateModelId(currentTabbyModel.id);
     setCandidateSamplerSnapshot(samplerSnapshot);
-    setComposition("");
+    setSavedCandidateIds({});
+    setCollapsedBranches({});
+    setPickerVisible(true);
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
@@ -829,22 +864,54 @@ export default function App() {
     abortRef.current?.abort();
   }
 
-  async function persistBranchSelection(
-    selectedText: string,
-    selectedSource: NodeSource,
-    selectedIndex: number | null,
-  ) {
+  function recordBufferSelection() {
+    const textarea = bufferRef.current;
+    if (!textarea) return;
+    bufferSelectionRef.current = {
+      start: textarea.selectionStart,
+      end: textarea.selectionEnd,
+    };
+  }
+
+  function onUseCandidate(index: number) {
+    const text = candidates[index] ?? "";
+    if (!text) {
+      setError("Select a branch with text before using it.");
+      return;
+    }
+
+    const selection = bufferSelectionRef.current;
+    const start = Math.max(
+      0,
+      Math.min(buffer.length, selection?.start ?? buffer.length),
+    );
+    const end = Math.max(start, Math.min(buffer.length, selection?.end ?? start));
+    const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
+    const nextCursor = start + text.length;
+
+    setBuffer(nextBuffer);
+    bufferSelectionRef.current = { start: nextCursor, end: nextCursor };
+    window.requestAnimationFrame(() => {
+      bufferRef.current?.focus();
+      bufferRef.current?.setSelectionRange(nextCursor, nextCursor);
+    });
+  }
+
+  async function onSaveCandidate(index: number) {
     if (
       !tree ||
+      !currentId ||
       candidatePrompt === null ||
       candidateBaseId === null ||
-      streaming ||
       saving
     ) {
       return;
     }
-    if (!selectedText) {
-      setError("Select a branch with text before committing.");
+    if (savedCandidateIds[index]) return;
+
+    const text = candidates[index] ?? "";
+    if (!text) {
+      setError("Select a branch with text before saving it.");
       return;
     }
     if (!tree.nodes[candidateBaseId]) {
@@ -852,58 +919,29 @@ export default function App() {
       return;
     }
 
-    const nextNodes: Record<string, TreeNode> = { ...tree.nodes };
-    let selectedId: string | null = null;
-
-    for (let index = 0; index < candidates.length; index++) {
-      const text = candidates[index];
-      if (!text) continue;
-      const hidden =
-        selectedSource === "generated" ? index !== selectedIndex : true;
-      const node = branchNode(
-        candidateBaseId,
-        text,
-        "generated",
-        hidden,
-        candidatePrompt,
-        candidateModelId ?? undefined,
-        candidateSamplerSnapshot ?? undefined,
-      );
-      nextNodes[node.id] = node;
-      if (selectedSource === "generated" && index === selectedIndex) {
-        selectedId = node.id;
-      }
-    }
-
-    if (selectedSource === "composed") {
-      const node = branchNode(
-        candidateBaseId,
-        selectedText,
-        "composed",
-        false,
-        candidatePrompt,
-      );
-      nextNodes[node.id] = node;
-      selectedId = node.id;
-    }
-
-    if (selectedId === null) {
-      setError("Selected branch was empty.");
-      return;
-    }
-
-    const nextTree = { nodes: nextNodes, rootId: tree.rootId };
-    const path = pathFromRoot(nextTree, selectedId);
-    const nextBuffer = concatPathText(path);
+    const node = branchNode(
+      candidateBaseId,
+      text,
+      "generated",
+      true,
+      candidatePrompt,
+      candidateModelId ?? undefined,
+      candidateSamplerSnapshot ?? undefined,
+    );
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [node.id]: node,
+      },
+    };
 
     setSaving(true);
     setError(null);
     try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, selectedId));
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
       setTree(nextTree);
-      setCurrentId(selectedId);
-      setBuffer(nextBuffer);
-      clearBranchPicker();
+      setSavedCandidateIds((current) => ({ ...current, [index]: node.id }));
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -911,12 +949,13 @@ export default function App() {
     }
   }
 
-  async function onChooseCandidate(index: number) {
-    await persistBranchSelection(candidates[index] ?? "", "generated", index);
-  }
-
-  async function onCommitComposition() {
-    await persistBranchSelection(composition, "composed", null);
+  function toggleBranchCollapsed(index: number) {
+    setCollapsedBranches((prev) => {
+      const next = { ...prev };
+      if (next[index]) delete next[index];
+      else next[index] = true;
+      return next;
+    });
   }
 
   const currentPath =
@@ -927,6 +966,19 @@ export default function App() {
     project?.title && project.title.trim() !== "Branching Workbook"
       ? project.title
       : null;
+  const workspaceColumns = [
+    treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
+    treeVisible ? "6px" : null,
+    "minmax(18rem, 1fr)",
+    branchPickerOpen && pickerVisible ? "6px" : null,
+    branchPickerOpen
+      ? pickerVisible
+        ? `${pickerWidth}px`
+        : `${COLLAPSED_RAIL_WIDTH}px`
+      : null,
+  ]
+    .filter(Boolean)
+    .join(" ");
 
   async function onRenameCurrentNode(name: string | null) {
     if (!tree || !currentId || saving || streaming) return;
@@ -950,6 +1002,35 @@ export default function App() {
       setError(formatError(err));
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function onSetNodeHidden(nodeIdToUpdate: string, hidden: boolean) {
+    if (!tree || !currentId || saving || streaming) return;
+    const node = tree.nodes[nodeIdToUpdate];
+    if (!node || node.parentId === null || node.hidden === hidden) return;
+
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [nodeIdToUpdate]: { ...node, hidden },
+      },
+    };
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      setTree(nextTree);
+      if (hidden && nodeIdToUpdate === currentId) {
+        setShowHidden(true);
+      }
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+      setTreeMenu(null);
     }
   }
 
@@ -1002,7 +1083,18 @@ export default function App() {
           <button
             type="button"
             onClick={() => void onSelectNode(node.id)}
-            disabled={streaming || saving || branchPickerOpen}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              if (node.parentId !== null) {
+                setTreeMenu({
+                  nodeId: node.id,
+                  x: event.clientX,
+                  y: event.clientY,
+                });
+              }
+            }}
+            disabled={streaming || saving}
             className="bw-tree-row"
             data-current={isCurrent}
             data-path={isOnPath}
@@ -1039,7 +1131,6 @@ export default function App() {
           </button>
           {project && (
             <>
-              <span className="bw-status-sep" aria-hidden="true">·</span>
               <span className={contextWarn ? "text-[color:var(--warn)]" : ""}>
                 <strong>
                   {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
@@ -1063,6 +1154,27 @@ export default function App() {
       </header>
 
       {error && <div className="bw-error">{error}</div>}
+
+      {treeMenu && tree && (
+        <div
+          className="bw-context-menu"
+          style={{ left: treeMenu.x, top: treeMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() =>
+              void onSetNodeHidden(
+                treeMenu.nodeId,
+                !tree.nodes[treeMenu.nodeId]?.hidden,
+              )
+            }
+            disabled={saving || streaming}
+          >
+            {tree.nodes[treeMenu.nodeId]?.hidden ? "Unhide node" : "Hide node"}
+          </button>
+        </div>
+      )}
 
       <SamplerDrawer
         open={samplerOpen}
@@ -1111,7 +1223,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void onUnloadModel()}
-                  disabled={!currentTabbyModel || modelBusy || streaming || branchPickerOpen}
+                  disabled={!currentTabbyModel || modelBusy || streaming}
                   className="bw-button"
                 >
                   Unload
@@ -1246,8 +1358,7 @@ export default function App() {
                 <div className="bw-kicker">Project</div>
                 <h1 className="bw-welcome-title">Open a workbook</h1>
                 <p className="bw-welcome-lede">
-                  A workbook is a single <code>.bwbk</code> file. Choose where it
-                  lives — the app never remembers paths between sessions.
+                  A workbook is a single <code>.bwbk</code> file.
                 </p>
               </div>
               <div className="bw-welcome-actions">
@@ -1277,41 +1388,63 @@ export default function App() {
         <div
           className="bw-workspace"
           data-picker={branchPickerOpen}
-          style={{
-            gridTemplateColumns: branchPickerOpen
-              ? `${treeWidth}px 6px minmax(0, 1fr) 6px ${pickerWidth}px`
-              : `${treeWidth}px 6px minmax(0, 1fr)`,
-          }}
+          data-tree={treeVisible}
+          style={{ gridTemplateColumns: workspaceColumns }}
         >
-          <aside className="bw-tree">
-            <div className="bw-rail-head">
-              <div>
-                <div className="bw-kicker">Tree</div>
+          {treeVisible ? (
+            <aside className="bw-tree">
+              <div className="bw-rail-head">
+                <div>
+                  <div className="bw-kicker">Tree</div>
+                </div>
+                <label className="bw-hidden-toggle">
+                  <input
+                    type="checkbox"
+                    checked={showHidden}
+                    onChange={(event) => setShowHidden(event.target.checked)}
+                  />
+                  <span>Show hidden</span>
+                </label>
               </div>
-              <label className="flex items-center gap-2 text-xs text-[color:var(--ink-muted)]">
-                <input
-                  type="checkbox"
-                  checked={showHidden}
-                  onChange={(event) => setShowHidden(event.target.checked)}
-                />
-                hidden
-              </label>
-            </div>
-            <div className="bw-tree-list">{renderTreeNode(tree.rootId)}</div>
-            <div className="bw-tree-foot">
-              {Object.keys(tree.nodes).length.toLocaleString()} nodes
-            </div>
-          </aside>
+              <div className="bw-tree-list">{renderTreeNode(tree.rootId)}</div>
+              <div className="bw-tree-foot">
+                {Object.keys(tree.nodes).length.toLocaleString()} nodes
+              </div>
+            </aside>
+          ) : (
+            <button
+              type="button"
+              className="bw-rail-handle bw-rail-handle-left"
+              onClick={() => setTreeVisible(true)}
+              aria-label="Show tree panel"
+              title="Show tree"
+            >
+              Tree
+            </button>
+          )}
 
-          <div
-            className="bw-splitter"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize tree column"
-            onMouseDown={(event) =>
-              startColumnDrag(event, setTreeWidth, treeWidth, 1, 180, 480)
-            }
-          />
+          {treeVisible && (
+            <div
+              className="bw-splitter bw-tree-splitter"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize tree column"
+              onMouseDown={(event) =>
+                startColumnDrag(event, setTreeWidth, treeWidth, 1, 180, 480)
+              }
+            >
+              <button
+                type="button"
+                className="bw-edge-toggle bw-edge-toggle-tree"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={() => setTreeVisible(false)}
+                aria-label="Hide tree panel"
+                title="Hide tree"
+              >
+                ‹
+              </button>
+            </div>
+          )}
 
           <main className="bw-editor">
             <div className="bw-manuscript-scroll">
@@ -1320,16 +1453,26 @@ export default function App() {
                   <div className="mb-6">
                     <NodeNameEditor
                       node={currentNode}
-                      disabled={saving || streaming || branchPickerOpen}
+                      disabled={saving || streaming}
                       onRename={(name) => void onRenameCurrentNode(name)}
                     />
                   </div>
                 )}
                 <textarea
+                  ref={bufferRef}
                   className="bw-buffer"
                   value={buffer}
-                  onChange={(event) => setBuffer(event.target.value)}
-                  disabled={branchPickerOpen}
+                  onChange={(event) => {
+                    setBuffer(event.target.value);
+                    bufferSelectionRef.current = {
+                      start: event.target.selectionStart,
+                      end: event.target.selectionEnd,
+                    };
+                  }}
+                  onBlur={recordBufferSelection}
+                  onClick={recordBufferSelection}
+                  onKeyUp={recordBufferSelection}
+                  onSelect={recordBufferSelection}
                   placeholder="Start writing..."
                   spellCheck={false}
                 />
@@ -1344,7 +1487,7 @@ export default function App() {
                   onChange={(event) =>
                     void onSelectPreset(event.target.value || null)
                   }
-                  disabled={samplerBusy || streaming || branchPickerOpen}
+                  disabled={samplerBusy || streaming}
                   className="bw-select min-w-36"
                 >
                   <option value="">none</option>
@@ -1376,7 +1519,7 @@ export default function App() {
                   max={6}
                   value={branchCount}
                   onChange={(event) => setBranchCount(Number(event.target.value))}
-                  disabled={streaming || saving || branchPickerOpen}
+                  disabled={streaming || saving}
                   className="bw-input w-16"
                 />
               </label>
@@ -1387,7 +1530,7 @@ export default function App() {
                   min={1}
                   value={maxTokens}
                   onChange={(event) => setMaxTokens(Number(event.target.value))}
-                  disabled={streaming || saving || branchPickerOpen}
+                  disabled={streaming || saving}
                   className="bw-input w-24"
                 />
               </label>
@@ -1395,7 +1538,7 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => void onSave()}
-                disabled={saving || streaming || branchPickerOpen}
+                disabled={saving || streaming}
                 className="bw-button"
               >
                 {saving ? "Saving" : "Save"}
@@ -1412,7 +1555,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void onGenerate()}
-                  disabled={saving || branchPickerOpen || !currentTabbyModel}
+                  disabled={saving || !currentTabbyModel}
                   className="bw-button bw-button-primary"
                 >
                   Generate
@@ -1421,85 +1564,130 @@ export default function App() {
             </footer>
           </main>
 
-          {branchPickerOpen && (
+          {branchPickerOpen && pickerVisible && (
             <div
-              className="bw-splitter"
+              className="bw-splitter bw-picker-splitter"
               role="separator"
               aria-orientation="vertical"
               aria-label="Resize branches column"
               onMouseDown={(event) =>
-                startColumnDrag(event, setPickerWidth, pickerWidth, -1, 240, 640)
+                startColumnDrag(event, setPickerWidth, pickerWidth, -1, 280, 880)
               }
-            />
+            >
+              <button
+                type="button"
+                onMouseDown={(event) => event.stopPropagation()}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setPickerVisible(false);
+                }}
+                className="bw-edge-toggle"
+                aria-label="Hide branch tray"
+                title="Hide branches"
+              >
+                ›
+              </button>
+            </div>
           )}
-          {branchPickerOpen && (
+          {branchPickerOpen && pickerVisible && (
             <aside className="bw-picker">
               <div className="bw-picker-head">
-                <div>
+                <div className="bw-picker-title">
                   <div className="bw-kicker">Branches</div>
-                  <div className="mt-1 text-xs text-[color:var(--ink-muted)]">
-                    {streaming ? "streaming" : "ready"}
-                  </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={clearBranchPicker}
-                  disabled={streaming || saving}
-                  className="bw-button bw-button-quiet"
-                >
-                  Discard
-                </button>
+                <div className="bw-picker-actions">
+                  <button
+                    type="button"
+                    onClick={clearBranchPicker}
+                    disabled={streaming || saving}
+                    className="bw-button bw-button-quiet"
+                  >
+                    Clear
+                  </button>
+                </div>
               </div>
               <div className="bw-picker-body">
-                {candidates.map((text, index) => (
-                  <section
-                    key={index}
-                    className="bw-branch-card"
-                    data-empty={!text}
-                  >
-                    <div className="bw-branch-head">
-                      <div className="bw-kicker">Branch {index + 1}</div>
+                {candidates.map((text, index) => {
+                  const collapsed = !!collapsedBranches[index];
+                  return (
+                    <section
+                      key={index}
+                      className="bw-branch-card"
+                      data-empty={!text}
+                      data-collapsed={collapsed}
+                    >
                       <button
                         type="button"
-                        onClick={() => void onChooseCandidate(index)}
-                        disabled={!text || streaming || saving}
-                        className="bw-button"
+                        className="bw-branch-summary"
+                        onClick={() => toggleBranchCollapsed(index)}
+                        aria-expanded={!collapsed}
                       >
-                        Use
-                      </button>
-                    </div>
-                    <div className="bw-branch-text">
-                      {text || (
-                        <span className="bw-empty">
-                          {streaming ? "Waiting for tokens..." : "No text."}
+                        <span
+                          className="bw-branch-caret"
+                          aria-hidden="true"
+                        >
+                          {collapsed ? "›" : "⌄"}
                         </span>
+                        <span className="bw-kicker">Branch {index + 1}</span>
+                        <span className="bw-branch-summary-text">
+                          {text
+                            ? previewText(text)
+                            : streaming
+                              ? "Waiting for tokens..."
+                              : "No text."}
+                        </span>
+                      </button>
+                      {!collapsed && (
+                        <div className="bw-branch-panel">
+                          <div className="bw-branch-text">
+                            {text || (
+                              <span className="bw-empty">
+                                {streaming ? "Waiting for tokens..." : "No text."}
+                              </span>
+                            )}
+                          </div>
+                          <div className="bw-branch-actions">
+                            <button
+                              type="button"
+                              onClick={() => onUseCandidate(index)}
+                              disabled={!text || streaming || saving}
+                              className="bw-button"
+                            >
+                              Use
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onSaveCandidate(index)}
+                              disabled={
+                                !text ||
+                                streaming ||
+                                saving ||
+                                !!savedCandidateIds[index]
+                              }
+                              className="bw-button"
+                            >
+                              {savedCandidateIds[index] ? "Saved" : "Save"}
+                            </button>
+                          </div>
+                        </div>
                       )}
-                    </div>
-                  </section>
-                ))}
-
-                <section className="bw-branch-card bw-compose-card">
-                  <div className="bw-branch-head">
-                    <div className="bw-kicker">Write your own</div>
-                    <button
-                      type="button"
-                      onClick={() => void onCommitComposition()}
-                      disabled={!composition.trim() || streaming || saving}
-                      className="bw-button bw-button-primary"
-                    >
-                      Commit
-                    </button>
-                  </div>
-                  <textarea
-                    className="bw-textarea min-h-32 w-full resize-y p-3"
-                    value={composition}
-                    onChange={(event) => setComposition(event.target.value)}
-                    placeholder="Compose from scratch or paste from the branches."
-                    spellCheck={false}
-                  />
-                </section>
+                    </section>
+                  );
+                })}
               </div>
+
             </aside>
+          )}
+          {branchPickerOpen && !pickerVisible && (
+            <button
+              type="button"
+              className="bw-rail-handle bw-rail-handle-right"
+              onClick={() => setPickerVisible(true)}
+              aria-label="Show branch tray"
+              title="Show branches"
+            >
+              Branches
+            </button>
           )}
         </div>
       )}
