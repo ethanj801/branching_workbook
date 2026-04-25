@@ -4,6 +4,7 @@ export type TreeNode = {
   id: string;
   parentId: string | null;
   text: string;
+  name?: string | null;
   source: NodeSource;
   hidden: boolean;
   createdAt: number;

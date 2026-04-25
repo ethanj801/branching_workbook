@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type FormEvent,
+} from "react";
 import {
   closeProject as closeProjectApi,
   createProject,
@@ -76,6 +84,7 @@ function branchNode(
     id: nodeId(),
     parentId,
     text,
+    name: null,
     source,
     hidden,
     createdAt: nowEpoch(),
@@ -114,6 +123,83 @@ function formatLoadEvent(event: ModelLoadEvent | null): string {
   return `${event.status} ${event.module}/${event.modules}`;
 }
 
+function nodeLabel(node: TreeNode): string {
+  const name = node.name?.trim();
+  if (name) return name;
+  return previewText(node.text);
+}
+
+function NodeNameEditor({
+  node,
+  disabled,
+  onRename,
+}: {
+  node: TreeNode;
+  disabled: boolean;
+  onRename: (name: string | null) => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(node.name ?? "");
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    setDraft(node.name ?? "");
+    setEditing(false);
+  }, [node.id, node.name]);
+
+  useEffect(() => {
+    if (!editing) return;
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, [editing]);
+
+  function commit() {
+    onRename(draft.trim() || null);
+    setEditing(false);
+  }
+
+  if (editing) {
+    return (
+      <input
+        ref={inputRef}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+          if (event.key === "Escape") {
+            event.preventDefault();
+            setDraft(node.name ?? "");
+            setEditing(false);
+          }
+        }}
+        placeholder="Name this node..."
+        className="bw-node-name-input"
+      />
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      className="bw-node-name"
+      onClick={() => {
+        if (!disabled) setEditing(true);
+      }}
+      disabled={disabled}
+      title="Rename current node"
+    >
+      <span className={node.name?.trim() ? "" : "empty"}>
+        {node.name?.trim() || "Untitled"}
+      </span>
+      <span className="mark">edit</span>
+    </button>
+  );
+}
+
 const DEFAULT_MAX_TOKENS = 256;
 const COMMON_CONTEXT_SIZES = "8,192  |  16,384  |  32,768  |  65,536  |  131,072";
 
@@ -139,6 +225,7 @@ export default function App() {
   );
   const [availableModels, setAvailableModels] = useState<TabbyModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
+  const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(
     null,
@@ -767,6 +854,36 @@ export default function App() {
   const currentPath =
     tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
+  const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const projectTitle =
+    project?.title && project.title.trim() !== "Branching Workbook"
+      ? project.title
+      : null;
+
+  async function onRenameCurrentNode(name: string | null) {
+    if (!tree || !currentId || saving || streaming) return;
+    const current = tree.nodes[currentId];
+    if (!current || (current.name ?? null) === name) return;
+
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [currentId]: { ...current, name },
+      },
+    };
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      setTree(nextTree);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
 
   function renderTreeNode(nodeIdToRender: string, depth = 0) {
     if (!tree) return null;
@@ -785,478 +902,492 @@ export default function App() {
           type="button"
           onClick={() => void onSelectNode(node.id)}
           disabled={streaming || saving || branchPickerOpen}
-          className={[
-            "w-full text-left rounded border px-3 py-2 transition-colors",
-            isCurrent
-              ? "border-emerald-500/70 bg-emerald-950/30"
-              : isOnPath
-                ? "border-neutral-700 bg-neutral-900"
-                : "border-neutral-800 bg-neutral-900/40 hover:border-neutral-700",
-            node.hidden ? "opacity-50" : "",
-          ].join(" ")}
-          style={{ marginLeft: depth * 16 }}
+          className="bw-tree-row"
+          data-current={isCurrent}
+          data-path={isOnPath}
+          data-hidden={node.hidden}
+          style={{ "--depth": `${depth * 0.85}rem` } as CSSProperties}
         >
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-sm text-neutral-100">{previewText(node.text)}</span>
-            <span className="shrink-0 text-[10px] uppercase tracking-widest text-neutral-500">
-              {node.source}
-            </span>
-          </div>
-          <div className="mt-1 text-[11px] text-neutral-600">{node.id}</div>
+          <span className="bw-tree-preview">{nodeLabel(node)}</span>
+          <span className="bw-tree-meta">
+            <span>{node.source.replace("_", " ")}</span>
+            <span>{childNodes.length ? `${childNodes.length} branch` : "leaf"}</span>
+          </span>
         </button>
-        <div className="mt-1 space-y-1">
-          {childNodes.map((child) => renderTreeNode(child.id, depth + 1))}
-        </div>
+        {childNodes.map((child) => renderTreeNode(child.id, depth + 1))}
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 font-mono p-6">
-      <div className="mx-auto max-w-6xl space-y-5">
-        <div className="flex flex-wrap items-baseline justify-between gap-3">
-          <div>
-            <div className="text-xs uppercase tracking-widest text-neutral-500">
-              Branching Workbook
-            </div>
-            <div className="mt-1 text-lg text-neutral-100">
-              {project?.title || "No project open"}
-            </div>
-          </div>
-          <div className="text-xs text-neutral-600">
-            phase 5 - model workflow
-          </div>
+    <div className="bw-app">
+      <header className="bw-topbar">
+        <div className="bw-brand">
+          <div className="bw-title">Branching Workbook</div>
+          <div className="bw-project-title">{projectTitle || "No project open"}</div>
         </div>
-
-        {error && (
-          <div className="rounded border border-red-900/60 bg-red-950/40 p-2 text-sm text-red-300">
-            {error}
-          </div>
-        )}
-
-        <section className="rounded border border-neutral-800 bg-neutral-900/70 p-3">
-          <div className="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <div className="text-xs uppercase tracking-widest text-neutral-500">
-                TabbyAPI
-              </div>
-              <div className="mt-1 text-sm text-neutral-100">
-                {loadingModels ? "Checking model state..." : formatModelLabel(currentTabbyModel)}
-              </div>
-              <div
-                className={[
-                  "mt-1 text-xs",
-                  contextWarn ? "text-amber-400" : "text-neutral-500",
-                ].join(" ")}
-              >
-                Context:{" "}
-                {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
-                {" / "}
-                {contextMax === null ? "unknown" : contextMax.toLocaleString()}
-                {" tokens"}
-              </div>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <button
-                onClick={() => void onRefreshModels()}
-                disabled={loadingModels || modelBusy}
-                className="rounded bg-neutral-800 px-3 py-2 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
-              >
-                Refresh
-              </button>
-              <button
-                onClick={() => void onUnloadModel()}
-                disabled={!currentTabbyModel || modelBusy || streaming || branchPickerOpen}
-                className="rounded bg-neutral-800 px-3 py-2 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
-              >
-                Unload
-              </button>
-            </div>
-          </div>
-
-          <div className="mt-3 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
-            <div className="space-y-2">
-              <div className="text-xs text-neutral-500">Load local model</div>
-              <div className="flex flex-wrap gap-2">
-                <select
-                  value={selectedModelName}
-                  onChange={(event) => setSelectedModelName(event.target.value)}
-                  disabled={loadingModels || modelBusy}
-                  className="min-w-64 flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                >
-                  {availableModels.length === 0 && (
-                    <option value="">No local models found</option>
-                  )}
-                  {availableModels.map((model) => (
-                    <option key={model.id} value={model.id}>
-                      {model.id}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="number"
-                  min={256}
-                  step={256}
-                  value={loadMaxSeqLen}
-                  onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
-                  disabled={modelBusy}
-                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                  title="max_seq_len"
-                />
-                <select
-                  value={loadCacheMode}
-                  onChange={(event) => setLoadCacheMode(event.target.value)}
-                  disabled={modelBusy}
-                  className="w-24 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                >
-                  <option value="Q4">Q4</option>
-                  <option value="Q6">Q6</option>
-                  <option value="Q8">Q8</option>
-                  <option value="FP16">FP16</option>
-                </select>
-                <button
-                  onClick={() => void onLoadModel()}
-                  disabled={!selectedModelName || modelBusy || streaming}
-                  className="rounded bg-neutral-100 px-4 py-2 text-sm text-neutral-950 disabled:opacity-40"
-                >
-                  {modelBusy && modelLoadEvent ? formatLoadEvent(modelLoadEvent) : "Load"}
-                </button>
-              </div>
-              <div className="text-[11px] text-neutral-600">
-                Common context sizes: {COMMON_CONTEXT_SIZES}
-              </div>
-            </div>
-
-            <form onSubmit={(event) => void onDownloadModel(event)} className="space-y-2">
-              <div className="text-xs text-neutral-500">
-                Download from Hugging Face
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <input
-                  value={downloadRepoId}
-                  onChange={(event) => setDownloadRepoId(event.target.value)}
-                  disabled={modelBusy}
-                  placeholder="repo_id"
-                  className="min-w-64 flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                />
-                <input
-                  value={downloadRevision}
-                  onChange={(event) => setDownloadRevision(event.target.value)}
-                  disabled={modelBusy}
-                  placeholder="revision"
-                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                />
-                <input
-                  value={downloadFolder}
-                  onChange={(event) => setDownloadFolder(event.target.value)}
-                  disabled={modelBusy}
-                  placeholder="folder"
-                  className="w-28 rounded border border-neutral-800 bg-neutral-950 px-2 py-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                />
-                <button
-                  type="submit"
-                  disabled={!downloadRepoId.trim() || modelBusy || streaming}
-                  className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
-                >
-                  {modelBusy && !modelLoadEvent ? "Working..." : "Download"}
-                </button>
-              </div>
-              <div className="text-[11px] text-neutral-600">
-                Keep this request open; current TabbyAPI cancels downloads on disconnect.
-              </div>
-            </form>
-          </div>
-        </section>
-
-        {!project && (
-          <div className="grid gap-4 md:grid-cols-2">
-            <form
-              onSubmit={(event) => void onCreateProject(event)}
-              className="space-y-3 rounded border border-neutral-800 bg-neutral-900/70 p-4"
+        <div className="bw-status">
+          <span className="bw-dot" data-live={currentTabbyModel !== null} />
+          <button
+            type="button"
+            className="bw-link-button"
+            onClick={() => setModelPanelOpen(true)}
+          >
+            {loadingModels ? "checking model" : formatModelLabel(currentTabbyModel)}
+          </button>
+          <span className={contextWarn ? "text-[color:var(--warn)]" : ""}>
+            <strong>
+              {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
+            </strong>
+            {" / "}
+            {contextMax === null ? "unknown" : contextMax.toLocaleString()}
+            {" tokens"}
+          </span>
+          {project && (
+            <button
+              type="button"
+              className="bw-link-button"
+              onClick={() => void onCloseProject()}
+              disabled={saving || streaming}
             >
-              <div className="text-sm text-neutral-300">Create project</div>
-              <input
-                className="w-full rounded border border-neutral-800 bg-neutral-950 p-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                value={newPath}
-                onChange={(event) => setNewPath(event.target.value)}
-                placeholder="/path/to/project.bwbk"
-              />
-              <input
-                className="w-full rounded border border-neutral-800 bg-neutral-950 p-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                value={newTitle}
-                onChange={(event) => setNewTitle(event.target.value)}
-                placeholder="Project title"
-              />
-              <button
-                type="submit"
-                disabled={loadingProject}
-                className="rounded bg-neutral-100 px-4 py-2 text-sm text-neutral-950 disabled:opacity-40"
-              >
-                Create
-              </button>
-            </form>
+              close
+            </button>
+          )}
+        </div>
+      </header>
 
-            <form
-              onSubmit={(event) => void onOpenProject(event)}
-              className="space-y-3 rounded border border-neutral-800 bg-neutral-900/70 p-4"
-            >
-              <div className="text-sm text-neutral-300">Open project</div>
-              <input
-                className="w-full rounded border border-neutral-800 bg-neutral-950 p-2 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                value={openPath}
-                onChange={(event) => setOpenPath(event.target.value)}
-                placeholder="/path/to/project.bwbk"
-              />
-              <button
-                type="submit"
-                disabled={loadingProject}
-                className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 disabled:opacity-40"
-              >
-                Open
-              </button>
-            </form>
-          </div>
-        )}
+      {error && <div className="bw-error">{error}</div>}
 
-        <SamplerDrawer
-          open={samplerOpen}
-          presets={presets}
-          activePresetId={activePresetId}
-          draft={draftBody}
-          busy={samplerBusy}
-          dirty={draftDirty}
-          projectOpen={project !== null}
-          onClose={() => setSamplerOpen(false)}
-          onSelectPreset={(id) => void onSelectPreset(id)}
-          onDraftChange={setDraftBody}
-          onSaveChanges={() => void onSaveChanges()}
-          onSaveAs={(name) => void onSaveAs(name)}
-          onDeletePreset={(id) => void onDeletePreset(id)}
-          onNeutralize={onNeutralizeDraft}
-        />
+      <SamplerDrawer
+        open={samplerOpen}
+        presets={presets}
+        activePresetId={activePresetId}
+        draft={draftBody}
+        busy={samplerBusy}
+        dirty={draftDirty}
+        projectOpen={project !== null}
+        onClose={() => setSamplerOpen(false)}
+        onSelectPreset={(id) => void onSelectPreset(id)}
+        onDraftChange={setDraftBody}
+        onSaveChanges={() => void onSaveChanges()}
+        onSaveAs={(name) => void onSaveAs(name)}
+        onDeletePreset={(id) => void onDeletePreset(id)}
+        onNeutralize={onNeutralizeDraft}
+      />
 
-        {project && tree && currentId && (
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_360px]">
-            <main className="space-y-4">
-              <div className="rounded border border-neutral-800 bg-neutral-900/70 p-3 text-xs text-neutral-500">
-                <div className="truncate">{project.path}</div>
-                <div className="mt-1">
-                  Current path: {currentPath.length} node
-                  {currentPath.length === 1 ? "" : "s"}
-                </div>
-                <div className={contextWarn ? "mt-1 text-amber-400" : "mt-1"}>
-                  Tokens:{" "}
-                  {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
-                  {" / "}
-                  {contextMax === null ? "unknown" : contextMax.toLocaleString()}
-                </div>
-              </div>
-
+      {modelPanelOpen && (
+        <div
+          className="bw-modal-backdrop"
+          role="dialog"
+          aria-label="Model management"
+          onMouseDown={() => setModelPanelOpen(false)}
+        >
+          <section
+            className="bw-modal"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="bw-modal-head">
               <div>
-                <div className="mb-1 text-xs text-neutral-500">Buffer</div>
+                <div className="bw-kicker">TabbyAPI</div>
+                <div className="mt-1 font-serif text-xl">
+                  {formatModelLabel(currentTabbyModel)}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => void onRefreshModels()}
+                  disabled={loadingModels || modelBusy}
+                  className="bw-button"
+                >
+                  Refresh
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onUnloadModel()}
+                  disabled={!currentTabbyModel || modelBusy || streaming || branchPickerOpen}
+                  className="bw-button"
+                >
+                  Unload
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setModelPanelOpen(false)}
+                  className="bw-button bw-button-quiet"
+                >
+                  Close
+                </button>
+              </div>
+            </div>
+            <div className="bw-modal-body">
+              <div className="bw-form-grid two">
+                <section className="bw-panel">
+                  <div className="bw-kicker">Load local model</div>
+                  <div className="mt-3 grid gap-2">
+                    <select
+                      value={selectedModelName}
+                      onChange={(event) => setSelectedModelName(event.target.value)}
+                      disabled={loadingModels || modelBusy}
+                      className="bw-select w-full"
+                    >
+                      {availableModels.length === 0 && (
+                        <option value="">No local models found</option>
+                      )}
+                      {availableModels.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.id}
+                        </option>
+                      ))}
+                    </select>
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        type="number"
+                        min={256}
+                        step={256}
+                        value={loadMaxSeqLen}
+                        onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
+                        disabled={modelBusy}
+                        className="bw-input w-32"
+                        title="max_seq_len"
+                      />
+                      <select
+                        value={loadCacheMode}
+                        onChange={(event) => setLoadCacheMode(event.target.value)}
+                        disabled={modelBusy}
+                        className="bw-select w-28"
+                      >
+                        <option value="Q4">Q4</option>
+                        <option value="Q6">Q6</option>
+                        <option value="Q8">Q8</option>
+                        <option value="FP16">FP16</option>
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => void onLoadModel()}
+                        disabled={!selectedModelName || modelBusy || streaming}
+                        className="bw-button bw-button-primary"
+                      >
+                        {modelBusy && modelLoadEvent
+                          ? formatLoadEvent(modelLoadEvent)
+                          : "Load"}
+                      </button>
+                    </div>
+                    <div className="text-xs text-[color:var(--ink-muted)]">
+                      {COMMON_CONTEXT_SIZES}
+                    </div>
+                  </div>
+                </section>
+
+                <form
+                  onSubmit={(event) => void onDownloadModel(event)}
+                  className="bw-panel"
+                >
+                  <div className="bw-kicker">Download from Hugging Face</div>
+                  <div className="mt-3 grid gap-2">
+                    <input
+                      value={downloadRepoId}
+                      onChange={(event) => setDownloadRepoId(event.target.value)}
+                      disabled={modelBusy}
+                      placeholder="repo_id"
+                      className="bw-input w-full"
+                    />
+                    <div className="flex flex-wrap gap-2">
+                      <input
+                        value={downloadRevision}
+                        onChange={(event) => setDownloadRevision(event.target.value)}
+                        disabled={modelBusy}
+                        placeholder="revision"
+                        className="bw-input w-32"
+                      />
+                      <input
+                        value={downloadFolder}
+                        onChange={(event) => setDownloadFolder(event.target.value)}
+                        disabled={modelBusy}
+                        placeholder="folder"
+                        className="bw-input min-w-36 flex-1"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!downloadRepoId.trim() || modelBusy || streaming}
+                        className="bw-button"
+                      >
+                        {modelBusy && !modelLoadEvent ? "Working" : "Download"}
+                      </button>
+                    </div>
+                    <div className="text-xs text-[color:var(--ink-muted)]">
+                      Keep the request open until Tabby finishes.
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {!project && (
+        <main className="bw-editor">
+          <div className="bw-manuscript-scroll">
+            <section className="bw-manuscript">
+              <div className="mb-8">
+                <div className="bw-kicker">Project</div>
+                <h1 className="mt-2 font-serif text-4xl leading-tight">
+                  Open a workbook
+                </h1>
+              </div>
+              <div className="bw-form-grid two">
+                <form onSubmit={(event) => void onCreateProject(event)} className="bw-panel">
+                  <div className="bw-kicker">Create</div>
+                  <div className="mt-3 grid gap-2">
+                    <input
+                      className="bw-input w-full"
+                      value={newPath}
+                      onChange={(event) => setNewPath(event.target.value)}
+                      placeholder="/path/to/project.bwbk"
+                    />
+                    <input
+                      className="bw-input w-full"
+                      value={newTitle}
+                      onChange={(event) => setNewTitle(event.target.value)}
+                      placeholder="Project title"
+                    />
+                    <button
+                      type="submit"
+                      disabled={loadingProject}
+                      className="bw-button bw-button-primary justify-self-start"
+                    >
+                      Create
+                    </button>
+                  </div>
+                </form>
+                <form onSubmit={(event) => void onOpenProject(event)} className="bw-panel">
+                  <div className="bw-kicker">Open</div>
+                  <div className="mt-3 grid gap-2">
+                    <input
+                      className="bw-input w-full"
+                      value={openPath}
+                      onChange={(event) => setOpenPath(event.target.value)}
+                      placeholder="/path/to/project.bwbk"
+                    />
+                    <button
+                      type="submit"
+                      disabled={loadingProject}
+                      className="bw-button justify-self-start"
+                    >
+                      Open
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </section>
+          </div>
+        </main>
+      )}
+
+      {project && tree && currentId && (
+        <div className="bw-workspace" data-picker={branchPickerOpen}>
+          <aside className="bw-tree">
+            <div className="bw-rail-head">
+              <div>
+                <div className="bw-kicker">Tree</div>
+                <div className="mt-1 text-xs text-[color:var(--ink-muted)]">
+                  {currentPath.length} on path
+                </div>
+              </div>
+              <label className="flex items-center gap-2 text-xs text-[color:var(--ink-muted)]">
+                <input
+                  type="checkbox"
+                  checked={showHidden}
+                  onChange={(event) => setShowHidden(event.target.checked)}
+                />
+                hidden
+              </label>
+            </div>
+            <div className="bw-tree-list">{renderTreeNode(tree.rootId)}</div>
+            <div className="bw-tree-foot">
+              {Object.keys(tree.nodes).length.toLocaleString()} nodes
+            </div>
+          </aside>
+
+          <main className="bw-editor">
+            <div className="bw-manuscript-scroll">
+              <section className="bw-manuscript">
+                {currentNode && (
+                  <div className="mb-6">
+                    <NodeNameEditor
+                      node={currentNode}
+                      disabled={saving || streaming || branchPickerOpen}
+                      onRename={(name) => void onRenameCurrentNode(name)}
+                    />
+                  </div>
+                )}
                 <textarea
-                  className="min-h-72 w-full resize-y rounded border border-neutral-800 bg-neutral-900 p-3 text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-60"
+                  className="bw-buffer"
                   value={buffer}
                   onChange={(event) => setBuffer(event.target.value)}
                   disabled={branchPickerOpen}
+                  placeholder="Start writing..."
                   spellCheck={false}
                 />
-              </div>
+              </section>
+            </div>
 
-              <div className="flex flex-wrap items-center gap-2 rounded border border-neutral-800 bg-neutral-900/70 px-3 py-2">
-                <span className="text-xs uppercase tracking-widest text-neutral-500">
-                  Sampler
-                </span>
+            <footer className="bw-actionbar">
+              <label className="bw-field">
+                Preset
                 <select
                   value={activePresetId ?? ""}
                   onChange={(event) =>
                     void onSelectPreset(event.target.value || null)
                   }
                   disabled={samplerBusy || streaming || branchPickerOpen}
-                  className="min-w-40 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                  className="bw-select min-w-36"
                 >
-                  <option value="">(none)</option>
+                  <option value="">none</option>
                   {presets.map((preset) => (
                     <option key={preset.id} value={preset.id}>
                       {preset.name}
                     </option>
                   ))}
                 </select>
-                {draftDirty && (
-                  <span className="text-xs text-amber-400" title="Unsaved changes">
-                    *
-                  </span>
-                )}
+              </label>
+              {draftDirty && (
+                <span title="Unsaved sampler changes" className="text-[color:var(--warn)]">
+                  *
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => setSamplerOpen(true)}
+                disabled={samplerBusy}
+                className="bw-button"
+              >
+                Samplers
+              </button>
+              <label className="bw-field">
+                Branches
+                <input
+                  type="number"
+                  min={1}
+                  max={6}
+                  value={branchCount}
+                  onChange={(event) => setBranchCount(Number(event.target.value))}
+                  disabled={streaming || saving || branchPickerOpen}
+                  className="bw-input w-16"
+                />
+              </label>
+              <label className="bw-field">
+                Max tokens
+                <input
+                  type="number"
+                  min={1}
+                  value={maxTokens}
+                  onChange={(event) => setMaxTokens(Number(event.target.value))}
+                  disabled={streaming || saving || branchPickerOpen}
+                  className="bw-input w-24"
+                />
+              </label>
+              <div className="flex-1" />
+              <button
+                type="button"
+                onClick={() => void onSave()}
+                disabled={saving || streaming || branchPickerOpen}
+                className="bw-button"
+              >
+                {saving ? "Saving" : "Save"}
+              </button>
+              {streaming ? (
                 <button
-                  onClick={() => setSamplerOpen(true)}
-                  disabled={samplerBusy}
-                  className="ml-auto rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
-                >
-                  Edit
-                </button>
-              </div>
-
-              <div className="flex flex-wrap items-center gap-2">
-                <label className="flex items-center gap-2 rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
-                  Branches
-                  <input
-                    type="number"
-                    min={1}
-                    max={6}
-                    value={branchCount}
-                    onChange={(event) =>
-                      setBranchCount(Number(event.target.value))
-                    }
-                    disabled={streaming || saving || branchPickerOpen}
-                    className="w-14 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                  />
-                </label>
-                <label className="flex items-center gap-2 rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
-                  Max tokens
-                  <input
-                    type="number"
-                    min={1}
-                    value={maxTokens}
-                    onChange={(event) =>
-                      setMaxTokens(Number(event.target.value))
-                    }
-                    disabled={streaming || saving || branchPickerOpen}
-                    className="w-20 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
-                  />
-                </label>
-                <button
-                  onClick={() => void onSave()}
-                  disabled={saving || streaming || branchPickerOpen}
-                  className="rounded bg-neutral-100 px-4 py-2 text-sm text-neutral-950 disabled:opacity-40"
-                >
-                  {saving ? "Saving..." : "Save"}
-                </button>
-                <button
-                  onClick={() => void onGenerate()}
-                  disabled={
-                    saving || streaming || branchPickerOpen || !currentTabbyModel
-                  }
-                  className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
-                >
-                  {streaming ? "Generating..." : "Generate"}
-                </button>
-                <button
+                  type="button"
                   onClick={onCancel}
-                  disabled={!streaming}
-                  className="rounded bg-neutral-800 px-4 py-2 text-sm text-neutral-100 transition-colors hover:bg-neutral-700 disabled:cursor-not-allowed disabled:opacity-40"
+                  className="bw-button bw-button-primary"
                 >
                   Stop
                 </button>
+              ) : (
                 <button
+                  type="button"
+                  onClick={() => void onGenerate()}
+                  disabled={saving || branchPickerOpen || !currentTabbyModel}
+                  className="bw-button bw-button-primary"
+                >
+                  Generate
+                </button>
+              )}
+            </footer>
+          </main>
+
+          {branchPickerOpen && (
+            <aside className="bw-picker">
+              <div className="bw-picker-head">
+                <div>
+                  <div className="bw-kicker">Branches</div>
+                  <div className="mt-1 text-xs text-[color:var(--ink-muted)]">
+                    {streaming ? "streaming" : "ready"}
+                  </div>
+                </div>
+                <button
+                  type="button"
                   onClick={clearBranchPicker}
-                  disabled={!branchPickerOpen || streaming || saving}
-                  className="rounded bg-neutral-900 px-4 py-2 text-sm text-neutral-400 transition-colors hover:text-neutral-100 disabled:opacity-40"
+                  disabled={streaming || saving}
+                  className="bw-button bw-button-quiet"
                 >
-                  Discard candidates
-                </button>
-                <button
-                  onClick={() => void onCloseProject()}
-                  disabled={saving || streaming}
-                  className="ml-auto rounded bg-neutral-900 px-4 py-2 text-sm text-neutral-400 transition-colors hover:text-neutral-100 disabled:opacity-40"
-                >
-                  Close
+                  Discard
                 </button>
               </div>
-
-              <div>
-                <div className="mb-1 flex items-center justify-between">
-                  <div className="text-xs text-neutral-500">Branches</div>
-                  {branchPickerOpen && (
-                    <div className="text-xs text-neutral-600">
-                      {streaming ? "streaming" : "ready"}
+              <div className="bw-picker-body">
+                {candidates.map((text, index) => (
+                  <section
+                    key={index}
+                    className="bw-branch-card"
+                    data-empty={!text}
+                  >
+                    <div className="bw-branch-head">
+                      <div className="bw-kicker">Branch {index + 1}</div>
+                      <button
+                        type="button"
+                        onClick={() => void onChooseCandidate(index)}
+                        disabled={!text || streaming || saving}
+                        className="bw-button"
+                      >
+                        Use
+                      </button>
                     </div>
-                  )}
-                </div>
+                    <div className="bw-branch-text">
+                      {text || (
+                        <span className="bw-empty">
+                          {streaming ? "Waiting for tokens..." : "No text."}
+                        </span>
+                      )}
+                    </div>
+                  </section>
+                ))}
 
-                {!branchPickerOpen && (
-                  <div className="rounded border border-neutral-800 bg-neutral-900 p-3 text-sm text-neutral-600">
-                    Generate from the current buffer to stream branch candidates.
+                <section className="bw-branch-card bw-compose-card">
+                  <div className="bw-branch-head">
+                    <div className="bw-kicker">Write your own</div>
+                    <button
+                      type="button"
+                      onClick={() => void onCommitComposition()}
+                      disabled={!composition.trim() || streaming || saving}
+                      className="bw-button bw-button-primary"
+                    >
+                      Commit
+                    </button>
                   </div>
-                )}
-
-                {branchPickerOpen && (
-                  <div className="space-y-3">
-                    <div className="grid gap-3 md:grid-cols-2">
-                      {candidates.map((text, index) => (
-                        <div
-                          key={index}
-                          className="rounded border border-neutral-800 bg-neutral-900 p-3"
-                        >
-                          <div className="mb-2 flex items-center justify-between">
-                            <div className="text-xs uppercase tracking-widest text-neutral-500">
-                              Branch {index + 1}
-                            </div>
-                            <button
-                              onClick={() => void onChooseCandidate(index)}
-                              disabled={!text || streaming || saving}
-                              className="rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
-                            >
-                              Choose
-                            </button>
-                          </div>
-                          <div className="min-h-32 whitespace-pre-wrap text-sm text-neutral-100">
-                            {text || (
-                              <span className="text-neutral-600">
-                                {streaming ? "Waiting for tokens..." : "No text."}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="rounded border border-neutral-800 bg-neutral-900 p-3">
-                      <div className="mb-2 flex items-center justify-between">
-                        <div className="text-xs uppercase tracking-widest text-neutral-500">
-                          Write your own
-                        </div>
-                        <button
-                          onClick={() => void onCommitComposition()}
-                          disabled={!composition.trim() || streaming || saving}
-                          className="rounded bg-neutral-100 px-3 py-1 text-xs text-neutral-950 transition-colors disabled:opacity-40"
-                        >
-                          Commit composed
-                        </button>
-                      </div>
-                      <textarea
-                        className="min-h-28 w-full resize-y rounded border border-neutral-800 bg-neutral-950 p-3 text-sm text-neutral-100 focus:border-neutral-600 focus:outline-none"
-                        value={composition}
-                        onChange={(event) => setComposition(event.target.value)}
-                        placeholder="Compose a branch from scratch or paste pieces from generated branches."
-                        spellCheck={false}
-                      />
-                    </div>
-                  </div>
-                )}
-              </div>
-            </main>
-
-            <aside className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="text-xs uppercase tracking-widest text-neutral-500">
-                  Tree
-                </div>
-                <label className="flex items-center gap-2 text-xs text-neutral-500">
-                  <input
-                    type="checkbox"
-                    checked={showHidden}
-                    onChange={(event) => setShowHidden(event.target.checked)}
+                  <textarea
+                    className="bw-textarea min-h-32 w-full resize-y p-3"
+                    value={composition}
+                    onChange={(event) => setComposition(event.target.value)}
+                    placeholder="Compose from scratch or paste from the branches."
+                    spellCheck={false}
                   />
-                  show hidden
-                </label>
-              </div>
-              <div className="max-h-[calc(100vh-190px)] space-y-1 overflow-auto rounded border border-neutral-800 bg-neutral-950 p-2">
-                {renderTreeNode(tree.rootId)}
+                </section>
               </div>
             </aside>
-          </div>
-        )}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -46,7 +46,7 @@ function SliderControl({
 }) {
   if (field.kind === "checkbox") {
     return (
-      <label className="flex items-center gap-2 text-xs text-neutral-300">
+      <label className="flex items-center gap-2 text-xs text-[color:var(--ink-muted)]">
         <input
           type="checkbox"
           checked={value === true}
@@ -54,9 +54,9 @@ function SliderControl({
             onChange(event.target.checked)
           }
           disabled={disabled}
-          className="accent-emerald-500"
+          className="accent-[var(--accent)]"
         />
-        <span className="font-mono text-neutral-400">{field.label}</span>
+        <span>{field.label}</span>
       </label>
     );
   }
@@ -65,7 +65,7 @@ function SliderControl({
     return (
       <div>
         <div className="mb-1 flex items-baseline justify-between gap-2">
-          <span className="font-mono text-xs text-neutral-400">{field.label}</span>
+          <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
         </div>
         <input
           type="text"
@@ -73,7 +73,7 @@ function SliderControl({
           onChange={(event) => onChange(event.target.value)}
           disabled={disabled}
           placeholder={field.info}
-          className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+          className="bw-input w-full text-xs"
         />
       </div>
     );
@@ -86,10 +86,10 @@ function SliderControl({
     return (
       <div>
         <div className="mb-1 flex items-baseline justify-between gap-2">
-          <span className="font-mono text-xs text-neutral-400">{field.label}</span>
+          <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
           <span
-            className={`font-mono text-[11px] ${
-              isNeutral ? "text-neutral-600" : "text-neutral-100"
+            className={`text-[11px] ${
+              isNeutral ? "text-[color:var(--ink-faint)]" : "text-[color:var(--ink)]"
             }`}
           >
             {numericValue}
@@ -103,7 +103,7 @@ function SliderControl({
           step={field.step}
           onChange={(event) => onChange(Number(event.target.value))}
           disabled={disabled}
-          className="w-full rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+          className="bw-input w-full text-xs"
         />
       </div>
     );
@@ -113,10 +113,10 @@ function SliderControl({
   return (
     <div>
       <div className="mb-1 flex items-baseline justify-between gap-2">
-        <span className="font-mono text-xs text-neutral-400">{field.label}</span>
+        <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
         <span
-          className={`font-mono text-[11px] ${
-            isNeutral ? "text-neutral-600" : "text-neutral-100"
+          className={`text-[11px] ${
+            isNeutral ? "text-[color:var(--ink-faint)]" : "text-[color:var(--ink)]"
           }`}
         >
           {numericValue}
@@ -130,7 +130,7 @@ function SliderControl({
         value={numericValue}
         onChange={(event) => onChange(Number(event.target.value))}
         disabled={disabled}
-        className="w-full accent-emerald-500 disabled:opacity-40"
+        className="w-full accent-[var(--accent)] disabled:opacity-40"
       />
     </div>
   );
@@ -170,7 +170,7 @@ export default function SamplerDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex justify-end"
+      className="bw-drawer-backdrop justify-end"
       role="dialog"
       aria-label="Sampler presets"
     >
@@ -178,30 +178,28 @@ export default function SamplerDrawer({
         type="button"
         aria-label="Close sampler drawer"
         onClick={onClose}
-        className="absolute inset-0 bg-black/50"
+        className="absolute inset-0 border-0 bg-transparent"
       />
-      <aside className="relative flex h-full w-full max-w-md flex-col overflow-hidden border-l border-neutral-800 bg-neutral-950 shadow-xl">
-        <header className="border-b border-neutral-800 p-4">
+      <aside className="relative flex h-full w-full max-w-md flex-col overflow-hidden border-l border-[color:var(--line-dark)] bg-[color:var(--editor)] shadow-[var(--shadow)]">
+        <header className="border-b border-[color:var(--line)] p-4">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs uppercase tracking-widest text-neutral-500">
-                Samplers
-              </div>
-              <div className="mt-1 text-sm text-neutral-100">
+              <div className="bw-kicker">Samplers</div>
+              <div className="mt-1 font-serif text-xl text-[color:var(--ink)]">
                 {activePreset ? activePreset.name : "(no preset selected)"}
-                {dirty && <span className="ml-1 text-amber-400">*</span>}
+                {dirty && <span className="ml-1 text-[color:var(--warn)]">*</span>}
               </div>
             </div>
             <button
               onClick={onClose}
-              className="rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700"
+              className="bw-button bw-button-quiet"
             >
               Close
             </button>
           </div>
 
           <div className="mt-3 space-y-2">
-            <label className="flex items-center gap-2 text-xs text-neutral-500">
+            <label className="flex items-center gap-2 text-xs text-[color:var(--ink-muted)]">
               Preset
               <select
                 value={activePresetId ?? ""}
@@ -209,7 +207,7 @@ export default function SamplerDrawer({
                   onSelectPreset(event.target.value || null)
                 }
                 disabled={busy || !projectOpen}
-                className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                className="bw-select flex-1 text-xs"
               >
                 <option value="">(none)</option>
                 {presets.map((preset) => (
@@ -220,7 +218,7 @@ export default function SamplerDrawer({
               </select>
             </label>
             {!projectOpen && (
-              <div className="text-[11px] text-neutral-600">
+              <div className="text-[11px] text-[color:var(--ink-faint)]">
                 Open a project to activate a preset for it.
               </div>
             )}
@@ -229,7 +227,7 @@ export default function SamplerDrawer({
               <button
                 onClick={onSaveChanges}
                 disabled={!canModifyActive || !dirty || busy}
-                className="rounded bg-neutral-100 px-3 py-1 text-xs text-neutral-950 transition-colors disabled:opacity-40"
+                className="bw-button bw-button-primary text-xs"
                 title="Save changes into the active preset"
               >
                 Save
@@ -237,7 +235,7 @@ export default function SamplerDrawer({
               <button
                 onClick={onNeutralize}
                 disabled={busy}
-                className="rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+                className="bw-button text-xs"
                 title="Reset every sampler to its neutral default"
               >
                 Neutralize
@@ -254,7 +252,7 @@ export default function SamplerDrawer({
                   }
                 }}
                 disabled={!canModifyActive || busy}
-                className="rounded bg-neutral-800 px-3 py-1 text-xs text-red-400 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+                className="bw-button text-xs text-[color:var(--warn)]"
                 title="Delete the active preset"
               >
                 Delete
@@ -267,7 +265,7 @@ export default function SamplerDrawer({
                 onChange={(event) => setSaveAsName(event.target.value)}
                 placeholder="Save current as..."
                 disabled={busy}
-                className="flex-1 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-xs text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                className="bw-input flex-1 text-xs"
               />
               <button
                 onClick={() => {
@@ -277,7 +275,7 @@ export default function SamplerDrawer({
                   setSaveAsName("");
                 }}
                 disabled={!saveAsName.trim() || busy}
-                className="rounded bg-neutral-800 px-3 py-1 text-xs text-neutral-100 transition-colors hover:bg-neutral-700 disabled:opacity-40"
+                className="bw-button text-xs"
               >
                 Save as
               </button>
@@ -288,9 +286,7 @@ export default function SamplerDrawer({
         <div className="flex-1 space-y-5 overflow-y-auto p-4">
           {SAMPLER_SECTIONS.map((section) => (
             <section key={section.id} className="space-y-3">
-              <div className="text-xs uppercase tracking-widest text-neutral-500">
-                {section.title}
-              </div>
+              <div className="bw-kicker">{section.title}</div>
               {section.fields.map((field) => (
                 <div key={field.key as string}>
                   <SliderControl
@@ -301,7 +297,7 @@ export default function SamplerDrawer({
                     disabled={busy}
                   />
                   {field.info && (
-                    <div className="mt-1 text-[10px] text-neutral-600">
+                    <div className="mt-1 text-[10px] text-[color:var(--ink-faint)]">
                       {field.info}
                     </div>
                   )}

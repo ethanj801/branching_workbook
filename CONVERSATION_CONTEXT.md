@@ -1,13 +1,14 @@
 # Branching Workbook Context Dump
 
-Last updated: 2026-04-24
+Last updated: 2026-04-25
 
 ## Current State
 
 - Repo: `/Users/EthanJ/Documents/github/branching_workbook`
 - Git branch: `master`
-- Phase status: **Phases 0-6 complete.** Next work is Phase 7 (polish) plus the optional RunPod fire-and-forget deployment track.
-- Working tree: clean except this untracked handoff file.
+- Phase status: **Phases 0-6 complete; Phase 7 polish started.** Next work is continuing the UI/open-project polish plus the optional RunPod fire-and-forget deployment track.
+- Latest implementation commit before this handoff update: `aa0aca4` (`Polish workbook UI and persist node names`).
+- Working tree at handoff-update time: documentation edits pending commit.
 
 ## What Is Implemented
 
@@ -20,6 +21,7 @@ Last updated: 2026-04-24
 ### Project persistence (phase 2b)
 
 - `server/bwbk/db.py` owns the per-project SQLite file.
+- Nodes now have optional persisted `name` metadata. Existing `.bwbk` files are migrated by `init_schema()` with `ALTER TABLE nodes ADD COLUMN name TEXT`.
 - Endpoints:
   - `POST /api/projects`
   - `POST /api/projects/open`
@@ -95,6 +97,20 @@ Last updated: 2026-04-24
 - `client/src/App.tsx` shows the active preset near Generate, includes a dirty `*`, and opens the drawer.
 - Generate resolves the sampler snapshot up front, merges it into `/api/completions`, and persists it to `sampler_snapshot` on generated nodes.
 
+### Phase 7 polish slice (latest)
+
+- Commit `aa0aca4` started the real UI polish pass and added persisted node names.
+- The dark dashboard layout was replaced with a mockup-aligned shell:
+  - compact top model/status strip
+  - left tree rail
+  - central smooth manuscript buffer
+  - bottom generate bar
+  - right branch picker
+  - model management moved into a modal
+- Important course correction: do **not** continue the fake aged-paper / ruled-paper direction. The desired reference is `branching-workbook-mockup.jsx`: smooth `#f6f3ea` chrome, `#fbfaf5` editor, `#f2eee3` side rails, tiny uppercase labels, restrained borders, serif only for manuscript text and node title.
+- Current node names are editable inline above the buffer and persist to SQLite. Tree labels prefer `node.name` and fall back to text preview.
+- `client/src/samplers/SamplerDrawer.tsx` was restyled to match the light paper/stone UI, but it still needs a real browser pass.
+
 ## Verification
 
 - `just check` is green:
@@ -103,8 +119,8 @@ Last updated: 2026-04-24
   - client vitest
   - client production build
 - Current observed counts:
-  - server tests: `38 passed`
-  - client tests: `24 passed`
+  - server tests: `39 passed`
+  - client tests: `25 passed`
 
 ### Previously live-verified against the GPU tunnel
 
@@ -159,7 +175,8 @@ just dev
 ## Docs Status
 
 - `branching-workbook.md` reflects the two-store split and current Tabby workflow.
-- `implementation-plan.md` records Phase 6 as implemented and leaves Phase 7 + RunPod track remaining.
+- `implementation-plan.md` records Phase 6 as implemented and Phase 7 as started with the mockup-aligned UI/node-name slice.
+- `branching-workbook.md` now includes optional node `name` metadata in the node schema and buffer/tree UI requirements.
 - `AGENTS.md` documents the durable backend assumptions, current manual test pod procedure, and the user-global vs project-local storage boundary.
 - `CLAUDE.md` also reflects the two-store split in the current tree.
 
@@ -189,6 +206,9 @@ just dev
   - Delete clears the active preset when appropriate
   - Generate sends only non-neutral sampler fields and snapshots them on the new node
 - Phase 7 polish:
+  - continue matching `branching-workbook-mockup.jsx` proportions and smooth style
+  - fix project open/create UX; current browser flow still requires typed filesystem paths and should get a native file picker or app-shell equivalent
+  - browser-check inline node rename persistence
   - status indicators
   - full keyboard shortcut set
   - any remaining tree/branch UX cleanup
@@ -251,6 +271,7 @@ What is known so far:
 - `client/src/App.tsx`
 - `client/src/api.ts`
 - `client/src/tree/reshape.ts`
+- `client/src/tree/persistence.ts`
 - `client/src/samplers/fields.ts`
 - `client/src/samplers/fields.test.ts`
 - `client/src/samplers/SamplerDrawer.tsx`
@@ -260,4 +281,4 @@ What is known so far:
 
 ## Short Version
 
-Phases 0-6 are in the tree and `just check` is green. Real Tabby over SSH tunnel was already validated, model management is implemented, sampler presets are user-global in `userdata.sqlite`, active preset is per-project, and generate snapshots the resolved sampler onto generated nodes. Next: real-browser manual pass, Phase 7 polish, and optional RunPod template work.
+Phases 0-6 are in the tree and Phase 7 has started. `aa0aca4` moved the app toward the original mockup layout and added persisted, inline-editable node names. `just check` is green with 39 server tests and 25 client tests. Next: continue UI polish against `branching-workbook-mockup.jsx`, fix open/create project UX so users are not typing paths, do a real-browser pass against the live RunPod/Tabby tunnel, then decide whether to commit more polish or resume RunPod template validation.

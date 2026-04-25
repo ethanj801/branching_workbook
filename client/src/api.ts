@@ -77,6 +77,7 @@ export type NodeModel = {
   id: string;
   parent_id: string | null;
   text: string;
+  name?: string | null;
   source: NodeSource;
   hidden: boolean;
   is_main_path: boolean;

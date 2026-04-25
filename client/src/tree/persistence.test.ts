@@ -82,4 +82,23 @@ describe("tree persistence helpers", () => {
     expect(batch.deletes).toEqual(["C"]);
     expect(batch.main_path).toEqual(["root", "A", "B"]);
   });
+
+  it("round-trips node names and diffs renames", () => {
+    const loaded = loadedTreeFromModels([
+      { ...model("root", null, "", true), name: null },
+      { ...model("A", "root", "hello", true), name: "Opening" },
+    ]);
+
+    expect(loaded.tree.nodes.A.name).toBe("Opening");
+
+    const before = tree([node("root", null, ""), node("A", "root", "hello")]);
+    const after = tree([
+      node("root", null, ""),
+      { ...node("A", "root", "hello"), name: "Renamed" },
+    ]);
+    const batch = mutationBatchFromTrees(before, after, "A");
+
+    expect(batch.updates).toHaveLength(1);
+    expect(batch.updates?.[0]?.name).toBe("Renamed");
+  });
 });

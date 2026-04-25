@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     id                   TEXT PRIMARY KEY,
     parent_id            TEXT REFERENCES nodes(id),
     text                 TEXT NOT NULL,
+    name                 TEXT,
     source               TEXT NOT NULL,
     hidden               INTEGER NOT NULL DEFAULT 0,
     is_main_path         INTEGER NOT NULL DEFAULT 0,
@@ -66,12 +67,18 @@ def open_db(path: str | Path) -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection) -> None:
     with conn:
         conn.executescript(SCHEMA)
+        columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(nodes)").fetchall()
+        }
+        if "name" not in columns:
+            conn.execute("ALTER TABLE nodes ADD COLUMN name TEXT")
 
 
 class NodeModel(BaseModel):
     id: str
     parent_id: str | None
     text: str
+    name: str | None = None
     source: Literal["generated", "user_written", "composed"]
     hidden: bool = False
     is_main_path: bool = False
@@ -171,6 +178,7 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         id=r["id"],
         parent_id=r["parent_id"],
         text=r["text"],
+        name=r["name"],
         source=r["source"],
         hidden=bool(r["hidden"]),
         is_main_path=bool(r["is_main_path"]),
@@ -188,14 +196,15 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         INSERT INTO nodes (
-            id, parent_id, text, source, hidden, is_main_path, created_at,
+            id, parent_id, text, name, source, hidden, is_main_path, created_at,
             sampler_snapshot, seed, model_identifier, prior_context_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             n.id,
             n.parent_id,
             n.text,
+            n.name,
             n.source,
             int(n.hidden),
             int(n.is_main_path),
@@ -212,13 +221,14 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         UPDATE nodes
-        SET parent_id = ?, text = ?, source = ?, hidden = ?, is_main_path = ?,
+        SET parent_id = ?, text = ?, name = ?, source = ?, hidden = ?, is_main_path = ?,
             sampler_snapshot = ?, seed = ?, model_identifier = ?, prior_context_hash = ?
         WHERE id = ?
         """,
         (
             n.parent_id,
             n.text,
+            n.name,
             n.source,
             int(n.hidden),
             int(n.is_main_path),
@@ -256,9 +266,9 @@ def create_project(data: CreateProjectRequest, request: Request) -> ProjectInfo:
         conn.execute(
             """
             INSERT INTO nodes (
-                id, parent_id, text, source, hidden, is_main_path, created_at,
+                id, parent_id, text, name, source, hidden, is_main_path, created_at,
                 prior_context_hash
-            ) VALUES ('root', NULL, '', 'user_written', 0, 1, ?, ?)
+            ) VALUES ('root', NULL, '', NULL, 'user_written', 0, 1, ?, ?)
             """,
             (_now_epoch(), "0" * 16),
         )
@@ -276,6 +286,7 @@ def open_project(data: OpenProjectRequest, request: Request) -> ProjectInfo:
     conn: sqlite3.Connection | None = None
     try:
         conn = open_db(path)
+        init_schema(conn)
         _validate_project(conn)
         info = _project_info(conn, str(path))
     except HTTPException:

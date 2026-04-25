@@ -81,6 +81,9 @@ Each node carries:
 - A unique ID (UUID).
 - A parent ID (null for root).
 - The node's own text content, stored as plain UTF-8 with no markup.
+- Optional `name` text used as the tree/display label for important beats. Names
+  are user-facing metadata only; they do not participate in prompt assembly or
+  context hashing.
 - `source`: generated, user-written, or composed.
 - `hidden` boolean. Hidden nodes remain in the tree and on disk but are filtered out of default tree views. Used for branches the user didn't pick but doesn't want to outright delete.
 - `main_path` boolean marking the user's current canonical path; at most one node per depth level can have this set, forming a single path from root to some leaf.
@@ -302,6 +305,10 @@ The UI has three major surfaces, simultaneously visible by default: a buffer vie
 
 The buffer view is a single editable text area that by default shows the full root-to-current-leaf path as one continuous string. The user can toggle to an alternate mode that shows only the current node's text with ancestors visible but not editable in a separate pane; toggling between these modes is keyboard-accessible.
 
+The current node can be named inline near the buffer. This is a navigational aid
+for the tree view, not manuscript text, and renaming a node must not change the
+prompt sent to TabbyAPI.
+
 Edits in the buffer are local to the client until the user commits (by clicking generate, by pressing a dedicated save key, or by navigating away). On commit, the buffer-authoritative logic of section 3.1 runs: compute the common prefix with the active path, reshape the tree as needed, persist to SQLite.
 
 The buffer does not prefill the server's cache on edit. The server learns about buffer changes only on the next generate request.
@@ -367,6 +374,7 @@ CREATE TABLE nodes (
     id                   TEXT PRIMARY KEY,       -- UUID
     parent_id            TEXT REFERENCES nodes(id),
     text                 TEXT NOT NULL,
+    name                 TEXT,                   -- optional UI label
     source               TEXT NOT NULL,          -- 'generated', 'user_written', 'composed'
     hidden               INTEGER NOT NULL DEFAULT 0,
     is_main_path         INTEGER NOT NULL DEFAULT 0,

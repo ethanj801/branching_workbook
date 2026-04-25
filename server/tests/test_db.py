@@ -194,6 +194,19 @@ async def test_batch_updates_and_deletes(
     assert nodes["A"]["text"] == "hello"
 
 
+async def test_node_name_roundtrip(client: AsyncClient, project_path: Path):
+    await client.post("/api/projects", json={"path": str(project_path)})
+    a = _mk("A", "root", "chapter text", name="Chapter One")
+
+    r = await client.post("/api/nodes/batch", json={"creates": [a]})
+    assert r.status_code == 200
+
+    fetched = next(
+        node for node in (await client.get("/api/nodes")).json() if node["id"] == "A"
+    )
+    assert fetched["name"] == "Chapter One"
+
+
 async def test_batch_main_path_flag_is_exclusive(
     client: AsyncClient, project_path: Path
 ):

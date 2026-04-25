@@ -11,6 +11,7 @@ function nodeFromModel(node: NodeModel): TreeNode {
     id: node.id,
     parentId: node.parent_id,
     text: node.text,
+    name: node.name ?? null,
     source: node.source,
     hidden: node.hidden,
     createdAt: node.created_at,
@@ -26,6 +27,7 @@ function modelFromNode(node: TreeNode, isMainPath: boolean): NodeModel {
     id: node.id,
     parent_id: node.parentId,
     text: node.text,
+    name: node.name ?? null,
     source: node.source,
     hidden: node.hidden,
     is_main_path: isMainPath,
@@ -41,6 +43,7 @@ function sameNode(a: TreeNode, b: TreeNode): boolean {
   return (
     a.parentId === b.parentId &&
     a.text === b.text &&
+    (a.name ?? null) === (b.name ?? null) &&
     a.source === b.source &&
     a.hidden === b.hidden &&
     a.createdAt === b.createdAt &&

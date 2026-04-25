@@ -1,1 +1,547 @@
 @import "tailwindcss";
+
+:root {
+  --chrome: #f6f3ea;
+  --editor: #fbfaf5;
+  --rail: #f2eee3;
+  --ink: #1c1917;
+  --ink-muted: #57534e;
+  --ink-faint: #a8a29e;
+  --line: #e7e0d1;
+  --line-dark: #d6cdbb;
+  --accent: #292524;
+  --accent-soft: #e7e5e4;
+  --green: #047857;
+  --warn: #a16207;
+  --shadow: 0 1px 0 rgba(0, 0, 0, 0.02);
+  color: var(--ink);
+  background: var(--chrome);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background: var(--chrome);
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:disabled,
+input:disabled,
+select:disabled,
+textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.bw-app {
+  display: flex;
+  min-height: 100vh;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--ink);
+}
+
+.bw-topbar {
+  display: flex;
+  min-height: 37px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  background: var(--chrome);
+  padding: 0.5rem 1rem;
+}
+
+.bw-brand {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  gap: 0.75rem;
+}
+
+.bw-title {
+  font-size: 0.72rem;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.bw-project-title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-size: 0.72rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.75rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+}
+
+.bw-status strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bw-dot {
+  width: 0.5rem;
+  height: 0.5rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--ink-faint);
+  box-shadow: 0 0 0 3px rgba(169, 155, 130, 0.16);
+}
+
+.bw-dot[data-live="true"] {
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(65, 98, 77, 0.18);
+}
+
+.bw-link-button {
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 0;
+}
+
+.bw-link-button:hover {
+  border-color: var(--line-dark);
+  color: var(--ink);
+}
+
+.bw-error {
+  border-bottom: 1px solid #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+  padding: 0.55rem 1rem;
+  font-size: 0.82rem;
+}
+
+.bw-workspace {
+  display: grid;
+  flex: 1;
+  min-height: 0;
+  grid-template-columns: minmax(13rem, 18rem) minmax(0, 1fr);
+}
+
+.bw-workspace[data-picker="true"] {
+  grid-template-columns: minmax(10rem, 15rem) minmax(0, 1fr) minmax(18rem, 24rem);
+}
+
+.bw-tree {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border-right: 1px solid var(--line);
+  background: var(--rail);
+}
+
+.bw-rail-head,
+.bw-picker-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-bottom: 1px solid rgba(231, 224, 209, 0.85);
+  padding: 0.5rem 0.75rem;
+}
+
+.bw-kicker {
+  color: var(--ink-muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.bw-tree-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.25rem;
+}
+
+.bw-tree-row {
+  width: calc(100% - var(--depth));
+  margin-left: var(--depth);
+  border: 0;
+  border-radius: 0.12rem;
+  background: transparent;
+  padding: 0.25rem 0.5rem 0.25rem 0.25rem;
+  text-align: left;
+  transition: background 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.bw-tree-row:hover {
+  background: rgba(231, 229, 228, 0.5);
+}
+
+.bw-tree-row[data-current="true"] {
+  background: rgba(231, 229, 228, 0.82);
+}
+
+.bw-tree-row[data-path="true"] .bw-tree-preview {
+  color: var(--ink);
+}
+
+.bw-tree-row[data-hidden="true"] {
+  opacity: 0.48;
+}
+
+.bw-tree-preview {
+  display: block;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-tree-meta {
+  display: none;
+}
+
+.bw-tree-foot {
+  border-top: 1px solid rgba(231, 224, 209, 0.85);
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  padding: 0.65rem 0.82rem;
+}
+
+.bw-editor {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  background: var(--editor);
+}
+
+.bw-manuscript-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.bw-manuscript {
+  position: relative;
+  width: min(42.5rem, calc(100% - 3rem));
+  min-height: calc(100vh - 12rem);
+  margin: 3rem auto 3.5rem;
+  background: transparent;
+  padding: 0 4rem 0 4rem;
+}
+
+.bw-manuscript::before {
+  content: none;
+}
+
+.bw-buffer {
+  position: relative;
+  z-index: 1;
+  min-height: calc(100vh - 18rem);
+  width: 100%;
+  resize: none;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 1.0625rem;
+  line-height: 1.65;
+}
+
+.bw-buffer::placeholder {
+  color: rgba(117, 107, 92, 0.48);
+  font-style: italic;
+}
+
+.bw-node-name,
+.bw-node-name-input {
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid transparent;
+  background: transparent;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 1.25rem;
+  line-height: 1.35;
+  outline: 0;
+  padding: 0 0 0.25rem;
+  text-align: left;
+}
+
+.bw-node-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.55rem;
+}
+
+.bw-node-name:hover {
+  border-color: var(--line-dark);
+}
+
+.bw-node-name .empty {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.bw-node-name .mark {
+  color: var(--ink-faint);
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-size: 0.65rem;
+  opacity: 0;
+  text-transform: uppercase;
+}
+
+.bw-node-name:hover .mark {
+  opacity: 1;
+}
+
+.bw-node-name-input {
+  border-color: var(--ink-faint);
+}
+
+.bw-actionbar {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border-top: 1px solid var(--line);
+  background: rgba(246, 243, 234, 0.84);
+  padding: 0.55rem 1.5rem;
+}
+
+.bw-field {
+  display: flex;
+  align-items: center;
+  gap: 0.38rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+}
+
+.bw-input,
+.bw-select,
+.bw-textarea {
+  border: 1px solid var(--line);
+  border-radius: 0.12rem;
+  background: rgba(255, 255, 255, 0.62);
+  color: var(--ink);
+  outline: 0;
+}
+
+.bw-input,
+.bw-select {
+  height: 2rem;
+  padding: 0 0.55rem;
+}
+
+.bw-input:focus,
+.bw-select:focus,
+.bw-textarea:focus {
+  border-color: var(--ink-muted);
+  box-shadow: none;
+}
+
+.bw-button {
+  min-height: 2rem;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.12rem;
+  background: rgba(251, 250, 245, 0.8);
+  color: var(--ink);
+  padding: 0 0.8rem;
+  transition: transform 140ms ease, background 140ms ease, border-color 140ms ease;
+}
+
+.bw-button:hover {
+  border-color: var(--ink-muted);
+  background: var(--accent-soft);
+  transform: none;
+}
+
+.bw-button-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff9ed;
+}
+
+.bw-button-primary:hover {
+  border-color: #000;
+  background: #000;
+}
+
+.bw-button-quiet {
+  border-color: transparent;
+  background: transparent;
+  color: var(--ink-muted);
+}
+
+.bw-picker {
+  display: flex;
+  min-height: 0;
+  flex-direction: column;
+  border-left: 1px solid var(--line);
+  background: var(--rail);
+}
+
+.bw-picker-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 0.75rem;
+}
+
+.bw-branch-card {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 0.12rem;
+  background: var(--editor);
+  box-shadow: 0 1px 0 rgba(38, 31, 25, 0.04);
+}
+
+.bw-branch-card + .bw-branch-card,
+.bw-compose-card {
+  margin-top: 0.75rem;
+}
+
+.bw-branch-card[data-empty="true"] {
+  border-style: dashed;
+}
+
+.bw-branch-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-bottom: 1px solid var(--line);
+  background: rgba(250, 250, 249, 0.6);
+  padding: 0.38rem 0.65rem;
+}
+
+.bw-branch-text {
+  min-height: 5rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  padding: 0.8rem 0.9rem;
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 0.92rem;
+  line-height: 1.55;
+}
+
+.bw-empty {
+  color: var(--ink-faint);
+  font-style: italic;
+}
+
+.bw-modal-backdrop,
+.bw-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: flex;
+  background: rgba(38, 31, 25, 0.38);
+  backdrop-filter: blur(5px);
+}
+
+.bw-modal-backdrop {
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.bw-modal {
+  width: min(56rem, 100%);
+  max-height: min(86vh, 48rem);
+  overflow: hidden;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.32rem;
+  background: var(--editor);
+  box-shadow: var(--shadow);
+}
+
+.bw-modal-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--line);
+  padding: 0.9rem 1rem;
+}
+
+.bw-modal-body {
+  max-height: calc(86vh - 4rem);
+  overflow: auto;
+  padding: 1rem;
+}
+
+.bw-form-grid {
+  display: grid;
+  gap: 0.85rem;
+}
+
+.bw-form-grid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.bw-panel {
+  border: 1px solid var(--line);
+  border-radius: 0.24rem;
+  background: rgba(251, 247, 236, 0.76);
+  padding: 0.85rem;
+}
+
+@media (max-width: 960px) {
+  .bw-workspace,
+  .bw-workspace[data-picker="true"] {
+    grid-template-columns: 1fr;
+  }
+
+  .bw-tree,
+  .bw-picker {
+    max-height: 35vh;
+    border: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .bw-manuscript {
+    width: calc(100% - 1.5rem);
+    margin: 1rem auto 1.4rem;
+    padding: 1.6rem 1.2rem 2rem 2rem;
+  }
+
+  .bw-actionbar,
+  .bw-topbar,
+  .bw-status {
+    flex-wrap: wrap;
+  }
+
+  .bw-form-grid.two {
+    grid-template-columns: 1fr;
+  }
+}

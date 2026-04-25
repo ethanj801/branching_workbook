@@ -138,6 +138,16 @@ This is not a product dependency. Branching Workbook must keep working with any 
 - Hidden-nodes view toggle.
 - Status indicators per §7.7.
 - Full keyboard shortcut set per §7.6 (Cmd+S commit already lives in Phase 2; this phase adds navigation, generate, cancel, branch-select hotkeys).
+- **Partial status:** first UI pass is committed. The app shell now uses the
+  mockup's basic structure (top model/status strip, left tree rail, central
+  manuscript buffer, bottom generate bar, right branch picker) with the original
+  smooth stone/paper palette rather than the earlier dark dashboard. Node names
+  are persisted in project SQLite and editable inline above the buffer.
+- **Remaining UI follow-up:** continue aligning the real app with
+  `branching-workbook-mockup.jsx` by tightening proportions, branch-card
+  density, tree readability, model modal ergonomics, and project open/create
+  flow. The current browser project-open flow still uses typed paths; a native
+  file picker or app-shell equivalent is still needed.
 
 ## Out of scope for this plan
 
