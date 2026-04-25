@@ -327,15 +327,6 @@ export const SAMPLER_SECTIONS: SamplerSection[] = [
       },
       {
         kind: "number",
-        key: "max_tokens",
-        label: "max_tokens",
-        min: 1,
-        step: 1,
-        neutral: 256,
-        info: "Max tokens to generate per branch.",
-      },
-      {
-        kind: "number",
         key: "min_tokens",
         label: "min_tokens",
         min: 0,

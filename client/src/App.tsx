@@ -114,6 +114,9 @@ function formatLoadEvent(event: ModelLoadEvent | null): string {
   return `${event.status} ${event.module}/${event.modules}`;
 }
 
+const DEFAULT_MAX_TOKENS = 256;
+const COMMON_CONTEXT_SIZES = "8,192  |  16,384  |  32,768  |  65,536  |  131,072";
+
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [tree, setTree] = useState<Tree | null>(null);
@@ -127,6 +130,7 @@ export default function App() {
     useState<SamplerBody | null>(null);
   const [composition, setComposition] = useState("");
   const [branchCount, setBranchCount] = useState(3);
+  const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS);
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
@@ -633,7 +637,15 @@ export default function App() {
 
     try {
       await streamCompletion(
-        { prompt: promptSnapshot, n, ...samplerSnapshot },
+        {
+          prompt: promptSnapshot,
+          n,
+          max_tokens: Math.max(
+            1,
+            Math.trunc(maxTokens) || DEFAULT_MAX_TOKENS,
+          ),
+          ...samplerSnapshot,
+        },
         (chunk) => {
           for (const choice of chunk.choices) {
             if (choice.index < 0 || choice.index >= n || !choice.text) continue;
@@ -910,6 +922,9 @@ export default function App() {
                   {modelBusy && modelLoadEvent ? formatLoadEvent(modelLoadEvent) : "Load"}
                 </button>
               </div>
+              <div className="text-[11px] text-neutral-600">
+                Common context sizes: {COMMON_CONTEXT_SIZES}
+              </div>
             </div>
 
             <form onSubmit={(event) => void onDownloadModel(event)} className="space-y-2">
@@ -1094,6 +1109,19 @@ export default function App() {
                     }
                     disabled={streaming || saving || branchPickerOpen}
                     className="w-14 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
+                  />
+                </label>
+                <label className="flex items-center gap-2 rounded border border-neutral-800 bg-neutral-900 px-3 py-2 text-xs text-neutral-400">
+                  Max tokens
+                  <input
+                    type="number"
+                    min={1}
+                    value={maxTokens}
+                    onChange={(event) =>
+                      setMaxTokens(Number(event.target.value))
+                    }
+                    disabled={streaming || saving || branchPickerOpen}
+                    className="w-20 rounded border border-neutral-800 bg-neutral-950 px-2 py-1 text-neutral-100 focus:border-neutral-600 focus:outline-none disabled:opacity-40"
                   />
                 </label>
                 <button
