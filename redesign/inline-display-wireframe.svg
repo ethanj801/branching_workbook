@@ -1,0 +1,89 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 580" width="680" height="580" role="img">
+  <title>Compose inline display wireframe</title>
+  <desc>Compose mode with the display set to inline. Tab strip at top with Compose selected. Tree panel on left. Buffer prose flows above a tinted preview block with a header reading Branch 1 of 3, 49 tokens. Vertical chevrons on the right edge of the block for cycling. Use and Keep buttons in an action row below the block. Bottom bar shows the standard Compose chrome plus a Display toggle with cards or inline pills, inline selected.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .t  { font-size: 13px; fill: #2C2C2A; }
+    .ts { font-size: 11px; fill: #5F5E5A; }
+    .th { font-size: 16px; font-weight: 500; fill: #2C2C2A; }
+    .frame { fill: none; stroke: #888780; stroke-width: 0.5; }
+    .div   { stroke: #888780; stroke-width: 0.5; fill: none; }
+    .line  { stroke: #D3D1C7; stroke-width: 0.5; }
+    .preview { fill: #FAFAF7; stroke: #D3D1C7; stroke-width: 0.5; }
+  </style>
+
+  <text x="0" y="20" class="th">Compose mode — inline display</text>
+
+  <rect x="0" y="36" width="680" height="430" rx="4" class="frame"/>
+  <line x1="0" y1="62" x2="680" y2="62" class="div"/>
+  <text x="8" y="54" class="ts">Branching Workbook · test2</text>
+  <text x="500" y="54" class="ts">model · 253/65k · close project</text>
+
+  <text x="14" y="84" class="ts" style="fill:#2C2C2A; font-weight:500;">Compose</text>
+  <line x1="8" y1="92" x2="76" y2="92" stroke="#2C2C2A" stroke-width="2"/>
+  <text x="86" y="84" class="ts" style="fill:#888780;">Autocomplete</text>
+  <line x1="0" y1="100" x2="680" y2="100" class="div"/>
+
+  <line x1="100" y1="100" x2="100" y2="436" class="div"/>
+  <text x="8" y="116" class="ts">TREE</text>
+  <text x="8" y="134" class="t">root</text>
+  <text x="20" y="154" class="t">test</text>
+
+  <text x="112" y="124" class="ts">UNTITLED SECTION</text>
+  <line x1="108" y1="132" x2="672" y2="132" class="line"/>
+
+  <text x="112" y="160" class="t">The lighthouse keeper had not had a visitor in seventeen</text>
+  <text x="112" y="184" class="t">years. So when the door creaked open on a wet Tuesday</text>
+  <text x="112" y="208" class="t">evening, his first instinct was to</text>
+
+  <rect x="298" y="196" width="1.5" height="16" fill="#2C2C2A"/>
+
+  <rect x="112" y="226" width="500" height="120" rx="6" class="preview"/>
+  <text x="124" y="244" class="ts" style="fill:#888780;">Branch 1 of 3 · 49 tok</text>
+  <text x="124" y="270" class="t">ignore it and hope they would leave. But the knock</text>
+  <text x="124" y="290" class="t">came again, harder this time, as if whoever stood out</text>
+  <text x="124" y="310" class="t">there knew he was inside and had decided that politeness</text>
+  <text x="124" y="330" class="t">was no longer worth the effort.</text>
+
+  <g transform="translate(622, 268)">
+    <rect x="0" y="0" width="40" height="36" rx="6" fill="#FAFAF7" stroke="#888780" stroke-width="0.5"/>
+    <path d="M16 12 L22 6 L22 18 Z" fill="#5F5E5A"/>
+    <line x1="6" y1="22" x2="34" y2="22" class="line"/>
+    <path d="M22 24 L16 30 L28 30 Z" fill="#5F5E5A"/>
+  </g>
+
+  <rect x="112" y="362" width="48" height="22" fill="#2C2C2A" rx="4"/>
+  <text x="125" y="376" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Use</text>
+  <rect x="166" y="362" width="48" height="22" fill="none" stroke="#888780" stroke-width="0.5" rx="4"/>
+  <text x="180" y="376" class="ts">Keep</text>
+  <text x="240" y="376" class="ts" style="fill:#888780;">Tab accept · Ctrl+] / [ cycle · Esc clear</text>
+
+  <line x1="0" y1="436" x2="680" y2="436" class="div"/>
+  <text x="8" y="454" class="ts">Preset</text>
+  <text x="58" y="454" class="ts">Samplers</text>
+  <text x="124" y="454" class="ts">Branches 3</text>
+  <text x="200" y="454" class="ts">Max tokens 256</text>
+
+  <text x="304" y="454" class="ts" style="fill:#888780;">Display</text>
+  <g transform="translate(354, 442)">
+    <rect x="0" y="0" width="48" height="20" rx="10" fill="none" stroke="#888780" stroke-width="0.5"/>
+    <text x="9" y="14" class="ts" style="fill:#888780;">cards</text>
+  </g>
+  <g transform="translate(406, 442)">
+    <rect x="0" y="0" width="48" height="20" rx="10" fill="#2C2C2A" stroke="#2C2C2A" stroke-width="0.5"/>
+    <text x="11" y="14" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">inline</text>
+  </g>
+
+  <text x="556" y="454" class="ts">Save</text>
+  <rect x="608" y="442" width="64" height="20" fill="#2C2C2A" rx="4"/>
+  <text x="624" y="456" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Generate</text>
+
+  <text x="0" y="494" class="th">Notes</text>
+
+  <text x="0" y="518" class="ts">Compose tab. Tree, Branches input, Generate, Save — all the regular fan-out controls stay; only the candidate display changes.</text>
+
+  <text x="0" y="542" class="ts">Display toggle in the bottom bar flips between cards and inline. Same fan-out underneath.</text>
+
+  <text x="0" y="566" class="ts">Cycle chevrons are vertical at the right edge of the block. Use commits the visible candidate; Keep saves it as a hidden sibling without committing.</text>
+</svg>

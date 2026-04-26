@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 680" width="680" height="680" role="img">
+  <title>Chat mode wireframe — transcript with mid-turn fan-out</title>
+  <desc>Chat-mode workspace. Tree panel on the left shows the conversation as a tree. Right side is a transcript: a collapsed system prompt strip at the top, one completed user turn block, then an in-progress assistant turn block. Inside the assistant block, an already-accepted prose chunk sits above a divider; below the divider a subheader reads "Next chunk · 3 candidates generating" and three fan-out candidate cards are rendered with Use and Keep buttons each. An End turn button sits at the bottom of the assistant block. Bottom bar shows Preset, Samplers, Branches, Max tokens, a cards/inline Display toggle, Save, and Stop.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .t  { font-size: 13px; fill: #2C2C2A; }
+    .ts { font-size: 11px; fill: #5F5E5A; }
+    .th { font-size: 16px; font-weight: 500; fill: #2C2C2A; }
+    .frame { fill: none; stroke: #888780; stroke-width: 0.5; }
+    .div   { stroke: #888780; stroke-width: 0.5; fill: none; }
+    .line  { stroke: #D3D1C7; stroke-width: 0.5; }
+    .turn  { fill: #FAFAF7; stroke: #D3D1C7; stroke-width: 0.5; }
+    .system { fill: #F1EFE8; stroke: none; }
+    .userturn { fill: none; stroke: #D3D1C7; stroke-width: 0.5; }
+  </style>
+
+  <text x="0" y="20" class="th">Chat mode — assistant turn with active fan-out for its next chunk</text>
+
+  <rect x="0" y="36" width="680" height="544" rx="4" class="frame"/>
+  <line x1="0" y1="62" x2="680" y2="62" class="div"/>
+  <text x="8" y="54" class="ts">Branching Workbook · chat-test</text>
+  <text x="500" y="54" class="ts">model · 612/8k · close project</text>
+
+  <line x1="100" y1="62" x2="100" y2="552" class="div"/>
+  <text x="8" y="78" class="ts">TREE</text>
+  <text x="8" y="98" class="t">root</text>
+  <text x="20" y="118" class="ts" style="fill:#888780;">system</text>
+  <text x="20" y="138" class="t">user</text>
+  <text x="32" y="158" class="t">asst…</text>
+
+  <rect x="112" y="74" width="556" height="28" rx="6" class="system"/>
+  <text x="124" y="92" class="ts" style="fill:#5F5E5A;">▸ SYSTEM · You are a helpful writing assistant. Match the tone of the prompt and …</text>
+
+  <rect x="112" y="118" width="556" height="56" rx="6" class="userturn"/>
+  <text x="124" y="136" class="ts" style="fill:#888780;">YOU</text>
+  <text x="124" y="156" class="t">Tell me a short story about a lighthouse keeper who hasn't had a visitor</text>
+  <text x="124" y="172" class="t">in seventeen years.</text>
+
+  <rect x="112" y="190" width="556" height="284" rx="6" class="turn"/>
+  <text x="124" y="208" class="ts" style="fill:#888780;">ASSISTANT · in progress · 22 tok</text>
+
+  <text x="124" y="232" class="t">The lighthouse keeper had not had a visitor in seventeen</text>
+  <text x="124" y="252" class="t">years.</text>
+
+  <line x1="124" y1="270" x2="656" y2="270" class="line"/>
+  <text x="124" y="288" class="ts" style="fill:#888780;">NEXT CHUNK · 3 candidates generating</text>
+
+  <rect x="124" y="298" width="172" height="130" rx="4" fill="#fff" stroke="#888780" stroke-width="0.5"/>
+  <text x="132" y="312" class="ts">Branch 1 · 18 tok</text>
+  <line x1="132" y1="320" x2="284" y2="320" class="line"/>
+  <text x="132" y="338" class="t">So when the door</text>
+  <text x="132" y="354" class="t">creaked open on a wet</text>
+  <text x="132" y="370" class="t">Tuesday evening, his</text>
+  <text x="132" y="386" class="t">first instinct…</text>
+  <rect x="132" y="400" width="40" height="20" fill="#2C2C2A" rx="4"/>
+  <text x="143" y="414" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Use</text>
+  <rect x="178" y="400" width="44" height="20" fill="none" stroke="#888780" stroke-width="0.5" rx="4"/>
+  <text x="190" y="414" class="ts">Keep</text>
+
+  <rect x="304" y="298" width="172" height="130" rx="4" fill="#fff" stroke="#888780" stroke-width="0.5"/>
+  <text x="312" y="312" class="ts">Branch 2 · 16 tok</text>
+  <line x1="312" y1="320" x2="464" y2="320" class="line"/>
+  <text x="312" y="338" class="t">He had stopped</text>
+  <text x="312" y="354" class="t">expecting them, and</text>
+  <text x="312" y="370" class="t">stopped, slowly, even</text>
+  <text x="312" y="386" class="t">to want them…</text>
+  <rect x="312" y="400" width="40" height="20" fill="#2C2C2A" rx="4"/>
+  <text x="323" y="414" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Use</text>
+  <rect x="358" y="400" width="44" height="20" fill="none" stroke="#888780" stroke-width="0.5" rx="4"/>
+  <text x="370" y="414" class="ts">Keep</text>
+
+  <rect x="484" y="298" width="172" height="130" rx="4" fill="#fff" stroke="#888780" stroke-width="0.5"/>
+  <text x="492" y="312" class="ts">Branch 3 · 19 tok</text>
+  <line x1="492" y1="320" x2="644" y2="320" class="line"/>
+  <text x="492" y="338" class="t">In that time the</text>
+  <text x="492" y="354" class="t">island had taught him</text>
+  <text x="492" y="370" class="t">most of what he</text>
+  <text x="492" y="386" class="t">needed to know…</text>
+  <rect x="492" y="400" width="40" height="20" fill="#2C2C2A" rx="4"/>
+  <text x="503" y="414" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Use</text>
+  <rect x="538" y="400" width="44" height="20" fill="none" stroke="#888780" stroke-width="0.5" rx="4"/>
+  <text x="550" y="414" class="ts">Keep</text>
+
+  <rect x="124" y="442" width="68" height="22" fill="none" stroke="#888780" stroke-width="0.5" rx="4"/>
+  <text x="135" y="456" class="ts">End turn</text>
+  <text x="200" y="456" class="ts" style="fill:#888780;">Tab accept · Esc clear · model EOS will end the turn automatically</text>
+
+  <text x="112" y="498" class="ts" style="fill:#888780;">+ next user turn appears here once this assistant turn ends</text>
+  <line x1="112" y1="508" x2="668" y2="508" stroke="#D3D1C7" stroke-width="0.5" stroke-dasharray="4 4"/>
+
+  <line x1="0" y1="552" x2="680" y2="552" class="div"/>
+  <text x="8" y="572" class="ts">Preset</text>
+  <text x="58" y="572" class="ts">Samplers</text>
+  <text x="124" y="572" class="ts">Branches 3</text>
+  <text x="200" y="572" class="ts">Max tokens 128</text>
+
+  <text x="304" y="572" class="ts" style="fill:#888780;">Display</text>
+  <g transform="translate(354, 560)">
+    <rect x="0" y="0" width="48" height="20" rx="10" fill="#2C2C2A" stroke="#2C2C2A" stroke-width="0.5"/>
+    <text x="11" y="14" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">cards</text>
+  </g>
+  <g transform="translate(406, 560)">
+    <rect x="0" y="0" width="48" height="20" rx="10" fill="none" stroke="#888780" stroke-width="0.5"/>
+    <text x="13" y="14" class="ts" style="fill:#888780;">inline</text>
+  </g>
+
+  <text x="556" y="572" class="ts">Save</text>
+  <rect x="608" y="560" width="64" height="20" fill="#A32D2D" rx="4"/>
+  <text x="630" y="574" style="font-size:11px; fill:#FAFAF7; font-family:inherit;">Stop</text>
+
+  <text x="0" y="616" class="ts">Each turn is its own block. System collapsed by default. Assistant turn grows over multiple fan-outs — each Use appends a node and a new fan-out can fire for the next chunk.</text>
+  <text x="0" y="640" class="ts">Model EOS auto-ends the assistant turn. The user can also end it manually with the End turn button or Cmd+Enter. After the turn ends, a fresh user-turn input appears below.</text>
+  <text x="0" y="664" class="ts">Branching applies the same way as prose mode but at turn-level: rejected fan-out cards become hidden siblings if Kept; editing any previous turn forks the tree at that point.</text>
+</svg>

@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 540" width="680" height="540" role="img">
+  <title>Autocomplete mode wireframe</title>
+  <desc>Autocomplete mode layout. Tab strip at top with Compose and Autocomplete tabs, Autocomplete selected. No tree panel, no Branches panel. Buffer fills full width. End-of-line ghost text continues the last typed line in lighter color. A small floating pill below the ghost text contains only left and right chevrons for cycling, no count. Bottom bar contains Preset, Samplers, Tokens per suggestion field, Save.</desc>
+  <style>
+    text { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .t  { font-size: 13px; fill: #2C2C2A; }
+    .ts { font-size: 11px; fill: #5F5E5A; }
+    .th { font-size: 16px; font-weight: 500; fill: #2C2C2A; }
+    .ghost { font-size: 13px; fill: #888780; }
+    .frame { fill: none; stroke: #888780; stroke-width: 0.5; }
+    .div   { stroke: #888780; stroke-width: 0.5; fill: none; }
+    .line  { stroke: #D3D1C7; stroke-width: 0.5; }
+  </style>
+
+  <text x="0" y="20" class="th">Autocomplete mode</text>
+
+  <rect x="0" y="36" width="680" height="380" rx="4" class="frame"/>
+  <line x1="0" y1="62" x2="680" y2="62" class="div"/>
+  <text x="8" y="54" class="ts">Branching Workbook · test2</text>
+  <text x="500" y="54" class="ts">model · 253/65k · close project</text>
+
+  <text x="14" y="84" class="ts" style="fill:#888780;">Compose</text>
+  <text x="86" y="84" class="ts" style="fill:#2C2C2A; font-weight:500;">Autocomplete</text>
+  <line x1="80" y1="92" x2="160" y2="92" stroke="#2C2C2A" stroke-width="2"/>
+  <line x1="0" y1="100" x2="680" y2="100" class="div"/>
+
+  <text x="16" y="124" class="ts">UNTITLED SECTION</text>
+  <line x1="14" y1="132" x2="666" y2="132" class="line"/>
+
+  <text x="16" y="164" class="t">The lighthouse keeper had not had a visitor in seventeen years.</text>
+  <text x="16" y="190" class="t">So when the door creaked open on a wet Tuesday evening, his</text>
+  <text x="16" y="216" class="t">first instinct was to</text>
+
+  <rect x="161" y="204" width="1.5" height="16" fill="#2C2C2A"/>
+
+  <text x="167" y="216" class="ghost">ignore</text>
+
+  <g transform="translate(167, 226)">
+    <rect x="0" y="0" width="48" height="20" rx="10" fill="#FAFAF7" stroke="#888780" stroke-width="0.5"/>
+    <path d="M14 10 L19 5 L19 15 Z" fill="#5F5E5A"/>
+    <line x1="24" y1="4" x2="24" y2="16" class="line"/>
+    <path d="M34 10 L29 5 L29 15 Z" fill="#5F5E5A"/>
+  </g>
+
+  <text x="16" y="288" class="ts">Tab accept · Esc dismiss · Ctrl+] / Ctrl+[ cycle · keep typing to dismiss</text>
+
+  <line x1="0" y1="386" x2="680" y2="386" class="div"/>
+  <text x="8" y="404" class="ts">Preset</text>
+  <text x="58" y="404" class="ts">Samplers</text>
+  <text x="124" y="404" class="ts">Tokens per suggestion 2</text>
+  <text x="612" y="404" class="ts">Save</text>
+
+  <text x="0" y="446" class="th">Notes</text>
+
+  <text x="0" y="470" class="ts">Tree panel and Branches panel both hidden. Buffer gets the full width.</text>
+
+  <text x="0" y="494" class="ts">No count shown. Two chevrons only. The pool feels infinite because the system keeps generating in the background.</text>
+
+  <text x="0" y="518" class="ts">Default suggestion length is one or two tokens. Tab to commit; the next suggestion appears at the new end of line.</text>
+</svg>
