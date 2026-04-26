@@ -177,7 +177,7 @@ async function main() {
       return btn && !btn.disabled;
     });
     await generateBtn.click();
-    await page.waitForSelector(".bw-picker");
+    await page.waitForSelector(".bw-branch-comparison");
     // Wait until at least one branch has visible text but the stream is
     // still in flight, so the shot captures the live state, not the
     // "ready" post-stream state.
@@ -202,44 +202,17 @@ async function main() {
     );
     await snap(page, "06-branch-picker-ready");
 
-    console.log("branch tray collapsed");
-    await page.locator('button[aria-label="Hide branch tray"]').click();
-    await page.waitForSelector('button[aria-label="Show branch tray"]');
+    console.log("branch kept");
+    const firstKeep = page.locator(".bw-branch-actions button", { hasText: "Keep" }).first();
+    await firstKeep.click();
+    await page.locator(".bw-branch-actions button", { hasText: "Kept" }).first().waitFor();
     await page.waitForTimeout(150);
-    await snap(page, "07-branch-tray-collapsed");
-    await page.locator('button[aria-label="Show branch tray"]').click();
-    await page.waitForSelector(".bw-picker");
+    await snap(page, "07-branch-kept");
 
-    console.log("tree collapsed");
-    await page.locator('button[aria-label="Hide tree panel"]').click();
-    await page.waitForSelector('button[aria-label="Show tree panel"]');
-    await page.waitForTimeout(150);
-    await snap(page, "08-tree-collapsed");
-    await page.locator('button[aria-label="Show tree panel"]').click();
-    await page.waitForSelector(".bw-tree");
-
-    console.log("tree context menu");
-    const currentTreeRow = page.locator(".bw-tree-row[data-current='true']").first();
-    await currentTreeRow.click({ button: "right" });
-    await page.waitForSelector(".bw-context-menu");
-    await snap(page, "09-tree-context-menu");
-    await page.locator(".bw-context-menu button").click();
-    await page.waitForSelector(".bw-context-menu", { state: "detached" });
-    await currentTreeRow.click({ button: "right" });
-    await page.waitForSelector(".bw-context-menu");
-    await page.locator(".bw-context-menu button").click();
-    await page.waitForSelector(".bw-context-menu", { state: "detached" });
-
-    console.log("branch saved");
-    const firstSave = page.locator(".bw-branch-actions button", { hasText: "Save" }).first();
-    await firstSave.click();
-    await page.locator(".bw-branch-actions button", { hasText: "Saved" }).first().waitFor();
-    await page.waitForTimeout(150);
-    await snap(page, "10-branch-saved");
-
-    console.log("branch used");
+    console.log("branch used strip");
     const beforeUse = await page.locator(".bw-buffer").inputValue();
     await page.locator(".bw-branch-actions button", { hasText: "Use" }).first().click();
+    await page.waitForSelector(".bw-branch-strip");
     await page.waitForFunction(
       (prior) => {
         const buffer = document.querySelector(".bw-buffer");
@@ -247,7 +220,27 @@ async function main() {
       },
       beforeUse,
     );
-    await snap(page, "11-branch-used");
+    await snap(page, "08-branch-used-strip");
+
+    console.log("tree collapsed");
+    await page.locator('button[aria-label="Hide tree panel"]').click();
+    await page.waitForSelector('button[aria-label="Show tree panel"]');
+    await page.waitForTimeout(150);
+    await snap(page, "09-tree-collapsed");
+    await page.locator('button[aria-label="Show tree panel"]').click();
+    await page.waitForSelector(".bw-tree");
+
+    console.log("tree context menu");
+    const currentTreeRow = page.locator(".bw-tree-row[data-current='true']").first();
+    await currentTreeRow.click({ button: "right" });
+    await page.waitForSelector(".bw-context-menu");
+    await snap(page, "10-tree-context-menu");
+    await page.locator(".bw-context-menu button").click();
+    await page.waitForSelector(".bw-context-menu", { state: "detached" });
+    await currentTreeRow.click({ button: "right" });
+    await page.waitForSelector(".bw-context-menu");
+    await page.locator(".bw-context-menu button").click();
+    await page.waitForSelector(".bw-context-menu", { state: "detached" });
   } finally {
     await context.close();
     await browser.close();

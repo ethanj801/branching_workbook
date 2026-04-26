@@ -22,6 +22,8 @@ type Props = {
 
 type DraftValue = string | number | boolean;
 
+type SectionOpenState = Record<string, boolean>;
+
 function applyDraftChange(
   draft: SamplerBody,
   field: SamplerField,
@@ -31,6 +33,20 @@ function applyDraftChange(
   // @ts-expect-error value type matches field.key by construction
   next[field.key] = value;
   return next;
+}
+
+function FieldLabel({ field }: { field: SamplerField }) {
+  return (
+    <span className="bw-sampler-label">
+      <span>{field.label}</span>
+      {field.info && (
+        <span className="bw-info-dot" tabIndex={0} aria-label={field.info}>
+          ?
+          <span role="tooltip">{field.info}</span>
+        </span>
+      )}
+    </span>
+  );
 }
 
 function SliderControl({
@@ -56,7 +72,7 @@ function SliderControl({
           disabled={disabled}
           className="accent-[var(--accent)]"
         />
-        <span>{field.label}</span>
+        <FieldLabel field={field} />
       </label>
     );
   }
@@ -65,7 +81,7 @@ function SliderControl({
     return (
       <div>
         <div className="mb-1 flex items-baseline justify-between gap-2">
-          <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
+          <FieldLabel field={field} />
         </div>
         <input
           type="text"
@@ -86,7 +102,7 @@ function SliderControl({
     return (
       <div>
         <div className="mb-1 flex items-baseline justify-between gap-2">
-          <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
+          <FieldLabel field={field} />
           <span
             className={`text-[11px] ${
               isNeutral ? "text-[color:var(--ink-faint)]" : "text-[color:var(--ink)]"
@@ -113,7 +129,7 @@ function SliderControl({
   return (
     <div>
       <div className="mb-1 flex items-baseline gap-2">
-        <span className="text-xs text-[color:var(--ink-muted)]">{field.label}</span>
+        <FieldLabel field={field} />
         {!isNeutral && (
           <span className="text-[10px] uppercase tracking-wider text-[color:var(--ink-faint)]">
             edited
@@ -165,6 +181,9 @@ export default function SamplerDrawer({
   onNeutralize,
 }: Props) {
   const [saveAsName, setSaveAsName] = useState("");
+  const [openSections, setOpenSections] = useState<SectionOpenState>({
+    core: true,
+  });
 
   const activePreset = useMemo(
     () => presets.find((p) => p.id === activePresetId) ?? null,
@@ -178,6 +197,13 @@ export default function SamplerDrawer({
 
   function updateField(field: SamplerField, value: DraftValue) {
     onDraftChange(applyDraftChange(draft, field, value));
+  }
+
+  function toggleSection(sectionId: string) {
+    setOpenSections((current) => ({
+      ...current,
+      [sectionId]: !current[sectionId],
+    }));
   }
 
   return (
@@ -301,28 +327,42 @@ export default function SamplerDrawer({
           </div>
         </header>
 
-        <div className="flex-1 space-y-5 overflow-y-auto p-4">
-          {SAMPLER_SECTIONS.map((section) => (
-            <section key={section.id} className="space-y-3">
-              <div className="bw-kicker">{section.title}</div>
-              {section.fields.map((field) => (
-                <div key={field.key as string}>
-                  <SliderControl
-                    field={field}
-                    // @ts-expect-error indexed access returns the field's value type
-                    value={resolvedDraft[field.key] ?? field.neutral}
-                    onChange={(v) => updateField(field, v)}
-                    disabled={busy}
-                  />
-                  {field.info && (
-                    <div className="mt-1 text-[10px] text-[color:var(--ink-faint)]">
-                      {field.info}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </section>
-          ))}
+        <div className="flex-1 overflow-y-auto p-4">
+          {SAMPLER_SECTIONS.map((section) => {
+            const expanded = !!openSections[section.id];
+            return (
+              <section
+                key={section.id}
+                className="bw-sampler-section"
+                data-open={expanded}
+              >
+                <button
+                  type="button"
+                  className="bw-sampler-section-head"
+                  onClick={() => toggleSection(section.id)}
+                  aria-expanded={expanded}
+                >
+                  <span>{section.title}</span>
+                  <span aria-hidden="true">{expanded ? "⌄" : "›"}</span>
+                </button>
+                {expanded && (
+                  <div className="bw-sampler-section-body">
+                    {section.fields.map((field) => (
+                      <div key={field.key as string}>
+                        <SliderControl
+                          field={field}
+                          // @ts-expect-error indexed access returns the field's value type
+                          value={resolvedDraft[field.key] ?? field.neutral}
+                          onChange={(v) => updateField(field, v)}
+                          disabled={busy}
+                        />
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </section>
+            );
+          })}
         </div>
       </aside>
     </div>

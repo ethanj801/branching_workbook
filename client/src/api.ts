@@ -45,6 +45,9 @@ export type CompletionRequestBody = {
   dry_allowed_length?: number;
   dry_range?: number;
   dry_sequence_breakers?: string | string[];
+  mirostat_mode?: number;
+  mirostat_tau?: number;
+  mirostat_eta?: number;
   min_temp?: number;
   max_temp?: number;
   temp_exponent?: number;

@@ -62,6 +62,18 @@ type TreeContextMenu = {
   y: number;
 };
 
+type Candidate = {
+  text: string;
+  done: boolean;
+};
+
+type BranchViewMode = "grid" | "strip";
+
+type UsedCandidateRange = {
+  start: number;
+  end: number;
+};
+
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
 }
@@ -78,6 +90,10 @@ function previewText(text: string): string {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized) return "root";
   return normalized.length > 88 ? `${normalized.slice(0, 88)}...` : normalized;
+}
+
+function approxTokenCount(text: string): number {
+  return Math.ceil(text.length / 4);
 }
 
 function branchNode(
@@ -185,7 +201,7 @@ function NodeNameEditor({
             setEditing(false);
           }
         }}
-        placeholder="Name this node..."
+        placeholder="Untitled section"
         className="bw-node-name-input"
       />
     );
@@ -202,22 +218,68 @@ function NodeNameEditor({
       disabled={disabled}
       title={hasName ? "Rename this section" : "Name this section"}
     >
-      <span>{hasName ? node.name : "Name this section"}</span>
+      <span>{hasName ? node.name : "Untitled section"}</span>
     </button>
   );
 }
 
 const DEFAULT_MAX_TOKENS = 256;
+const DEFAULT_BRANCH_COUNT = 3;
+const DEFAULT_BRANCH_LIMIT = 8;
 const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
 const COMMON_CONTEXT_SIZES = "8192  |  16384  |  32768  |  65536  |  131072";
 const COLLAPSED_RAIL_WIDTH = 40;
+const SINGLE_ROW_BRANCH_PANE_RATIO = 0.5;
+const TWO_ROW_BRANCH_PANE_RATIO = 0.65;
+const MANY_ROW_BRANCH_PANE_RATIO = 0.75;
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+function parsePositiveInt(text: string, fallback: number): number {
+  const parsed = Number.parseInt(text, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function maxBranchesForModel(model: TabbyModel | null): number {
+  const maxBatchSize = model?.parameters?.max_batch_size;
+  if (typeof maxBatchSize !== "number" || !Number.isFinite(maxBatchSize)) {
+    return DEFAULT_BRANCH_LIMIT;
+  }
+  return Math.max(1, Math.trunc(maxBatchSize));
+}
+
+function branchGridColumns(count: number): number | null {
+  const lookup: Record<number, number> = {
+    1: 1,
+    2: 2,
+    3: 3,
+    4: 2,
+    5: 3,
+    6: 3,
+    7: 4,
+    8: 4,
+    9: 3,
+  };
+  return lookup[count] ?? null;
+}
+
+function branchPaneRatioForCount(count: number): number {
+  const columns = branchGridColumns(count);
+  if (columns === null) return MANY_ROW_BRANCH_PANE_RATIO;
+  const rows = Math.ceil(count / columns);
+  if (rows <= 1) return SINGLE_ROW_BRANCH_PANE_RATIO;
+  if (rows === 2) return TWO_ROW_BRANCH_PANE_RATIO;
+  return MANY_ROW_BRANCH_PANE_RATIO;
+}
 
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [tree, setTree] = useState<Tree | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [buffer, setBuffer] = useState("");
-  const [candidates, setCandidates] = useState<string[]>([]);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
   const [candidateBaseId, setCandidateBaseId] = useState<string | null>(null);
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
@@ -226,8 +288,11 @@ export default function App() {
   const [savedCandidateIds, setSavedCandidateIds] = useState<
     Record<number, string>
   >({});
-  const [branchCount, setBranchCount] = useState(3);
-  const [maxTokens, setMaxTokens] = useState(DEFAULT_MAX_TOKENS);
+  const [branchCountText, setBranchCountText] = useState(
+    String(DEFAULT_BRANCH_COUNT),
+  );
+  const [branchLimitHint, setBranchLimitHint] = useState(false);
+  const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
@@ -261,19 +326,26 @@ export default function App() {
   const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>(
     {},
   );
-  const [collapsedBranches, setCollapsedBranches] = useState<
-    Record<number, boolean>
-  >({});
+  const [branchViewMode, setBranchViewMode] =
+    useState<BranchViewMode>("grid");
+  const [pickedCandidateIndex, setPickedCandidateIndex] = useState<number | null>(
+    null,
+  );
+  const [usedCandidateRange, setUsedCandidateRange] =
+    useState<UsedCandidateRange | null>(null);
+  const [branchPaneRatio, setBranchPaneRatio] = useState(
+    SINGLE_ROW_BRANCH_PANE_RATIO,
+  );
+  const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [treeVisible, setTreeVisible] = useState(true);
-  const [pickerVisible, setPickerVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
-  const [pickerWidth, setPickerWidth] = useState(352);
   const abortRef = useRef<AbortController | null>(null);
   const bufferRef = useRef<HTMLTextAreaElement | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
+  const maxBranches = maxBranchesForModel(currentTabbyModel);
   const contextPct =
     tokenCount !== null && contextMax ? tokenCount / contextMax : null;
   const contextWarn = contextPct !== null && contextPct >= 0.9;
@@ -298,7 +370,9 @@ export default function App() {
     setCandidateModelId(null);
     setCandidateSamplerSnapshot(null);
     setSavedCandidateIds({});
-    setCollapsedBranches({});
+    setPickedCandidateIndex(null);
+    setUsedCandidateRange(null);
+    setBranchViewMode("grid");
   }, []);
 
   const refreshPresets = useCallback(async () => {
@@ -484,7 +558,9 @@ export default function App() {
         void commitBuffer();
       }
       if (event.key === "Escape") {
-        if (modelPanelOpen) {
+        if (closeConfirmOpen) {
+          setCloseConfirmOpen(false);
+        } else if (modelPanelOpen) {
           setModelPanelOpen(false);
         } else if (samplerOpen) {
           setSamplerOpen(false);
@@ -496,7 +572,7 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [commitBuffer, modelPanelOpen, samplerOpen, treeMenu]);
+  }, [closeConfirmOpen, commitBuffer, modelPanelOpen, samplerOpen, treeMenu]);
 
   useEffect(() => {
     if (!treeMenu) return;
@@ -506,6 +582,19 @@ export default function App() {
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [treeMenu]);
+
+  useEffect(() => {
+    if (branchCountText.trim() === "") return;
+    const parsed = parsePositiveInt(branchCountText, DEFAULT_BRANCH_COUNT);
+    const clamped = clampNumber(parsed, 1, maxBranches);
+    if (clamped !== parsed) {
+      setBranchCountText(String(clamped));
+      setBranchLimitHint(true);
+    }
+    // Only normalize when the loaded model changes the allowed ceiling.
+    // Normalizing on every keystroke would reintroduce the leading-zero bug.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [maxBranches]);
 
   function startColumnDrag(
     event: ReactMouseEvent<HTMLDivElement>,
@@ -530,6 +619,28 @@ export default function App() {
       document.body.style.userSelect = "";
     }
     document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  }
+
+  function startRowDrag(event: ReactMouseEvent<HTMLDivElement>) {
+    event.preventDefault();
+    const container = event.currentTarget.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+
+    function onMove(ev: MouseEvent) {
+      const nextRatio = (ev.clientY - rect.top) / rect.height;
+      setBranchPaneRatio(Math.max(0.14, Math.min(0.75, nextRatio)));
+    }
+    function onUp() {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+    }
+    document.body.style.cursor = "row-resize";
     document.body.style.userSelect = "none";
     document.addEventListener("mousemove", onMove);
     document.addEventListener("mouseup", onUp);
@@ -601,6 +712,7 @@ export default function App() {
     abortRef.current?.abort();
     setLoadingProject(true);
     setError(null);
+    setCloseConfirmOpen(false);
     try {
       await closeProjectApi();
       setProject(null);
@@ -616,6 +728,19 @@ export default function App() {
     } finally {
       setLoadingProject(false);
     }
+  }
+
+  function hasDirtyBuffer(): boolean {
+    if (!project || !tree || !currentId) return false;
+    return buffer !== concatPathText(pathFromRoot(tree, currentId));
+  }
+
+  function onRequestCloseProject() {
+    if (hasDirtyBuffer()) {
+      setCloseConfirmOpen(true);
+      return;
+    }
+    void onCloseProject();
   }
 
   async function onSelectPreset(nextId: string | null) {
@@ -797,6 +922,23 @@ export default function App() {
     }
   }
 
+  function normalizeBranchCount(): number {
+    const parsed = parsePositiveInt(branchCountText, DEFAULT_BRANCH_COUNT);
+    const clamped = clampNumber(parsed, 1, maxBranches);
+    setBranchCountText(String(clamped));
+    setBranchLimitHint(parsed > maxBranches);
+    return clamped;
+  }
+
+  function normalizeMaxTokens(): number {
+    const normalized = Math.max(
+      1,
+      parsePositiveInt(maxTokensText, DEFAULT_MAX_TOKENS),
+    );
+    setMaxTokensText(String(normalized));
+    return normalized;
+  }
+
   async function onGenerate() {
     if (streaming || saving) return;
     if (!currentTabbyModel) {
@@ -807,20 +949,23 @@ export default function App() {
     const committed = await commitBuffer(buffer, "user_written");
     if (!committed) return;
 
-    const n = Math.max(1, Math.min(6, Math.trunc(branchCount) || 1));
+    const n = normalizeBranchCount();
+    const resolvedMaxTokens = normalizeMaxTokens();
     const promptSnapshot = committed.buffer;
     // Resolve the sampler snapshot *now* so a user tweaking the drawer
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    setCandidates(Array.from({ length: n }, () => ""));
+    setCandidates(Array.from({ length: n }, () => ({ text: "", done: false })));
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(committed.currentId);
     setCandidateModelId(currentTabbyModel.id);
     setCandidateSamplerSnapshot(samplerSnapshot);
     setSavedCandidateIds({});
-    setCollapsedBranches({});
-    setPickerVisible(true);
+    setPickedCandidateIndex(null);
+    setUsedCandidateRange(null);
+    setBranchViewMode("grid");
+    setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
@@ -830,10 +975,7 @@ export default function App() {
         {
           prompt: promptSnapshot,
           n,
-          max_tokens: Math.max(
-            1,
-            Math.trunc(maxTokens) || DEFAULT_MAX_TOKENS,
-          ),
+          max_tokens: resolvedMaxTokens,
           ...samplerSnapshot,
         },
         (chunk) => {
@@ -843,8 +985,15 @@ export default function App() {
               const next =
                 current.length === n
                   ? [...current]
-                  : Array.from({ length: n }, (_, index) => current[index] ?? "");
-              next[choice.index] += choice.text;
+                  : Array.from(
+                      { length: n },
+                      (_, index) => current[index] ?? { text: "", done: false },
+                    );
+              const existing = next[choice.index] ?? { text: "", done: false };
+              next[choice.index] = {
+                text: existing.text + choice.text,
+                done: existing.done || choice.finish_reason !== null,
+              };
               return next;
             });
           }
@@ -855,6 +1004,9 @@ export default function App() {
       const e = err as Error;
       if (e.name !== "AbortError") setError(e.message);
     } finally {
+      setCandidates((current) =>
+        current.map((candidate) => ({ ...candidate, done: true })),
+      );
       setStreaming(false);
       abortRef.current = null;
     }
@@ -874,30 +1026,38 @@ export default function App() {
   }
 
   function onUseCandidate(index: number) {
-    const text = candidates[index] ?? "";
+    const text = candidates[index]?.text ?? "";
     if (!text) {
       setError("Select a branch with text before using it.");
       return;
     }
 
+    const canReplaceUsed =
+      branchViewMode === "strip" &&
+      pickedCandidateIndex !== null &&
+      usedCandidateRange !== null;
     const selection = bufferSelectionRef.current;
-    const start = Math.max(
-      0,
-      Math.min(buffer.length, selection?.start ?? buffer.length),
-    );
-    const end = Math.max(start, Math.min(buffer.length, selection?.end ?? start));
+    const start = canReplaceUsed
+      ? Math.max(0, Math.min(buffer.length, usedCandidateRange.start))
+      : Math.max(0, Math.min(buffer.length, selection?.start ?? buffer.length));
+    const end = canReplaceUsed
+      ? Math.max(start, Math.min(buffer.length, usedCandidateRange.end))
+      : Math.max(start, Math.min(buffer.length, selection?.end ?? start));
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
     setBuffer(nextBuffer);
     bufferSelectionRef.current = { start: nextCursor, end: nextCursor };
+    setUsedCandidateRange({ start, end: nextCursor });
+    setPickedCandidateIndex(index);
+    setBranchViewMode("strip");
     window.requestAnimationFrame(() => {
       bufferRef.current?.focus();
       bufferRef.current?.setSelectionRange(nextCursor, nextCursor);
     });
   }
 
-  async function onSaveCandidate(index: number) {
+  async function onKeepCandidate(index: number) {
     if (
       !tree ||
       !currentId ||
@@ -909,9 +1069,9 @@ export default function App() {
     }
     if (savedCandidateIds[index]) return;
 
-    const text = candidates[index] ?? "";
+    const text = candidates[index]?.text ?? "";
     if (!text) {
-      setError("Select a branch with text before saving it.");
+      setError("Select a branch with text before keeping it.");
       return;
     }
     if (!tree.nodes[candidateBaseId]) {
@@ -949,19 +1109,21 @@ export default function App() {
     }
   }
 
-  function toggleBranchCollapsed(index: number) {
-    setCollapsedBranches((prev) => {
-      const next = { ...prev };
-      if (next[index]) delete next[index];
-      else next[index] = true;
-      return next;
-    });
-  }
-
   const currentPath =
     tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const branchColumns = branchGridColumns(candidates.length);
+  const branchRemainder =
+    branchColumns === null ? 0 : candidates.length % branchColumns;
+  const firstCenteredBranchIndex =
+    branchRemainder > 0 && branchColumns !== null
+      ? candidates.length - branchRemainder
+      : null;
+  const centeredBranchStart =
+    branchRemainder > 0 && branchColumns !== null
+      ? branchColumns - branchRemainder + 1
+      : null;
   const projectTitle =
     project?.title && project.title.trim() !== "Branching Workbook"
       ? project.title
@@ -970,12 +1132,6 @@ export default function App() {
     treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
     treeVisible ? "6px" : null,
     "minmax(18rem, 1fr)",
-    branchPickerOpen && pickerVisible ? "6px" : null,
-    branchPickerOpen
-      ? pickerVisible
-        ? `${pickerWidth}px`
-        : `${COLLAPSED_RAIL_WIDTH}px`
-      : null,
   ]
     .filter(Boolean)
     .join(" ");
@@ -1143,7 +1299,7 @@ export default function App() {
               <button
                 type="button"
                 className="bw-link-button"
-                onClick={() => void onCloseProject()}
+                onClick={onRequestCloseProject}
                 disabled={saving || streaming}
               >
                 close project
@@ -1154,6 +1310,42 @@ export default function App() {
       </header>
 
       {error && <div className="bw-error">{error}</div>}
+
+      {closeConfirmOpen && (
+        <div
+          className="bw-modal-backdrop"
+          role="dialog"
+          aria-label="Discard unsaved changes"
+          onMouseDown={() => setCloseConfirmOpen(false)}
+        >
+          <section
+            className="bw-confirm"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="bw-confirm-title">Discard unsaved changes?</div>
+            <p>
+              The current buffer has edits that have not been saved into the
+              workbook.
+            </p>
+            <div className="bw-confirm-actions">
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() => setCloseConfirmOpen(false)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="bw-button bw-button-danger"
+                onClick={() => void onCloseProject()}
+              >
+                Discard & close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
 
       {treeMenu && tree && (
         <div
@@ -1447,36 +1639,225 @@ export default function App() {
           )}
 
           <main className="bw-editor">
-            <div className="bw-manuscript-scroll">
-              <section className="bw-manuscript">
-                {currentNode && (
-                  <div className="mb-6">
-                    <NodeNameEditor
-                      node={currentNode}
-                      disabled={saving || streaming}
-                      onRename={(name) => void onRenameCurrentNode(name)}
-                    />
+            <div
+              className="bw-editor-main"
+              data-branch-view={branchPickerOpen ? branchViewMode : "none"}
+            >
+              {branchPickerOpen && branchViewMode === "grid" && (
+                <section
+                  className="bw-branch-comparison"
+                  style={{ flexBasis: `${branchPaneRatio * 100}%` }}
+                >
+                  <div className="bw-branch-comparison-head">
+                    <div>
+                      <div className="bw-kicker">Branches</div>
+                      <div className="bw-branch-context">
+                        {candidates.length} candidate
+                        {candidates.length === 1 ? "" : "s"}
+                        {streaming ? " generating" : " ready"}
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={clearBranchPicker}
+                      disabled={streaming || saving}
+                      className="bw-button bw-branch-clear"
+                    >
+                      Clear
+                    </button>
                   </div>
-                )}
-                <textarea
-                  ref={bufferRef}
-                  className="bw-buffer"
-                  value={buffer}
-                  onChange={(event) => {
-                    setBuffer(event.target.value);
-                    bufferSelectionRef.current = {
-                      start: event.target.selectionStart,
-                      end: event.target.selectionEnd,
-                    };
-                  }}
-                  onBlur={recordBufferSelection}
-                  onClick={recordBufferSelection}
-                  onKeyUp={recordBufferSelection}
-                  onSelect={recordBufferSelection}
-                  placeholder="Start writing..."
-                  spellCheck={false}
+                  <div
+                    className="bw-branch-grid"
+                    data-balanced={branchColumns !== null}
+                    style={
+                      branchColumns === null
+                        ? undefined
+                        : ({
+                            "--branch-grid-tracks": branchColumns * 2,
+                          } as CSSProperties)
+                    }
+                  >
+                    {candidates.map((candidate, index) => {
+                      const hasText = candidate.text.length > 0;
+                      const isStreaming = streaming && !candidate.done;
+                      const kept = !!savedCandidateIds[index];
+                      const centeredStart =
+                        firstCenteredBranchIndex === index && centeredBranchStart
+                          ? centeredBranchStart
+                          : null;
+                      return (
+                        <section
+                          key={index}
+                          className="bw-branch-card"
+                          data-empty={!hasText}
+                          data-streaming={isStreaming}
+                          style={
+                            centeredStart === null
+                              ? undefined
+                              : { gridColumn: `${centeredStart} / span 2` }
+                          }
+                        >
+                          <div className="bw-branch-card-head">
+                            <div className="bw-branch-card-title">
+                              <span>Branch {index + 1}</span>
+                              {isStreaming && (
+                                <span className="bw-branch-pulse" aria-label="Streaming" />
+                              )}
+                            </div>
+                            {hasText && (
+                              <span className="bw-branch-token-count">
+                                {approxTokenCount(candidate.text)} tok
+                              </span>
+                            )}
+                          </div>
+                          <div className="bw-branch-text">
+                            {hasText ? (
+                              candidate.text
+                            ) : (
+                              <span className="bw-empty">
+                                {streaming ? "Waiting for tokens..." : "No text."}
+                              </span>
+                            )}
+                          </div>
+                          <div className="bw-branch-actions">
+                            <button
+                              type="button"
+                              onClick={() => onUseCandidate(index)}
+                              disabled={!hasText || streaming || saving}
+                              className="bw-button bw-button-primary"
+                            >
+                              Use
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void onKeepCandidate(index)}
+                              disabled={!hasText || streaming || saving || kept}
+                              className="bw-button"
+                            >
+                              {kept ? "Kept" : "Keep"}
+                            </button>
+                          </div>
+                        </section>
+                      );
+                    })}
+                  </div>
+                </section>
+              )}
+
+              {branchPickerOpen && branchViewMode === "grid" && (
+                <div
+                  className="bw-row-splitter"
+                  role="separator"
+                  aria-orientation="horizontal"
+                  aria-label="Resize branch comparison"
+                  onMouseDown={startRowDrag}
                 />
-              </section>
+              )}
+
+              {branchPickerOpen && branchViewMode === "strip" && (
+                <section className="bw-branch-strip">
+                  <div className="bw-branch-strip-label">
+                    <span className="bw-kicker">Last generation</span>
+                    <span>{candidates.length} candidates</span>
+                  </div>
+                  <div className="bw-branch-strip-cards">
+                    {candidates.map((candidate, index) => {
+                      const picked = pickedCandidateIndex === index;
+                      const kept = !!savedCandidateIds[index];
+                      const hasText = candidate.text.length > 0;
+                      return (
+                        <div
+                          key={index}
+                          className="bw-branch-mini"
+                          data-picked={picked}
+                        >
+                          <button
+                            type="button"
+                            className="bw-branch-mini-main"
+                            onClick={() => setBranchViewMode("grid")}
+                            title="Expand last generation"
+                          >
+                            <span className="bw-branch-mini-label">
+                              {picked ? "✓ " : ""}
+                              Branch {index + 1}
+                            </span>
+                            <span className="bw-branch-mini-preview">
+                              {hasText ? previewText(candidate.text) : "No text."}
+                            </span>
+                          </button>
+                          <div className="bw-branch-mini-actions">
+                            <button
+                              type="button"
+                              onClick={() => void onKeepCandidate(index)}
+                              disabled={!hasText || saving || kept}
+                              title={kept ? "Already kept" : "Keep branch"}
+                            >
+                              {kept ? "Kept" : "Keep"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => onUseCandidate(index)}
+                              disabled={!hasText || saving || picked}
+                              title={picked ? "Already used" : "Use instead"}
+                            >
+                              Use instead
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBranchViewMode("grid")}
+                              title="Expand branches"
+                            >
+                              Expand
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <button
+                    type="button"
+                    className="bw-branch-strip-close"
+                    onClick={clearBranchPicker}
+                    aria-label="Clear last generation"
+                    title="Clear last generation"
+                  >
+                    ×
+                  </button>
+                </section>
+              )}
+
+              <div className="bw-manuscript-scroll">
+                <section className="bw-manuscript">
+                  {currentNode && (
+                    <div className="mb-4">
+                      <NodeNameEditor
+                        node={currentNode}
+                        disabled={saving || streaming}
+                        onRename={(name) => void onRenameCurrentNode(name)}
+                      />
+                    </div>
+                  )}
+                  <textarea
+                    ref={bufferRef}
+                    className="bw-buffer"
+                    value={buffer}
+                    onChange={(event) => {
+                      setBuffer(event.target.value);
+                      setUsedCandidateRange(null);
+                      bufferSelectionRef.current = {
+                        start: event.target.selectionStart,
+                        end: event.target.selectionEnd,
+                      };
+                    }}
+                    onBlur={recordBufferSelection}
+                    onClick={recordBufferSelection}
+                    onKeyUp={recordBufferSelection}
+                    onSelect={recordBufferSelection}
+                    placeholder="Start writing..."
+                    spellCheck={false}
+                  />
+                </section>
+              </div>
             </div>
 
             <footer className="bw-actionbar">
@@ -1516,34 +1897,50 @@ export default function App() {
                 <input
                   type="number"
                   min={1}
-                  max={6}
-                  value={branchCount}
-                  onChange={(event) => setBranchCount(Number(event.target.value))}
+                  max={maxBranches}
+                  value={branchCountText}
+                  onChange={(event) => {
+                    setBranchCountText(event.target.value);
+                    setBranchLimitHint(false);
+                  }}
+                  onBlur={() => {
+                    normalizeBranchCount();
+                  }}
                   disabled={streaming || saving}
                   className="bw-input w-16"
+                  title={`Max ${maxBranches} with this model`}
                 />
+                {branchLimitHint && (
+                  <span className="bw-field-note">
+                    max {maxBranches} with this model
+                  </span>
+                )}
               </label>
               <label className="bw-field">
                 Max tokens
                 <input
                   type="number"
                   min={1}
-                  value={maxTokens}
-                  onChange={(event) => setMaxTokens(Number(event.target.value))}
+                  value={maxTokensText}
+                  onChange={(event) => setMaxTokensText(event.target.value)}
+                  onBlur={() => {
+                    normalizeMaxTokens();
+                  }}
                   disabled={streaming || saving}
                   className="bw-input w-24"
                 />
               </label>
               <div className="flex-1" />
-              <button
-                type="button"
-                onClick={() => void onSave()}
-                disabled={saving || streaming}
-                className="bw-button"
-              >
-                {saving ? "Saving" : "Save"}
-              </button>
-              {streaming ? (
+              <div className="bw-action-main">
+                <button
+                  type="button"
+                  onClick={() => void onSave()}
+                  disabled={saving || streaming}
+                  className="bw-button"
+                >
+                  {saving ? "Saving" : "Save"}
+                </button>
+                {streaming ? (
                 <button
                   type="button"
                   onClick={onCancel}
@@ -1551,7 +1948,7 @@ export default function App() {
                 >
                   Stop
                 </button>
-              ) : (
+                ) : (
                 <button
                   type="button"
                   onClick={() => void onGenerate()}
@@ -1560,135 +1957,11 @@ export default function App() {
                 >
                   Generate
                 </button>
-              )}
+                )}
+              </div>
             </footer>
           </main>
 
-          {branchPickerOpen && pickerVisible && (
-            <div
-              className="bw-splitter bw-picker-splitter"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize branches column"
-              onMouseDown={(event) =>
-                startColumnDrag(event, setPickerWidth, pickerWidth, -1, 280, 880)
-              }
-            >
-              <button
-                type="button"
-                onMouseDown={(event) => event.stopPropagation()}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setPickerVisible(false);
-                }}
-                className="bw-edge-toggle"
-                aria-label="Hide branch tray"
-                title="Hide branches"
-              >
-                ›
-              </button>
-            </div>
-          )}
-          {branchPickerOpen && pickerVisible && (
-            <aside className="bw-picker">
-              <div className="bw-picker-head">
-                <div className="bw-picker-title">
-                  <div className="bw-kicker">Branches</div>
-                </div>
-                <div className="bw-picker-actions">
-                  <button
-                    type="button"
-                    onClick={clearBranchPicker}
-                    disabled={streaming || saving}
-                    className="bw-button bw-button-quiet"
-                  >
-                    Clear
-                  </button>
-                </div>
-              </div>
-              <div className="bw-picker-body">
-                {candidates.map((text, index) => {
-                  const collapsed = !!collapsedBranches[index];
-                  return (
-                    <section
-                      key={index}
-                      className="bw-branch-card"
-                      data-empty={!text}
-                      data-collapsed={collapsed}
-                    >
-                      <button
-                        type="button"
-                        className="bw-branch-summary"
-                        onClick={() => toggleBranchCollapsed(index)}
-                        aria-expanded={!collapsed}
-                      >
-                        <span
-                          className="bw-branch-caret"
-                          aria-hidden="true"
-                        >
-                          {collapsed ? "›" : "⌄"}
-                        </span>
-                        <span className="bw-kicker">Branch {index + 1}</span>
-                        <span className="bw-branch-summary-text">
-                          {text
-                            ? previewText(text)
-                            : streaming
-                              ? "Waiting for tokens..."
-                              : "No text."}
-                        </span>
-                      </button>
-                      {!collapsed && (
-                        <div className="bw-branch-panel">
-                          <div className="bw-branch-text">
-                            {text || (
-                              <span className="bw-empty">
-                                {streaming ? "Waiting for tokens..." : "No text."}
-                              </span>
-                            )}
-                          </div>
-                          <div className="bw-branch-actions">
-                            <button
-                              type="button"
-                              onClick={() => onUseCandidate(index)}
-                              disabled={!text || streaming || saving}
-                              className="bw-button"
-                            >
-                              Use
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onSaveCandidate(index)}
-                              disabled={
-                                !text ||
-                                streaming ||
-                                saving ||
-                                !!savedCandidateIds[index]
-                              }
-                              className="bw-button"
-                            >
-                              {savedCandidateIds[index] ? "Saved" : "Save"}
-                            </button>
-                          </div>
-                        </div>
-                      )}
-                    </section>
-                  );
-                })}
-              </div>
-
-            </aside>
-          )}
-          {branchPickerOpen && !pickerVisible && (
-            <button
-              type="button"
-              className="bw-rail-handle bw-rail-handle-right"
-              onClick={() => setPickerVisible(true)}
-              aria-label="Show branch tray"
-              title="Show branches"
-            >
-              Branches
-            </button>
-          )}
         </div>
       )}
     </div>
