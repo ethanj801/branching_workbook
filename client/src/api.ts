@@ -76,6 +76,17 @@ export type ProjectInfo = {
   version: string;
 };
 
+export type ComposeDisplayMode = "cards" | "inline";
+
+export type ProjectSettings = {
+  display_mode: ComposeDisplayMode;
+  branch_count: number;
+  max_tokens: number;
+  tokens_per_suggestion: number;
+};
+
+export type ProjectSettingsPatch = Partial<ProjectSettings>;
+
 export type NodeModel = {
   id: string;
   parent_id: string | null;
@@ -220,6 +231,20 @@ export function closeProject(): Promise<{ closed: boolean }> {
 
 export function currentProject(): Promise<ProjectInfo | null> {
   return requestJson<ProjectInfo | null>("/api/projects/current");
+}
+
+export function getProjectSettings(): Promise<ProjectSettings> {
+  return requestJson<ProjectSettings>("/api/project/settings");
+}
+
+export function updateProjectSettings(
+  patch: ProjectSettingsPatch,
+): Promise<ProjectSettings> {
+  return requestJson<ProjectSettings>("/api/project/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
 }
 
 // Native OS file dialog endpoints. The browser cannot show a real

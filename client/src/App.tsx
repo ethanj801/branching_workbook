@@ -20,6 +20,7 @@ import {
   downloadModel,
   encodeTokens,
   getActivePreset,
+  getProjectSettings,
   listModels,
   listNodes,
   listPresets,
@@ -29,13 +30,21 @@ import {
   streamCompletion,
   streamModelLoad,
   unloadModel,
+  updateProjectSettings,
   updatePreset,
+  type ComposeDisplayMode,
   type ModelLoadEvent,
   type ProjectInfo,
+  type ProjectSettingsPatch,
   type SamplerBody,
   type SamplerPreset,
   type TabbyModel,
 } from "./api";
+import type { KeyBinding } from "@codemirror/view";
+import WorkbookEditor, {
+  type EditorSelection,
+  type WorkbookEditorHandle,
+} from "./editor/WorkbookEditor";
 import SamplerDrawer from "./samplers/SamplerDrawer";
 import { mergePreset, neutralBody } from "./samplers/fields";
 import { contextHash } from "./tree/hash";
@@ -69,10 +78,17 @@ type Candidate = {
 
 type BranchViewMode = "grid" | "strip";
 
+type WorkspaceMode = "compose" | "autocomplete";
+
 type UsedCandidateRange = {
   start: number;
   end: number;
 };
+
+type AutocompleteState =
+  | { phase: "idle" }
+  | { phase: "thinking" }
+  | { phase: "showing"; suggestions: string[]; visibleIdx: number };
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
@@ -226,6 +242,8 @@ function NodeNameEditor({
 const DEFAULT_MAX_TOKENS = 256;
 const DEFAULT_BRANCH_COUNT = 3;
 const DEFAULT_BRANCH_LIMIT = 8;
+const DEFAULT_TOKENS_PER_SUGGESTION = 2;
+const AUTOCOMPLETE_POOL_TARGET = 10;
 const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
 const COMMON_CONTEXT_SIZES = "8192  |  16384  |  32768  |  65536  |  131072";
 const COLLAPSED_RAIL_WIDTH = 40;
@@ -293,6 +311,9 @@ export default function App() {
   );
   const [branchLimitHint, setBranchLimitHint] = useState(false);
   const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
+  const [tokensPerSuggestionText, setTokensPerSuggestionText] = useState(
+    String(DEFAULT_TOKENS_PER_SUGGESTION),
+  );
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
@@ -328,6 +349,16 @@ export default function App() {
   );
   const [branchViewMode, setBranchViewMode] =
     useState<BranchViewMode>("grid");
+  const [visibleCandidateIndex, setVisibleCandidateIndex] = useState(0);
+  const [composeDisplayMode, setComposeDisplayMode] =
+    useState<ComposeDisplayMode>("cards");
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("compose");
+  const [autocompleteState, setAutocompleteState] = useState<AutocompleteState>({
+    phase: "idle",
+  });
+  const [autocompleteStatus, setAutocompleteStatus] = useState<string | null>(
+    null,
+  );
   const [pickedCandidateIndex, setPickedCandidateIndex] = useState<number | null>(
     null,
   );
@@ -340,12 +371,17 @@ export default function App() {
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
   const abortRef = useRef<AbortController | null>(null);
-  const bufferRef = useRef<HTMLTextAreaElement | null>(null);
+  const autocompleteAbortRef = useRef<AbortController | null>(null);
+  const editorRef = useRef<WorkbookEditorHandle | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
+  const autocompleteSuggestion =
+    autocompleteState.phase === "showing"
+      ? autocompleteState.suggestions[autocompleteState.visibleIdx] ?? null
+      : null;
   const contextPct =
     tokenCount !== null && contextMax ? tokenCount / contextMax : null;
   const contextWarn = contextPct !== null && contextPct >= 0.9;
@@ -372,6 +408,7 @@ export default function App() {
     setSavedCandidateIds({});
     setPickedCandidateIndex(null);
     setUsedCandidateRange(null);
+    setVisibleCandidateIndex(0);
     setBranchViewMode("grid");
   }, []);
 
@@ -421,14 +458,38 @@ export default function App() {
     }
   }, []);
 
+  function applyProjectSettings(settings: {
+    display_mode: ComposeDisplayMode;
+    branch_count: number;
+    max_tokens: number;
+    tokens_per_suggestion: number;
+  }) {
+    setComposeDisplayMode(settings.display_mode);
+    setBranchCountText(String(settings.branch_count));
+    setMaxTokensText(String(settings.max_tokens));
+    setTokensPerSuggestionText(String(settings.tokens_per_suggestion));
+    setBranchLimitHint(false);
+  }
+
+  function saveProjectSettings(patch: ProjectSettingsPatch) {
+    if (!project) return;
+    void updateProjectSettings(patch).catch((err) => {
+      setError(formatError(err));
+    });
+  }
+
   const loadProject = useCallback(
     async (info: ProjectInfo) => {
-      const nodes = await listNodes();
+      const [nodes, settings] = await Promise.all([
+        listNodes(),
+        getProjectSettings(),
+      ]);
       const loaded = loadedTreeFromModels(nodes);
       setProject(info);
       setTree(loaded.tree);
       setCurrentId(loaded.currentId);
       setBuffer(concatPathText(pathFromRoot(loaded.tree, loaded.currentId)));
+      applyProjectSettings(settings);
       clearBranchPicker();
 
       // Pull the project's active preset (lives in its project_meta) and
@@ -505,6 +566,148 @@ export default function App() {
       window.clearTimeout(timeoutId);
     };
   }, [buffer, currentTabbyModel]);
+
+  useEffect(() => {
+    autocompleteAbortRef.current?.abort();
+    autocompleteAbortRef.current = null;
+
+    if (workspaceMode !== "autocomplete") {
+      setAutocompleteState({ phase: "idle" });
+      setAutocompleteStatus(null);
+      return;
+    }
+    if (!currentTabbyModel) {
+      setAutocompleteState({ phase: "idle" });
+      setAutocompleteStatus("no model loaded");
+      return;
+    }
+    if (streaming || saving) {
+      setAutocompleteState({ phase: "idle" });
+      return;
+    }
+
+    const selection = bufferSelectionRef.current;
+    const atEnd =
+      selection === null ||
+      (selection.start === buffer.length && selection.end === buffer.length);
+    if (!atEnd) {
+      setAutocompleteState({ phase: "idle" });
+      setAutocompleteStatus(null);
+      return;
+    }
+
+    const tokensPerSuggestion = clampNumber(
+      parsePositiveInt(
+        tokensPerSuggestionText,
+        DEFAULT_TOKENS_PER_SUGGESTION,
+      ),
+      1,
+      8,
+    );
+    const promptSnapshot = buffer;
+    const samplerSnapshot = mergePreset(draftBody);
+    let cancelled = false;
+    const timeoutId = window.setTimeout(() => {
+      const abort = new AbortController();
+      autocompleteAbortRef.current = abort;
+      setAutocompleteState({ phase: "thinking" });
+      setAutocompleteStatus(null);
+
+      const partials = Array.from(
+        { length: AUTOCOMPLETE_POOL_TARGET },
+        () => "",
+      );
+      const slotsByIndex = Array.from(
+        { length: AUTOCOMPLETE_POOL_TARGET },
+        () => -1,
+      );
+
+      void streamCompletion(
+        {
+          prompt: promptSnapshot,
+          n: AUTOCOMPLETE_POOL_TARGET,
+          max_tokens: tokensPerSuggestion,
+          ...samplerSnapshot,
+        },
+        (chunk) => {
+          if (cancelled) return;
+          for (const choice of chunk.choices) {
+            if (
+              choice.index < 0 ||
+              choice.index >= AUTOCOMPLETE_POOL_TARGET ||
+              !choice.text
+            ) {
+              continue;
+            }
+            partials[choice.index] += choice.text;
+            const suggestion = normalizeAutocompleteSuggestion(
+              partials[choice.index],
+            );
+            if (!suggestion) continue;
+
+            setAutocompleteState((current) => {
+              if (current.phase === "idle") return current;
+              const suggestions =
+                current.phase === "showing" ? [...current.suggestions] : [];
+              let slot = slotsByIndex[choice.index];
+              if (slot < 0) {
+                const key = suggestion.trim().toLowerCase();
+                const exists = suggestions.some(
+                  (item) => item.trim().toLowerCase() === key,
+                );
+                if (exists) return current;
+                slot = suggestions.length;
+                slotsByIndex[choice.index] = slot;
+                suggestions.push(suggestion);
+              } else {
+                suggestions[slot] = suggestion;
+              }
+              return {
+                phase: "showing",
+                suggestions,
+                visibleIdx:
+                  current.phase === "showing"
+                    ? Math.min(current.visibleIdx, suggestions.length - 1)
+                    : 0,
+              };
+            });
+          }
+        },
+        abort.signal,
+      )
+        .catch((err) => {
+          if (!cancelled && (err as Error).name !== "AbortError") {
+            setAutocompleteState({ phase: "idle" });
+            setAutocompleteStatus("autocomplete offline");
+          }
+        })
+        .finally(() => {
+          if (autocompleteAbortRef.current === abort) {
+            autocompleteAbortRef.current = null;
+          }
+          if (!cancelled) {
+            setAutocompleteState((current) =>
+              current.phase === "thinking" ? { phase: "idle" } : current,
+            );
+          }
+        });
+    }, 250);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+      autocompleteAbortRef.current?.abort();
+      autocompleteAbortRef.current = null;
+    };
+  }, [
+    buffer,
+    currentTabbyModel,
+    draftBody,
+    saving,
+    streaming,
+    tokensPerSuggestionText,
+    workspaceMode,
+  ]);
 
   const commitBuffer = useCallback(
     async (
@@ -595,6 +798,12 @@ export default function App() {
     // Normalizing on every keystroke would reintroduce the leading-zero bug.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maxBranches]);
+
+  useEffect(() => {
+    setVisibleCandidateIndex((current) =>
+      candidates.length === 0 ? 0 : Math.min(current, candidates.length - 1),
+    );
+  }, [candidates.length]);
 
   function startColumnDrag(
     event: ReactMouseEvent<HTMLDivElement>,
@@ -927,6 +1136,7 @@ export default function App() {
     const clamped = clampNumber(parsed, 1, maxBranches);
     setBranchCountText(String(clamped));
     setBranchLimitHint(parsed > maxBranches);
+    saveProjectSettings({ branch_count: clamped });
     return clamped;
   }
 
@@ -936,6 +1146,21 @@ export default function App() {
       parsePositiveInt(maxTokensText, DEFAULT_MAX_TOKENS),
     );
     setMaxTokensText(String(normalized));
+    saveProjectSettings({ max_tokens: normalized });
+    return normalized;
+  }
+
+  function normalizeTokensPerSuggestion(): number {
+    const normalized = clampNumber(
+      parsePositiveInt(
+        tokensPerSuggestionText,
+        DEFAULT_TOKENS_PER_SUGGESTION,
+      ),
+      1,
+      8,
+    );
+    setTokensPerSuggestionText(String(normalized));
+    saveProjectSettings({ tokens_per_suggestion: normalized });
     return normalized;
   }
 
@@ -964,11 +1189,13 @@ export default function App() {
     setSavedCandidateIds({});
     setPickedCandidateIndex(null);
     setUsedCandidateRange(null);
+    setVisibleCandidateIndex(0);
     setBranchViewMode("grid");
     setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
+    let firstVisibleChosen = false;
 
     try {
       await streamCompletion(
@@ -981,6 +1208,10 @@ export default function App() {
         (chunk) => {
           for (const choice of chunk.choices) {
             if (choice.index < 0 || choice.index >= n || !choice.text) continue;
+            if (!firstVisibleChosen) {
+              firstVisibleChosen = true;
+              setVisibleCandidateIndex(choice.index);
+            }
             setCandidates((current) => {
               const next =
                 current.length === n
@@ -1016,13 +1247,65 @@ export default function App() {
     abortRef.current?.abort();
   }
 
-  function recordBufferSelection() {
-    const textarea = bufferRef.current;
-    if (!textarea) return;
+  function clearAutocomplete(status: string | null = null) {
+    autocompleteAbortRef.current?.abort();
+    autocompleteAbortRef.current = null;
+    setAutocompleteState({ phase: "idle" });
+    setAutocompleteStatus(status);
+  }
+
+  function cycleAutocomplete(delta: 1 | -1): boolean {
+    let handled = false;
+    setAutocompleteState((current) => {
+      if (current.phase !== "showing" || current.suggestions.length === 0) {
+        return current;
+      }
+      handled = true;
+      const nextIdx =
+        (current.visibleIdx + delta + current.suggestions.length) %
+        current.suggestions.length;
+      return { ...current, visibleIdx: nextIdx };
+    });
+    return handled;
+  }
+
+  function cycleVisibleCandidate(delta: 1 | -1): boolean {
+    if (!branchPickerOpen || candidates.length <= 1) return false;
+    setVisibleCandidateIndex(
+      (current) => (current + delta + candidates.length) % candidates.length,
+    );
+    return true;
+  }
+
+  function normalizeAutocompleteSuggestion(text: string): string | null {
+    const singleLine = text.split(/\r?\n/, 1)[0] ?? "";
+    if (!singleLine.trim()) return null;
+    return singleLine;
+  }
+
+  function acceptAutocompleteSuggestion(): boolean {
+    if (workspaceMode !== "autocomplete" || !autocompleteSuggestion) {
+      return false;
+    }
+    const nextBuffer = `${buffer}${autocompleteSuggestion}`;
+    setBuffer(nextBuffer);
+    setUsedCandidateRange(null);
+    clearAutocomplete();
     bufferSelectionRef.current = {
-      start: textarea.selectionStart,
-      end: textarea.selectionEnd,
+      start: nextBuffer.length,
+      end: nextBuffer.length,
     };
+    window.requestAnimationFrame(() => {
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(nextBuffer.length, nextBuffer.length);
+    });
+    return true;
+  }
+
+  function recordBufferSelection() {
+    const selection = editorRef.current?.getSelection();
+    if (!selection) return;
+    bufferSelectionRef.current = selection;
   }
 
   function onUseCandidate(index: number) {
@@ -1052,8 +1335,8 @@ export default function App() {
     setPickedCandidateIndex(index);
     setBranchViewMode("strip");
     window.requestAnimationFrame(() => {
-      bufferRef.current?.focus();
-      bufferRef.current?.setSelectionRange(nextCursor, nextCursor);
+      editorRef.current?.focus();
+      editorRef.current?.setSelectionRange(nextCursor, nextCursor);
     });
   }
 
@@ -1113,6 +1396,77 @@ export default function App() {
     tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
+  const editorKeyBindings = useMemo<KeyBinding[]>(
+    () => [
+      {
+        key: "Tab",
+        run: () => {
+          if (acceptAutocompleteSuggestion()) return true;
+          if (
+            workspaceMode === "compose" &&
+            composeDisplayMode === "inline" &&
+            branchPickerOpen &&
+            branchViewMode === "grid"
+          ) {
+            onUseCandidate(visibleCandidateIndex);
+            return true;
+          }
+          return false;
+        },
+      },
+      {
+        key: "Escape",
+        run: () => {
+          if (
+            workspaceMode === "autocomplete" &&
+            autocompleteState.phase !== "idle"
+          ) {
+            clearAutocomplete();
+            return true;
+          }
+          if (
+            workspaceMode === "compose" &&
+            composeDisplayMode === "inline" &&
+            branchPickerOpen &&
+            branchViewMode === "grid"
+          ) {
+            clearBranchPicker();
+            return true;
+          }
+          return false;
+        },
+      },
+      {
+        key: "Ctrl-]",
+        run: () =>
+          workspaceMode === "autocomplete"
+            ? cycleAutocomplete(1)
+            : composeDisplayMode === "inline"
+              ? cycleVisibleCandidate(1)
+              : false,
+      },
+      {
+        key: "Ctrl-[",
+        run: () =>
+          workspaceMode === "autocomplete"
+            ? cycleAutocomplete(-1)
+            : composeDisplayMode === "inline"
+              ? cycleVisibleCandidate(-1)
+              : false,
+      },
+    ],
+    [
+      autocompleteState.phase,
+      autocompleteSuggestion,
+      branchPickerOpen,
+      branchViewMode,
+      clearBranchPicker,
+      composeDisplayMode,
+      visibleCandidateIndex,
+      workspaceMode,
+    ],
+  );
   const branchColumns = branchGridColumns(candidates.length);
   const branchRemainder =
     branchColumns === null ? 0 : candidates.length % branchColumns;
@@ -1128,13 +1482,16 @@ export default function App() {
     project?.title && project.title.trim() !== "Branching Workbook"
       ? project.title
       : null;
-  const workspaceColumns = [
-    treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
-    treeVisible ? "6px" : null,
-    "minmax(18rem, 1fr)",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const workspaceColumns =
+    workspaceMode === "autocomplete"
+      ? "minmax(18rem, 1fr)"
+      : [
+          treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
+          treeVisible ? "6px" : null,
+          "minmax(18rem, 1fr)",
+        ]
+          .filter(Boolean)
+          .join(" ");
 
   async function onRenameCurrentNode(name: string | null) {
     if (!tree || !currentId || saving || streaming) return;
@@ -1581,9 +1938,10 @@ export default function App() {
           className="bw-workspace"
           data-picker={branchPickerOpen}
           data-tree={treeVisible}
+          data-mode={workspaceMode}
           style={{ gridTemplateColumns: workspaceColumns }}
         >
-          {treeVisible ? (
+          {workspaceMode === "compose" && treeVisible ? (
             <aside className="bw-tree">
               <div className="bw-rail-head">
                 <div>
@@ -1603,7 +1961,7 @@ export default function App() {
                 {Object.keys(tree.nodes).length.toLocaleString()} nodes
               </div>
             </aside>
-          ) : (
+          ) : workspaceMode === "compose" ? (
             <button
               type="button"
               className="bw-rail-handle bw-rail-handle-left"
@@ -1613,9 +1971,9 @@ export default function App() {
             >
               Tree
             </button>
-          )}
+          ) : null}
 
-          {treeVisible && (
+          {workspaceMode === "compose" && treeVisible && (
             <div
               className="bw-splitter bw-tree-splitter"
               role="separator"
@@ -1639,11 +1997,53 @@ export default function App() {
           )}
 
           <main className="bw-editor">
+            <nav className="bw-mode-tabs" aria-label="Writing mode">
+              <button
+                type="button"
+                data-active={workspaceMode === "compose"}
+                onClick={() => {
+                  if (workspaceMode === "autocomplete") {
+                    void commitBuffer();
+                  }
+                  setWorkspaceMode("compose");
+                  clearAutocomplete();
+                }}
+                disabled={saving}
+              >
+                Compose
+              </button>
+              <button
+                type="button"
+                data-active={workspaceMode === "autocomplete"}
+                onClick={() => {
+                  if (streaming) return;
+                  setWorkspaceMode("autocomplete");
+                  bufferSelectionRef.current = {
+                    start: buffer.length,
+                    end: buffer.length,
+                  };
+                  window.requestAnimationFrame(() => {
+                    editorRef.current?.focus();
+                    editorRef.current?.setSelectionRange(buffer.length, buffer.length);
+                  });
+                }}
+                disabled={streaming}
+              >
+                Autocomplete
+              </button>
+            </nav>
             <div
               className="bw-editor-main"
-              data-branch-view={branchPickerOpen ? branchViewMode : "none"}
+              data-branch-view={
+                workspaceMode === "compose" && branchPickerOpen
+                  ? branchViewMode
+                  : "none"
+              }
             >
-              {branchPickerOpen && branchViewMode === "grid" && (
+              {workspaceMode === "compose" &&
+                branchPickerOpen &&
+                branchViewMode === "grid" &&
+                composeDisplayMode === "cards" && (
                 <section
                   className="bw-branch-comparison"
                   style={{ flexBasis: `${branchPaneRatio * 100}%` }}
@@ -1744,7 +2144,10 @@ export default function App() {
                 </section>
               )}
 
-              {branchPickerOpen && branchViewMode === "grid" && (
+              {workspaceMode === "compose" &&
+                branchPickerOpen &&
+                branchViewMode === "grid" &&
+                composeDisplayMode === "cards" && (
                 <div
                   className="bw-row-splitter"
                   role="separator"
@@ -1754,7 +2157,9 @@ export default function App() {
                 />
               )}
 
-              {branchPickerOpen && branchViewMode === "strip" && (
+              {workspaceMode === "compose" &&
+                branchPickerOpen &&
+                branchViewMode === "strip" && (
                 <section className="bw-branch-strip">
                   <div className="bw-branch-strip-label">
                     <span className="bw-kicker">Last generation</span>
@@ -1837,25 +2242,113 @@ export default function App() {
                       />
                     </div>
                   )}
-                  <textarea
-                    ref={bufferRef}
-                    className="bw-buffer"
+                  <WorkbookEditor
+                    ref={editorRef}
                     value={buffer}
-                    onChange={(event) => {
-                      setBuffer(event.target.value);
+                    onChange={(nextBuffer) => {
+                      setBuffer(nextBuffer);
                       setUsedCandidateRange(null);
-                      bufferSelectionRef.current = {
-                        start: event.target.selectionStart,
-                        end: event.target.selectionEnd,
-                      };
+                    }}
+                    onSelectionChange={(selection: EditorSelection) => {
+                      bufferSelectionRef.current = selection;
                     }}
                     onBlur={recordBufferSelection}
-                    onClick={recordBufferSelection}
-                    onKeyUp={recordBufferSelection}
-                    onSelect={recordBufferSelection}
                     placeholder="Start writing..."
-                    spellCheck={false}
+                    disabled={saving}
+                    ghostText={
+                      workspaceMode === "autocomplete"
+                        ? autocompleteSuggestion
+                        : workspaceMode === "compose" &&
+                            composeDisplayMode === "inline" &&
+                            branchPickerOpen &&
+                            branchViewMode === "grid" &&
+                            visibleCandidate
+                          ? visibleCandidate.text
+                          : null
+                    }
+                    keyBindings={editorKeyBindings}
                   />
+                  {workspaceMode === "compose" &&
+                    composeDisplayMode === "inline" &&
+                    branchPickerOpen &&
+                    branchViewMode === "grid" &&
+                    visibleCandidate && (
+                      <div
+                        className="bw-inline-controls"
+                        data-streaming={streaming && !visibleCandidate.done}
+                      >
+                        {candidates.length > 1 && (
+                          <div className="bw-inline-cycler" aria-label="Cycle branches">
+                            <button
+                              type="button"
+                              onClick={() => cycleVisibleCandidate(-1)}
+                              aria-label="Previous branch"
+                            >
+                              ‹
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => cycleVisibleCandidate(1)}
+                              aria-label="Next branch"
+                            >
+                              ›
+                            </button>
+                          </div>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => onUseCandidate(visibleCandidateIndex)}
+                          disabled={!visibleCandidate.text || streaming || saving}
+                          className="bw-button bw-button-primary"
+                        >
+                          Use
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void onKeepCandidate(visibleCandidateIndex)}
+                          disabled={
+                            !visibleCandidate.text ||
+                            saving ||
+                            !!savedCandidateIds[visibleCandidateIndex]
+                          }
+                          title={
+                            savedCandidateIds[visibleCandidateIndex]
+                              ? "Already kept"
+                              : "Keep branch"
+                          }
+                          className="bw-button"
+                        >
+                          {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={clearBranchPicker}
+                          disabled={streaming || saving}
+                          className="bw-button"
+                        >
+                          Clear
+                        </button>
+                        <span className="bw-inline-meta">
+                          Branch {visibleCandidateIndex + 1}
+                          {candidates.length > 1 ? ` of ${candidates.length}` : ""}
+                          {visibleCandidate.text
+                            ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
+                            : ""}
+                          {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
+                          {streaming && !visibleCandidate.done && " · streaming"}
+                        </span>
+                      </div>
+                    )}
+                  {workspaceMode === "autocomplete" && (
+                    <div className="bw-autocomplete-hint">
+                      {autocompleteStatus ??
+                        (autocompleteState.phase === "thinking"
+                          ? "autocomplete thinking"
+                          : autocompleteSuggestion
+                            ? "Tab accept · Esc dismiss · Ctrl+] / Ctrl+[ cycle"
+                            : "autocomplete ready")}
+                    </div>
+                  )}
                 </section>
               </div>
             </div>
@@ -1892,44 +2385,89 @@ export default function App() {
               >
                 Samplers
               </button>
-              <label className="bw-field">
-                Branches
-                <input
-                  type="number"
-                  min={1}
-                  max={maxBranches}
-                  value={branchCountText}
-                  onChange={(event) => {
-                    setBranchCountText(event.target.value);
-                    setBranchLimitHint(false);
-                  }}
-                  onBlur={() => {
-                    normalizeBranchCount();
-                  }}
-                  disabled={streaming || saving}
-                  className="bw-input w-16"
-                  title={`Max ${maxBranches} with this model`}
-                />
-                {branchLimitHint && (
-                  <span className="bw-field-note">
-                    max {maxBranches} with this model
-                  </span>
-                )}
-              </label>
-              <label className="bw-field">
-                Max tokens
-                <input
-                  type="number"
-                  min={1}
-                  value={maxTokensText}
-                  onChange={(event) => setMaxTokensText(event.target.value)}
-                  onBlur={() => {
-                    normalizeMaxTokens();
-                  }}
-                  disabled={streaming || saving}
-                  className="bw-input w-24"
-                />
-              </label>
+              {workspaceMode === "compose" ? (
+                <>
+                  <label className="bw-field">
+                    Branches
+                    <input
+                      type="number"
+                      min={1}
+                      max={maxBranches}
+                      value={branchCountText}
+                      onChange={(event) => {
+                        setBranchCountText(event.target.value);
+                        setBranchLimitHint(false);
+                      }}
+                      onBlur={() => {
+                        normalizeBranchCount();
+                      }}
+                      disabled={streaming || saving}
+                      className="bw-input w-16"
+                      title={`Max ${maxBranches} with this model`}
+                    />
+                    {branchLimitHint && (
+                      <span className="bw-field-note">
+                        max {maxBranches} with this model
+                      </span>
+                    )}
+                  </label>
+                  <label className="bw-field">
+                    Max tokens
+                    <input
+                      type="number"
+                      min={1}
+                      value={maxTokensText}
+                      onChange={(event) => setMaxTokensText(event.target.value)}
+                      onBlur={() => {
+                        normalizeMaxTokens();
+                      }}
+                      disabled={streaming || saving}
+                      className="bw-input w-24"
+                    />
+                  </label>
+                  <div className="bw-display-toggle" aria-label="Display mode">
+                    <span>Display</span>
+                    <button
+                      type="button"
+                      data-active={composeDisplayMode === "cards"}
+                      onClick={() => {
+                        setComposeDisplayMode("cards");
+                        saveProjectSettings({ display_mode: "cards" });
+                      }}
+                    >
+                      cards
+                    </button>
+                    <button
+                      type="button"
+                      data-active={composeDisplayMode === "inline"}
+                      onClick={() => {
+                        setComposeDisplayMode("inline");
+                        saveProjectSettings({ display_mode: "inline" });
+                      }}
+                    >
+                      inline
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <label className="bw-field">
+                  Tokens per suggestion
+                  <input
+                    type="number"
+                    min={1}
+                    max={8}
+                    value={tokensPerSuggestionText}
+                    onChange={(event) =>
+                      setTokensPerSuggestionText(event.target.value)
+                    }
+                    onBlur={() => {
+                      normalizeTokensPerSuggestion();
+                    }}
+                    disabled={saving}
+                    className="bw-input w-16"
+                  />
+                </label>
+              )}
               <div className="flex-1" />
               <div className="bw-action-main">
                 <button
@@ -1940,7 +2478,7 @@ export default function App() {
                 >
                   {saving ? "Saving" : "Save"}
                 </button>
-                {streaming ? (
+                {workspaceMode === "compose" && streaming ? (
                 <button
                   type="button"
                   onClick={onCancel}
@@ -1948,7 +2486,7 @@ export default function App() {
                 >
                   Stop
                 </button>
-                ) : (
+                ) : workspaceMode === "compose" ? (
                 <button
                   type="button"
                   onClick={() => void onGenerate()}
@@ -1957,7 +2495,7 @@ export default function App() {
                 >
                   Generate
                 </button>
-                )}
+                ) : null}
               </div>
             </footer>
           </main>

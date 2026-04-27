@@ -112,6 +112,14 @@ async function snap(page, name) {
   console.log(`  → ${file}`);
 }
 
+async function editorText(page) {
+  return page.evaluate(() =>
+    [...document.querySelectorAll(".cm-line")]
+      .map((line) => line.textContent ?? "")
+      .join("\n"),
+  );
+}
+
 async function main() {
   await mkdir(SHOT_DIR, { recursive: true });
 
@@ -210,13 +218,15 @@ async function main() {
     await snap(page, "07-branch-kept");
 
     console.log("branch used strip");
-    const beforeUse = await page.locator(".bw-buffer").inputValue();
+    const beforeUse = await editorText(page);
     await page.locator(".bw-branch-actions button", { hasText: "Use" }).first().click();
     await page.waitForSelector(".bw-branch-strip");
     await page.waitForFunction(
       (prior) => {
-        const buffer = document.querySelector(".bw-buffer");
-        return buffer instanceof HTMLTextAreaElement && buffer.value.length > prior.length;
+        const text = [...document.querySelectorAll(".cm-line")]
+          .map((line) => line.textContent ?? "")
+          .join("\n");
+        return text.length > prior.length;
       },
       beforeUse,
     );
