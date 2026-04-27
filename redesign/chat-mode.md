@@ -101,17 +101,46 @@ and a small visual cue:
 The active assistant turn block contains:
 
 1. Already-accepted chunks rendered as normal turn body text.
-2. A thin divider line.
-3. A small subheader: `NEXT CHUNK · 3 candidates generating` (or
-   `ready` once streams complete).
-4. The fan-out display — cards or inline depending on the Display
-   toggle, sized to fit inside the turn block.
-5. An action row at the bottom: an `End turn` button on the left,
+2. The fan-out display, sized to fit inside the turn block. Two
+   variants depending on the Display toggle (see below).
+3. An action row at the bottom: an `End turn` button on the left,
    keyboard-shortcut hint on the right.
 
-This puts everything related to composing the turn inside one block,
-matching the user's mental model that the cards are *the next chunk
-of this turn*.
+Everything related to composing the turn lives inside one block,
+matching the mental model that the candidates are *the next chunk of
+this turn*.
+
+### Cards display (inside the assistant block)
+
+A divider line separates accepted text from the fan-out area, then a
+small subheader reads `NEXT CHUNK · N candidates generating` (or
+`ready` once streams complete). Below the subheader, N cards laid out
+horizontally — the same layout as Compose-mode cards, scaled to the
+turn block's width. Each card has its own `Use` and `Keep` buttons.
+
+See `chat-mode-wireframe.svg` for this variant.
+
+### Inline display (inside the assistant block)
+
+No divider, no subheader, no separate frame. The candidate flows
+directly out of the last accepted word as a ghost-text continuation
+of the same paragraph: accepted text in normal color, candidate text
+in lighter color (`#888780` or `--color-text-secondary`), all in one
+continuous text run.
+
+Below the ghost-text region, a single row of controls: a small
+chevron pill (`‹ ›`), a `Keep` button, and a meta line reading
+`Branch X of N · K tok · Tab accept · Ctrl+] / [ cycle · Esc clear`.
+
+`Tab` commits the visible candidate (it becomes regular-color text
+appended to the accepted chunk). `Use` is implicit in `Tab`; there's
+no separate `Use` button in this variant since the candidate is
+already shown in place. After commit, the picker disappears; the user
+clicks `Generate` to fan out the next chunk, or `End turn` to close
+the turn. Behavior matches the cards display in every respect except
+the visual.
+
+See `chat-mode-inline-wireframe.svg` for this variant.
 
 ### User-turn input
 
