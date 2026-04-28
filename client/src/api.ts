@@ -52,6 +52,7 @@ export type CompletionRequestBody = {
   max_temp?: number;
   temp_exponent?: number;
   stop?: string[];
+  ban_eos_token?: boolean;
 };
 
 export type SamplerBody = Omit<CompletionRequestBody, "prompt" | "n">;
@@ -95,6 +96,7 @@ export type NodeModel = {
   source: NodeSource;
   hidden: boolean;
   is_main_path: boolean;
+  starred?: boolean;
   created_at: number;
   prior_context_hash: string;
   sampler_snapshot?: unknown | null;

@@ -35,6 +35,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     source               TEXT NOT NULL,
     hidden               INTEGER NOT NULL DEFAULT 0,
     is_main_path         INTEGER NOT NULL DEFAULT 0,
+    starred              INTEGER NOT NULL DEFAULT 0,
     created_at           INTEGER NOT NULL,
     sampler_snapshot     TEXT,
     seed                 INTEGER,
@@ -72,6 +73,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
         }
         if "name" not in columns:
             conn.execute("ALTER TABLE nodes ADD COLUMN name TEXT")
+        if "starred" not in columns:
+            conn.execute(
+                "ALTER TABLE nodes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 class NodeModel(BaseModel):
@@ -82,6 +87,7 @@ class NodeModel(BaseModel):
     source: Literal["generated", "user_written", "composed"]
     hidden: bool = False
     is_main_path: bool = False
+    starred: bool = False
     created_at: int
     prior_context_hash: str
     sampler_snapshot: dict | None = None
@@ -182,6 +188,7 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         source=r["source"],
         hidden=bool(r["hidden"]),
         is_main_path=bool(r["is_main_path"]),
+        starred=bool(r["starred"]) if "starred" in r.keys() else False,
         created_at=r["created_at"],
         prior_context_hash=r["prior_context_hash"],
         sampler_snapshot=(
@@ -196,9 +203,9 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         INSERT INTO nodes (
-            id, parent_id, text, name, source, hidden, is_main_path, created_at,
-            sampler_snapshot, seed, model_identifier, prior_context_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            id, parent_id, text, name, source, hidden, is_main_path, starred,
+            created_at, sampler_snapshot, seed, model_identifier, prior_context_hash
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             n.id,
@@ -208,6 +215,7 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.source,
             int(n.hidden),
             int(n.is_main_path),
+            int(n.starred),
             n.created_at,
             json.dumps(n.sampler_snapshot) if n.sampler_snapshot is not None else None,
             n.seed,
@@ -222,7 +230,8 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
         """
         UPDATE nodes
         SET parent_id = ?, text = ?, name = ?, source = ?, hidden = ?, is_main_path = ?,
-            sampler_snapshot = ?, seed = ?, model_identifier = ?, prior_context_hash = ?
+            starred = ?, sampler_snapshot = ?, seed = ?, model_identifier = ?,
+            prior_context_hash = ?
         WHERE id = ?
         """,
         (
@@ -232,6 +241,7 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.source,
             int(n.hidden),
             int(n.is_main_path),
+            int(n.starred),
             json.dumps(n.sampler_snapshot) if n.sampler_snapshot is not None else None,
             n.seed,
             n.model_identifier,

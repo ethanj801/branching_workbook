@@ -131,6 +131,7 @@ export function reshape(
             name: node.name ?? null,
             source: "user_written",
             hidden: false,
+            starred: node.starred,
             createdAt: opts.now(),
             priorContextHash: contextHash(priorText),
           };
@@ -141,6 +142,7 @@ export function reshape(
             name: null,
             source: node.source,
             hidden: node.hidden,
+            starred: false,
             createdAt: opts.now(),
             priorContextHash: contextHash(priorText + firstHalf.text),
             samplerSnapshot: node.samplerSnapshot,
@@ -208,6 +210,7 @@ export function reshape(
     name: null,
     source,
     hidden: false,
+    starred: false,
     createdAt: opts.now(),
     priorContextHash: contextHash(priorText),
   };

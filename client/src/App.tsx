@@ -128,6 +128,7 @@ function branchNode(
     name: null,
     source,
     hidden,
+    starred: false,
     createdAt: nowEpoch(),
     priorContextHash: contextHash(priorText),
     modelId,
@@ -255,6 +256,36 @@ function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+// Trim a partial trailing word off the prompt before sending it to the model.
+// BPE tokenizers fold a leading space into each word ("Hello", " world"), so a
+// prompt that ends mid-word ("Hello wor") forces the model to start from a
+// non-canonical token boundary and tends to derail. Walk back to the last
+// whitespace within a small window, hand the model a clean "after the space"
+// position, and remember the dropped fragment so the chunk handler can filter
+// completions to ones that pick up where the user left off.
+const AUTOCOMPLETE_TRIM_WINDOW = 64;
+function trimAutocompletePromptSuffix(prompt: string): {
+  trimmedPrompt: string;
+  partial: string;
+} {
+  if (prompt.length === 0) return { trimmedPrompt: prompt, partial: "" };
+  const lastChar = prompt[prompt.length - 1];
+  if (/\s/.test(lastChar)) return { trimmedPrompt: prompt, partial: "" };
+  const start = Math.max(0, prompt.length - AUTOCOMPLETE_TRIM_WINDOW);
+  let lastWsIdx = -1;
+  for (let i = prompt.length - 1; i >= start; i--) {
+    if (/\s/.test(prompt[i])) {
+      lastWsIdx = i;
+      break;
+    }
+  }
+  if (lastWsIdx < 0) return { trimmedPrompt: prompt, partial: "" };
+  return {
+    trimmedPrompt: prompt.slice(0, lastWsIdx + 1),
+    partial: prompt.slice(lastWsIdx + 1),
+  };
+}
+
 function parsePositiveInt(text: string, fallback: number): number {
   const parsed = Number.parseInt(text, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -337,6 +368,8 @@ export default function App() {
   const [downloadFolder, setDownloadFolder] = useState("");
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
+  const [starredOnly, setStarredOnly] = useState(false);
+  const [treeSearch, setTreeSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [presets, setPresets] = useState<SamplerPreset[]>([]);
   const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
@@ -604,7 +637,7 @@ export default function App() {
       1,
       8,
     );
-    const promptSnapshot = buffer;
+    const { trimmedPrompt, partial } = trimAutocompletePromptSuffix(buffer);
     const samplerSnapshot = mergePreset(draftBody);
     let cancelled = false;
     const timeoutId = window.setTimeout(() => {
@@ -624,10 +657,11 @@ export default function App() {
 
       void streamCompletion(
         {
-          prompt: promptSnapshot,
+          prompt: trimmedPrompt,
           n: AUTOCOMPLETE_POOL_TARGET,
           max_tokens: tokensPerSuggestion,
           ...samplerSnapshot,
+          ban_eos_token: true,
         },
         (chunk) => {
           if (cancelled) return;
@@ -642,6 +676,7 @@ export default function App() {
             partials[choice.index] += choice.text;
             const suggestion = normalizeAutocompleteSuggestion(
               partials[choice.index],
+              partial,
             );
             if (!suggestion) continue;
 
@@ -1277,10 +1312,34 @@ export default function App() {
     return true;
   }
 
-  function normalizeAutocompleteSuggestion(text: string): string | null {
-    const singleLine = text.split(/\r?\n/, 1)[0] ?? "";
-    if (!singleLine.trim()) return null;
-    return singleLine;
+  function normalizeAutocompleteSuggestion(
+    text: string,
+    partial: string,
+  ): string | null {
+    // Strip leading newlines so completions that begin with a paragraph
+    // break still surface as a single-line ghost. Without this, any
+    // suggestion whose first emitted chunk is "\n" would render blank
+    // forever and never reach the user.
+    const stripped = text.replace(/^[\r\n]+/, "");
+    const singleLine = stripped.split(/\r?\n/, 1)[0] ?? "";
+    // No trailing partial: legacy behavior — first non-blank line wins.
+    if (partial.length === 0) {
+      if (!singleLine.trim()) return null;
+      return singleLine;
+    }
+    // We trimmed `partial` off the prompt before sending. To stay coherent
+    // with the user's typed prefix, only surface completions whose first
+    // line picks up where the user is mid-word; show them only the part
+    // *after* the partial, since the prefix is already in the buffer.
+    if (singleLine.length < partial.length) {
+      return singleLine.length === 0 || partial.startsWith(singleLine)
+        ? null // still streaming; not enough chars to judge
+        : null; // diverged from the user's prefix
+    }
+    if (!singleLine.startsWith(partial)) return null;
+    const after = singleLine.slice(partial.length);
+    if (!after) return null;
+    return after;
   }
 
   function acceptAutocompleteSuggestion(): boolean {
@@ -1319,13 +1378,22 @@ export default function App() {
       branchViewMode === "strip" &&
       pickedCandidateIndex !== null &&
       usedCandidateRange !== null;
+    // Inline compose pins insertion to the end of the document. The ghost
+    // preview is rendered at end-of-doc, and clicking "Use" while the
+    // editor isn't focused would otherwise pull the cursor to a stale
+    // selection — sometimes way above the visible region.
+    const useEnd = composeDisplayMode === "inline" && !canReplaceUsed;
     const selection = bufferSelectionRef.current;
     const start = canReplaceUsed
       ? Math.max(0, Math.min(buffer.length, usedCandidateRange.start))
-      : Math.max(0, Math.min(buffer.length, selection?.start ?? buffer.length));
+      : useEnd
+        ? buffer.length
+        : Math.max(0, Math.min(buffer.length, selection?.start ?? buffer.length));
     const end = canReplaceUsed
       ? Math.max(start, Math.min(buffer.length, usedCandidateRange.end))
-      : Math.max(start, Math.min(buffer.length, selection?.end ?? start));
+      : useEnd
+        ? buffer.length
+        : Math.max(start, Math.min(buffer.length, selection?.end ?? start));
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
@@ -1396,6 +1464,83 @@ export default function App() {
     tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+
+  // Starred lineage: nodes worth showing when "Only starred paths" is on.
+  // A node is on the starred lineage if it is starred, an ancestor of a
+  // starred node, or a descendant of one — i.e., the full path passing
+  // through any star. If nothing is starred, the filter is a no-op so the
+  // user isn't locked out of the tree.
+  const starredLineageIds = useMemo<Set<string> | null>(() => {
+    if (!tree) return null;
+    const starredIds = Object.values(tree.nodes)
+      .filter((node) => node.starred)
+      .map((node) => node.id);
+    if (starredIds.length === 0) return null;
+
+    const lineage = new Set<string>();
+    // Ancestors of every starred node.
+    for (const id of starredIds) {
+      let cur: string | null | undefined = id;
+      while (cur && !lineage.has(cur)) {
+        lineage.add(cur);
+        cur = tree.nodes[cur]?.parentId ?? null;
+      }
+    }
+    // Descendants of every starred node.
+    const childrenByParent: Record<string, string[]> = {};
+    for (const node of Object.values(tree.nodes)) {
+      if (node.parentId === null) continue;
+      (childrenByParent[node.parentId] ??= []).push(node.id);
+    }
+    const stack = [...starredIds];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      for (const childId of childrenByParent[id] ?? []) {
+        if (lineage.has(childId)) continue;
+        lineage.add(childId);
+        stack.push(childId);
+      }
+    }
+    return lineage;
+  }, [tree]);
+
+  // Search lineage: nodes worth showing when a search query is active. A
+  // node passes if its label (name or text preview) contains the query, or
+  // if it's an ancestor or descendant of one that does — same shape as the
+  // starred filter. Empty query → null (filter is a no-op).
+  const searchLineageIds = useMemo<Set<string> | null>(() => {
+    if (!tree) return null;
+    const query = treeSearch.trim().toLowerCase();
+    if (query.length === 0) return null;
+    const matchIds = Object.values(tree.nodes)
+      .filter((node) => nodeLabel(node).toLowerCase().includes(query))
+      .map((node) => node.id);
+    if (matchIds.length === 0) return new Set<string>();
+
+    const lineage = new Set<string>();
+    for (const id of matchIds) {
+      let cur: string | null | undefined = id;
+      while (cur && !lineage.has(cur)) {
+        lineage.add(cur);
+        cur = tree.nodes[cur]?.parentId ?? null;
+      }
+    }
+    const childrenByParent: Record<string, string[]> = {};
+    for (const node of Object.values(tree.nodes)) {
+      if (node.parentId === null) continue;
+      (childrenByParent[node.parentId] ??= []).push(node.id);
+    }
+    const stack = [...matchIds];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      for (const childId of childrenByParent[id] ?? []) {
+        if (lineage.has(childId)) continue;
+        lineage.add(childId);
+        stack.push(childId);
+      }
+    }
+    return lineage;
+  }, [tree, treeSearch]);
   const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
   const editorKeyBindings = useMemo<KeyBinding[]>(
     () => [
@@ -1547,6 +1692,37 @@ export default function App() {
     }
   }
 
+  async function onSetNodeStarred(nodeIdToUpdate: string, starred: boolean) {
+    if (!tree || !currentId || saving || streaming) return;
+    const node = tree.nodes[nodeIdToUpdate];
+    if (!node || node.starred === starred) return;
+
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [nodeIdToUpdate]: { ...node, starred },
+      },
+    };
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      setTree(nextTree);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+      setTreeMenu(null);
+    }
+  }
+
+  async function onSetMainThread(nodeIdToPromote: string) {
+    setTreeMenu(null);
+    await onSelectNode(nodeIdToPromote);
+  }
+
   function renderTreeNode(nodeIdToRender: string, depth = 0) {
     if (!tree) return null;
     const node = tree.nodes[nodeIdToRender];
@@ -1554,6 +1730,16 @@ export default function App() {
 
     const childNodes = childrenOf(tree, node.id)
       .filter((child) => showHidden || !child.hidden)
+      .filter(
+        (child) =>
+          !starredOnly ||
+          starredLineageIds === null ||
+          starredLineageIds.has(child.id),
+      )
+      .filter(
+        (child) =>
+          searchLineageIds === null || searchLineageIds.has(child.id),
+      )
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     const isCurrent = node.id === currentId;
     const isOnPath = currentPathIds.has(node.id);
@@ -1595,23 +1781,37 @@ export default function App() {
           )}
           <button
             type="button"
+            className="bw-tree-star"
+            data-on={node.starred}
+            aria-label={node.starred ? "Unstar node" : "Star node"}
+            aria-pressed={node.starred}
+            title={node.starred ? "Unstar" : "Star"}
+            disabled={streaming || saving}
+            onClick={(event) => {
+              event.stopPropagation();
+              void onSetNodeStarred(node.id, !node.starred);
+            }}
+          >
+            {node.starred ? "★" : "☆"}
+          </button>
+          <button
+            type="button"
             onClick={() => void onSelectNode(node.id)}
             onContextMenu={(event) => {
               event.preventDefault();
               event.stopPropagation();
-              if (node.parentId !== null) {
-                setTreeMenu({
-                  nodeId: node.id,
-                  x: event.clientX,
-                  y: event.clientY,
-                });
-              }
+              setTreeMenu({
+                nodeId: node.id,
+                x: event.clientX,
+                y: event.clientY,
+              });
             }}
             disabled={streaming || saving}
             className="bw-tree-row"
             data-current={isCurrent}
             data-path={isOnPath}
             data-hidden={node.hidden}
+            data-starred={node.starred}
           >
             <span className="bw-tree-preview">{nodeLabel(node)}</span>
             <span className="bw-tree-meta">
@@ -1712,13 +1912,36 @@ export default function App() {
         >
           <button
             type="button"
+            onClick={() => void onSetMainThread(treeMenu.nodeId)}
+            disabled={saving || streaming || treeMenu.nodeId === currentId}
+          >
+            Set as main thread
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              void onSetNodeStarred(
+                treeMenu.nodeId,
+                !tree.nodes[treeMenu.nodeId]?.starred,
+              )
+            }
+            disabled={saving || streaming}
+          >
+            {tree.nodes[treeMenu.nodeId]?.starred ? "Unstar node" : "Star node"}
+          </button>
+          <button
+            type="button"
             onClick={() =>
               void onSetNodeHidden(
                 treeMenu.nodeId,
                 !tree.nodes[treeMenu.nodeId]?.hidden,
               )
             }
-            disabled={saving || streaming}
+            disabled={
+              saving ||
+              streaming ||
+              tree.nodes[treeMenu.nodeId]?.parentId === null
+            }
           >
             {tree.nodes[treeMenu.nodeId]?.hidden ? "Unhide node" : "Hide node"}
           </button>
@@ -1947,14 +2170,53 @@ export default function App() {
                 <div>
                   <div className="bw-kicker">Tree</div>
                 </div>
-                <label className="bw-hidden-toggle">
-                  <input
-                    type="checkbox"
-                    checked={showHidden}
-                    onChange={(event) => setShowHidden(event.target.checked)}
-                  />
-                  <span>Show hidden</span>
-                </label>
+                <div className="bw-tree-toggles">
+                  <label className="bw-hidden-toggle">
+                    <input
+                      type="checkbox"
+                      checked={showHidden}
+                      onChange={(event) => setShowHidden(event.target.checked)}
+                    />
+                    <span>Show hidden</span>
+                  </label>
+                  <label className="bw-hidden-toggle">
+                    <input
+                      type="checkbox"
+                      checked={starredOnly}
+                      onChange={(event) =>
+                        setStarredOnly(event.target.checked)
+                      }
+                    />
+                    <span>Only starred paths</span>
+                  </label>
+                </div>
+              </div>
+              <div className="bw-tree-search">
+                <input
+                  type="search"
+                  value={treeSearch}
+                  onChange={(event) => setTreeSearch(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Escape") {
+                      event.preventDefault();
+                      setTreeSearch("");
+                    }
+                  }}
+                  placeholder="Search node names..."
+                  className="bw-tree-search-input"
+                  aria-label="Search tree by node name"
+                />
+                {treeSearch && (
+                  <button
+                    type="button"
+                    className="bw-tree-search-clear"
+                    onClick={() => setTreeSearch("")}
+                    aria-label="Clear search"
+                    title="Clear"
+                  >
+                    ×
+                  </button>
+                )}
               </div>
               <div className="bw-tree-list">{renderTreeNode(tree.rootId)}</div>
               <div className="bw-tree-foot">

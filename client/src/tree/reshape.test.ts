@@ -29,6 +29,7 @@ function makeNode(
     text,
     source,
     hidden,
+    starred: false,
     createdAt: 0,
     priorContextHash: "0".repeat(16),
   };

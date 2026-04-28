@@ -14,6 +14,7 @@ function nodeFromModel(node: NodeModel): TreeNode {
     name: node.name ?? null,
     source: node.source,
     hidden: node.hidden,
+    starred: node.starred ?? false,
     createdAt: node.created_at,
     priorContextHash: node.prior_context_hash,
     samplerSnapshot: node.sampler_snapshot ?? undefined,
@@ -31,6 +32,7 @@ function modelFromNode(node: TreeNode, isMainPath: boolean): NodeModel {
     source: node.source,
     hidden: node.hidden,
     is_main_path: isMainPath,
+    starred: node.starred,
     created_at: node.createdAt,
     prior_context_hash: node.priorContextHash,
     sampler_snapshot: node.samplerSnapshot ?? null,
@@ -46,6 +48,7 @@ function sameNode(a: TreeNode, b: TreeNode): boolean {
     (a.name ?? null) === (b.name ?? null) &&
     a.source === b.source &&
     a.hidden === b.hidden &&
+    a.starred === b.starred &&
     a.createdAt === b.createdAt &&
     a.priorContextHash === b.priorContextHash &&
     JSON.stringify(a.samplerSnapshot ?? null) ===

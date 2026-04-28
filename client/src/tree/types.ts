@@ -7,6 +7,7 @@ export type TreeNode = {
   name?: string | null;
   source: NodeSource;
   hidden: boolean;
+  starred: boolean;
   createdAt: number;
   priorContextHash: string;
   samplerSnapshot?: unknown;
