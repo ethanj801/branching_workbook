@@ -830,6 +830,14 @@ export default function App() {
         event.preventDefault();
         void commitBuffer();
       }
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        event.key === "Enter" &&
+        workspaceMode === "compose"
+      ) {
+        event.preventDefault();
+        void onGenerate();
+      }
       if (event.key === "Escape") {
         if (closeConfirmOpen) {
           setCloseConfirmOpen(false);
@@ -845,7 +853,15 @@ export default function App() {
 
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [closeConfirmOpen, commitBuffer, modelPanelOpen, samplerOpen, treeMenu]);
+  }, [
+    closeConfirmOpen,
+    commitBuffer,
+    modelPanelOpen,
+    onGenerate,
+    samplerOpen,
+    treeMenu,
+    workspaceMode,
+  ]);
 
   useEffect(() => {
     if (!treeMenu) return;
@@ -1524,6 +1540,13 @@ export default function App() {
     tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const dirtyBuffer =
+    project !== null &&
+    tree !== null &&
+    currentId !== null &&
+    buffer !== concatPathText(currentPath);
+  const emptyDraftStartsFromRoot =
+    project !== null && currentPath.length > 1 && buffer.trim().length === 0;
 
   // Starred lineage: nodes worth showing when "Only starred paths" is on.
   // A node is on the starred lineage if it is starred, an ancestor of a
@@ -2643,6 +2666,12 @@ export default function App() {
                     }
                     keyBindings={editorKeyBindings}
                   />
+                  {emptyDraftStartsFromRoot && (
+                    <div className="bw-root-start-warning">
+                      Empty draft: the next save or generation starts a new path
+                      from root.
+                    </div>
+                  )}
                   {workspaceMode === "autocomplete" && (
                     <div className="bw-autocomplete-hint">
                       {autocompleteStatus ??
@@ -2855,10 +2884,17 @@ export default function App() {
                   type="button"
                   onClick={() => void onSave()}
                   disabled={saving || streaming}
+                  data-dirty={dirtyBuffer}
                   className="bw-button"
+                  title={dirtyBuffer ? "Save unsaved buffer changes" : "Buffer is saved"}
                 >
                   {saving ? "Saving" : "Save"}
                 </button>
+                {project && (
+                  <span className="bw-save-state" data-dirty={dirtyBuffer}>
+                    {dirtyBuffer ? "Unsaved changes" : "Saved"}
+                  </span>
+                )}
                 {workspaceMode === "compose" && streaming ? (
                 <button
                   type="button"
@@ -2873,6 +2909,7 @@ export default function App() {
                   onClick={() => void onGenerate()}
                   disabled={saving || !currentTabbyModel}
                   className="bw-button bw-button-primary"
+                  title="Generate branches (Cmd+Enter)"
                 >
                   Generate
                 </button>

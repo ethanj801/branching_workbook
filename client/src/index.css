@@ -732,6 +732,14 @@ textarea:disabled {
   font-size: 0.74rem;
 }
 
+.bw-root-start-warning {
+  margin-top: 1rem;
+  border-left: 2px solid var(--warn);
+  color: var(--warn);
+  padding: 0.15rem 0 0.15rem 0.7rem;
+  font-size: 0.78rem;
+}
+
 .bw-node-name-block {
   display: flex;
   flex-direction: column;
@@ -857,9 +865,19 @@ textarea:disabled {
 .bw-action-main {
   display: flex;
   align-items: center;
-  gap: 1rem;
+  gap: 0.7rem;
   border-left: 1px solid var(--line);
   padding-left: 1rem;
+}
+
+.bw-save-state {
+  color: var(--ink-faint);
+  font-size: 0.72rem;
+  white-space: nowrap;
+}
+
+.bw-save-state[data-dirty="true"] {
+  color: var(--warn);
 }
 
 .bw-field {
@@ -949,6 +967,10 @@ textarea:disabled {
   border-color: var(--ink-muted);
   background: var(--accent-soft);
   transform: none;
+}
+
+.bw-button[data-dirty="true"] {
+  border-color: var(--warn);
 }
 
 .bw-button-primary {
