@@ -85,6 +85,11 @@ type UsedCandidateRange = {
   end: number;
 };
 
+type LinearChain = {
+  nodes: TreeNode[];
+  successor: TreeNode | null;
+};
+
 type AutocompleteState =
   | { phase: "idle" }
   | { phase: "thinking" }
@@ -395,6 +400,9 @@ export default function App() {
   const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>(
     {},
   );
+  const [expandedChains, setExpandedChains] = useState<Record<string, boolean>>(
+    {},
+  );
   const [branchViewMode, setBranchViewMode] =
     useState<BranchViewMode>("grid");
   const [visibleCandidateIndex, setVisibleCandidateIndex] = useState(0);
@@ -605,6 +613,7 @@ export default function App() {
       setCurrentId(loaded.currentId);
       setBuffer(loadedBuffer);
       resetRecordedSelectionToEnd(loadedBuffer);
+      setExpandedChains({});
       applyProjectSettings(settings);
       clearBranchPicker();
 
@@ -1001,6 +1010,15 @@ export default function App() {
     });
   }
 
+  function toggleChainExpanded(key: string) {
+    setExpandedChains((prev) => {
+      const next = { ...prev };
+      if (next[key]) delete next[key];
+      else next[key] = true;
+      return next;
+    });
+  }
+
   // Default the project title to the chosen filename's stem. The user
   // can rename later; we never derive title from anything we recorded.
   function titleFromPath(path: string): string {
@@ -1066,6 +1084,7 @@ export default function App() {
       setCurrentId(null);
       setBuffer("");
       resetRecordedSelectionToEnd("");
+      setExpandedChains({});
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
       // subsequent project open doesn't briefly show the wrong "active" name.
@@ -1859,12 +1878,9 @@ export default function App() {
     await onSelectNode(nodeIdToPromote);
   }
 
-  function renderTreeNode(nodeIdToRender: string, depth = 0) {
-    if (!tree) return null;
-    const node = tree.nodes[nodeIdToRender];
-    if (!node) return null;
-
-    const childNodes = childrenOf(tree, node.id)
+  function visibleTreeChildren(node: TreeNode): TreeNode[] {
+    if (!tree) return [];
+    return childrenOf(tree, node.id)
       .filter((child) => showHidden || !child.hidden)
       .filter(
         (child) =>
@@ -1877,13 +1893,69 @@ export default function App() {
           searchLineageIds === null || searchLineageIds.has(child.id),
       )
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  function isLinearChainBoundary(node: TreeNode, childNodes: TreeNode[]): boolean {
+    return (
+      node.id === tree?.rootId ||
+      node.id === currentId ||
+      node.hidden ||
+      node.starred ||
+      !!node.name?.trim() ||
+      childNodes.length > 1
+    );
+  }
+
+  function collectLinearChain(startNodeId: string): LinearChain | null {
+    if (!tree || treeSearch.trim()) return null;
+
+    const nodes: TreeNode[] = [];
+    let cursor: TreeNode | undefined = tree.nodes[startNodeId];
+    let successor: TreeNode | null = null;
+
+    while (cursor) {
+      const childNodes = visibleTreeChildren(cursor);
+      if (isLinearChainBoundary(cursor, childNodes)) {
+        successor = cursor;
+        break;
+      }
+
+      nodes.push(cursor);
+      if (childNodes.length === 0) break;
+      cursor = childNodes[0];
+    }
+
+    return nodes.length >= 2 ? { nodes, successor } : null;
+  }
+
+  function linearChainKey(chain: LinearChain): string {
+    return chain.nodes.map((node) => node.id).join(">");
+  }
+
+  function renderTreeEntry(nodeIdToRender: string, depth = 0) {
+    const chain = collectLinearChain(nodeIdToRender);
+    if (chain) return renderLinearChain(chain, depth);
+    return renderTreeNode(nodeIdToRender, depth);
+  }
+
+  function renderTreeNode(
+    nodeIdToRender: string,
+    depth = 0,
+    options: { renderChildren?: boolean; hideCaret?: boolean; key?: string } = {},
+  ) {
+    if (!tree) return null;
+    const node = tree.nodes[nodeIdToRender];
+    if (!node) return null;
+
+    const childNodes =
+      options.renderChildren === false ? [] : visibleTreeChildren(node);
     const isCurrent = node.id === currentId;
     const isOnPath = currentPathIds.has(node.id);
-    const hasChildren = childNodes.length > 0;
+    const hasChildren = !options.hideCaret && childNodes.length > 0;
     const isCollapsed = !!collapsedNodes[node.id];
 
     return (
-      <div key={node.id}>
+      <div key={options.key ?? node.id}>
         <div
           className="bw-tree-row-wrap"
           style={{ "--depth": `${Math.min(depth, 10) * 0.55}rem` } as CSSProperties}
@@ -1957,7 +2029,76 @@ export default function App() {
           </button>
         </div>
         {!isCollapsed &&
-          childNodes.map((child) => renderTreeNode(child.id, depth + 1))}
+          childNodes.map((child) => renderTreeEntry(child.id, depth + 1))}
+      </div>
+    );
+  }
+
+  function renderLinearChain(chain: LinearChain, depth = 0) {
+    const key = linearChainKey(chain);
+    const expanded = !!expandedChains[key];
+    const first = chain.nodes[0];
+    const last = chain.nodes[chain.nodes.length - 1];
+    const chainOnPath = chain.nodes.some((node) => currentPathIds.has(node.id));
+    const summary =
+      chain.nodes.length === 2
+        ? `2 nodes · "${previewText(first.text)}" -> "${previewText(last.text)}"`
+        : `${chain.nodes.length} nodes · "${previewText(first.text)}" -> "${previewText(last.text)}"`;
+
+    return (
+      <div key={`chain-${key}`} className="bw-tree-chain">
+        <div
+          className="bw-tree-row-wrap"
+          style={{ "--depth": `${Math.min(depth, 10) * 0.55}rem` } as CSSProperties}
+        >
+          <button
+            type="button"
+            className="bw-tree-caret"
+            aria-label={expanded ? "Collapse linear run" : "Expand linear run"}
+            aria-expanded={expanded}
+            onClick={(event) => {
+              event.stopPropagation();
+              toggleChainExpanded(key);
+            }}
+          >
+            <svg
+              viewBox="0 0 10 10"
+              width="10"
+              height="10"
+              aria-hidden="true"
+              style={{
+                transform: expanded ? "rotate(0deg)" : "rotate(-90deg)",
+                transition: "transform 120ms ease",
+              }}
+            >
+              <path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+          </button>
+          <span className="bw-tree-star bw-tree-star-spacer" aria-hidden="true" />
+          <button
+            type="button"
+            className="bw-tree-chain-row"
+            data-path={chainOnPath}
+            onClick={() => toggleChainExpanded(key)}
+            title={expanded ? "Collapse linear run" : "Expand linear run"}
+          >
+            <span className="bw-tree-chain-summary">... {summary}</span>
+            <span className="bw-tree-chain-action">
+              {expanded ? "collapse" : "expand"}
+            </span>
+          </button>
+        </div>
+        {expanded
+          ? chain.nodes.map((node, index) =>
+              renderTreeNode(node.id, depth + index, {
+                key: `chain-${key}-${node.id}`,
+                renderChildren: index === chain.nodes.length - 1,
+                hideCaret: index !== chain.nodes.length - 1,
+              }),
+            )
+          : chain.successor
+            ? renderTreeEntry(chain.successor.id, depth)
+            : null}
       </div>
     );
   }
