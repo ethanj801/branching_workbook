@@ -10,6 +10,28 @@ The product boundary is:
 - the laptop reaches Tabby through an SSH tunnel
 - project data stays local in `.bwbk` files
 
+## Local Fake Backend
+
+Use this when you want to work on the UI without a GPU pod or SSH tunnel. The
+server defaults to the mock backend, but setting it explicitly makes the intent
+clear:
+
+```bash
+PATH=/opt/homebrew/bin:$PATH \
+BWBK_BACKEND=mock \
+just dev
+```
+
+Open:
+
+```text
+http://localhost:5173
+```
+
+The mock backend exposes a loaded fake model, streams branch completions, and
+supports the model-panel routes. It is for local development only; use the
+RunPod/Tabby workflow below for real model behavior.
+
 ## Current RunPod Workflow
 
 This is the current disposable-host path we validated.

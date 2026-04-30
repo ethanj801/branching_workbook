@@ -675,9 +675,13 @@ textarea:disabled {
 
 .bw-inline-controls {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
+  min-height: 2.75rem;
   gap: 0.6rem;
-  margin-top: 0.85rem;
+  border-top: 1px solid var(--line);
+  background: rgba(246, 243, 234, 0.92);
+  padding: 0.5rem 1.5rem;
   color: var(--ink-muted);
   font-size: 0.74rem;
 }
@@ -686,6 +690,16 @@ textarea:disabled {
   margin-left: auto;
   color: var(--ink-muted);
   font-size: 0.72rem;
+}
+
+.bw-inline-placement {
+  border: 1px solid var(--line-dark);
+  border-radius: 999px;
+  background: rgba(255, 254, 249, 0.72);
+  color: var(--ink-muted);
+  padding: 0.16rem 0.52rem;
+  font-size: 0.7rem;
+  white-space: nowrap;
 }
 
 .bw-inline-cycler {
@@ -860,6 +874,10 @@ textarea:disabled {
   color: var(--ink-muted);
   font-size: 0.72rem;
   white-space: nowrap;
+}
+
+.bw-field-note[data-error="true"] {
+  color: var(--warn);
 }
 
 .bw-display-toggle {
@@ -1084,6 +1102,11 @@ textarea:disabled {
   background: rgba(255, 254, 249, 0.62);
 }
 
+.bw-branch-card[data-picked="true"] {
+  border-color: var(--state);
+  box-shadow: inset 0 0 0 1px var(--state), 0 1px 4px rgba(63, 85, 102, 0.12);
+}
+
 .bw-branch-card-head {
   display: flex;
   flex: 0 0 auto;
@@ -1101,6 +1124,17 @@ textarea:disabled {
   color: var(--ink-muted);
   font-size: 0.82rem;
   font-weight: 500;
+}
+
+.bw-branch-used-badge {
+  border: 1px solid var(--state-edge);
+  border-radius: 999px;
+  background: var(--state-soft);
+  color: var(--state);
+  padding: 0.08rem 0.42rem;
+  font-size: 0.62rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
 .bw-branch-pulse {
@@ -1155,6 +1189,12 @@ textarea:disabled {
   font-size: 0.74rem;
 }
 
+.bw-button-used {
+  border-color: var(--state-edge);
+  background: var(--state-soft);
+  color: var(--state);
+}
+
 .bw-branch-strip {
   display: grid;
   flex: 0 0 56px;
@@ -1185,10 +1225,11 @@ textarea:disabled {
 
 .bw-branch-mini {
   position: relative;
-  display: grid;
-  width: 172px;
-  flex: 0 0 172px;
+  display: flex;
+  width: 220px;
+  flex: 0 0 220px;
   min-width: 0;
+  flex-direction: column;
   border: 0.5px solid var(--line-dark);
   border-radius: 8px;
   background: #fffef9;
@@ -1230,20 +1271,22 @@ textarea:disabled {
 }
 
 .bw-branch-mini-actions {
-  position: absolute;
-  inset: 0.18rem 0.18rem auto auto;
-  z-index: 2;
   display: flex;
+  max-height: 0;
+  overflow: hidden;
   gap: 0.12rem;
   opacity: 0;
   pointer-events: none;
-  transition: opacity 140ms ease;
+  padding: 0 0.45rem;
+  transition: max-height 140ms ease, opacity 140ms ease, padding-bottom 140ms ease;
 }
 
 .bw-branch-mini:hover .bw-branch-mini-actions,
 .bw-branch-mini:focus-within .bw-branch-mini-actions {
+  max-height: 2rem;
   opacity: 1;
   pointer-events: auto;
+  padding-bottom: 0.38rem;
 }
 
 .bw-branch-mini-actions button {

@@ -242,7 +242,8 @@ function NodeNameEditor({
 
 const DEFAULT_MAX_TOKENS = 256;
 const DEFAULT_BRANCH_COUNT = 3;
-const DEFAULT_BRANCH_LIMIT = 8;
+const DEFAULT_BRANCH_LIMIT = 12;
+const MAX_BRANCH_UI_LIMIT = 12;
 const DEFAULT_TOKENS_PER_SUGGESTION = 2;
 const AUTOCOMPLETE_POOL_TARGET = 10;
 const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
@@ -296,7 +297,14 @@ function maxBranchesForModel(model: TabbyModel | null): number {
   if (typeof maxBatchSize !== "number" || !Number.isFinite(maxBatchSize)) {
     return DEFAULT_BRANCH_LIMIT;
   }
-  return Math.max(1, Math.trunc(maxBatchSize));
+  return clampNumber(Math.trunc(maxBatchSize), 1, MAX_BRANCH_UI_LIMIT);
+}
+
+function parseBranchCountInput(text: string): number | null {
+  const trimmed = text.trim();
+  if (!/^\d+$/.test(trimmed)) return null;
+  const parsed = Number.parseInt(trimmed, 10);
+  return parsed > 0 ? parsed : null;
 }
 
 function branchGridColumns(count: number): number | null {
@@ -341,6 +349,7 @@ export default function App() {
     String(DEFAULT_BRANCH_COUNT),
   );
   const [branchLimitHint, setBranchLimitHint] = useState(false);
+  const [branchCountError, setBranchCountError] = useState<string | null>(null);
   const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
   const [tokensPerSuggestionText, setTokensPerSuggestionText] = useState(
     String(DEFAULT_TOKENS_PER_SUGGESTION),
@@ -413,6 +422,10 @@ export default function App() {
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
+  const branchLimitMessage =
+    maxBranches >= MAX_BRANCH_UI_LIMIT
+      ? `capped at ${MAX_BRANCH_UI_LIMIT} for readable layouts`
+      : `max ${maxBranches} with this model`;
   const autocompleteSuggestion =
     autocompleteState.phase === "showing"
       ? autocompleteState.suggestions[autocompleteState.visibleIdx] ?? null
@@ -504,6 +517,7 @@ export default function App() {
     setMaxTokensText(String(settings.max_tokens));
     setTokensPerSuggestionText(String(settings.tokens_per_suggestion));
     setBranchLimitHint(false);
+    setBranchCountError(null);
   }
 
   function saveProjectSettings(patch: ProjectSettingsPatch) {
@@ -844,11 +858,13 @@ export default function App() {
 
   useEffect(() => {
     if (branchCountText.trim() === "") return;
-    const parsed = parsePositiveInt(branchCountText, DEFAULT_BRANCH_COUNT);
+    const parsed = parseBranchCountInput(branchCountText);
+    if (parsed === null) return;
     const clamped = clampNumber(parsed, 1, maxBranches);
     if (clamped !== parsed) {
       setBranchCountText(String(clamped));
       setBranchLimitHint(true);
+      setBranchCountError(null);
     }
     // Only normalize when the loaded model changes the allowed ceiling.
     // Normalizing on every keystroke would reintroduce the leading-zero bug.
@@ -1190,11 +1206,17 @@ export default function App() {
     }
   }
 
-  function normalizeBranchCount(): number {
-    const parsed = parsePositiveInt(branchCountText, DEFAULT_BRANCH_COUNT);
+  function normalizeBranchCount(): number | null {
+    const parsed = parseBranchCountInput(branchCountText);
+    if (parsed === null) {
+      setBranchLimitHint(false);
+      setBranchCountError(`Enter 1-${maxBranches} branches.`);
+      return null;
+    }
     const clamped = clampNumber(parsed, 1, maxBranches);
     setBranchCountText(String(clamped));
     setBranchLimitHint(parsed > maxBranches);
+    setBranchCountError(null);
     saveProjectSettings({ branch_count: clamped });
     return clamped;
   }
@@ -1234,6 +1256,7 @@ export default function App() {
     if (!committed) return;
 
     const n = normalizeBranchCount();
+    if (n === null) return;
     const resolvedMaxTokens = normalizeMaxTokens();
     const promptSnapshot = committed.buffer;
     // Resolve the sampler snapshot *now* so a user tweaking the drawer
@@ -1579,6 +1602,12 @@ export default function App() {
     return lineage;
   }, [tree, treeSearch]);
   const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
+  const showInlineCandidateControls =
+    workspaceMode === "compose" &&
+    composeDisplayMode === "inline" &&
+    branchPickerOpen &&
+    branchViewMode === "grid" &&
+    visibleCandidate !== null;
   const editorKeyBindings = useMemo<KeyBinding[]>(
     () => [
       {
@@ -2387,6 +2416,7 @@ export default function App() {
                       const hasText = candidate.text.length > 0;
                       const isStreaming = streaming && !candidate.done;
                       const kept = !!savedCandidateIds[index];
+                      const picked = pickedCandidateIndex === index;
                       const centeredStart =
                         firstCenteredBranchIndex === index && centeredBranchStart
                           ? centeredBranchStart
@@ -2397,6 +2427,7 @@ export default function App() {
                           className="bw-branch-card"
                           data-empty={!hasText}
                           data-streaming={isStreaming}
+                          data-picked={picked}
                           style={
                             centeredStart === null
                               ? undefined
@@ -2406,6 +2437,9 @@ export default function App() {
                           <div className="bw-branch-card-head">
                             <div className="bw-branch-card-title">
                               <span>Branch {index + 1}</span>
+                              {picked && (
+                                <span className="bw-branch-used-badge">Used</span>
+                              )}
                               {isStreaming && (
                                 <span className="bw-branch-pulse" aria-label="Streaming" />
                               )}
@@ -2429,10 +2463,12 @@ export default function App() {
                             <button
                               type="button"
                               onClick={() => onUseCandidate(index)}
-                              disabled={!hasText || streaming || saving}
-                              className="bw-button bw-button-primary"
+                              disabled={!hasText || streaming || saving || picked}
+                              className={`bw-button ${
+                                picked ? "bw-button-used" : "bw-button-primary"
+                              }`}
                             >
-                              Use
+                              {picked ? "Used" : "Use"}
                             </button>
                             <button
                               type="button"
@@ -2607,77 +2643,6 @@ export default function App() {
                     }
                     keyBindings={editorKeyBindings}
                   />
-                  {workspaceMode === "compose" &&
-                    composeDisplayMode === "inline" &&
-                    branchPickerOpen &&
-                    branchViewMode === "grid" &&
-                    visibleCandidate && (
-                      <div
-                        className="bw-inline-controls"
-                        data-streaming={streaming && !visibleCandidate.done}
-                      >
-                        {candidates.length > 1 && (
-                          <div className="bw-inline-cycler" aria-label="Cycle branches">
-                            <button
-                              type="button"
-                              onClick={() => cycleVisibleCandidate(-1)}
-                              aria-label="Previous branch"
-                            >
-                              ‹
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => cycleVisibleCandidate(1)}
-                              aria-label="Next branch"
-                            >
-                              ›
-                            </button>
-                          </div>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => onUseCandidate(visibleCandidateIndex)}
-                          disabled={!visibleCandidate.text || streaming || saving}
-                          className="bw-button bw-button-primary"
-                        >
-                          Use
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => void onKeepCandidate(visibleCandidateIndex)}
-                          disabled={
-                            !visibleCandidate.text ||
-                            saving ||
-                            !!savedCandidateIds[visibleCandidateIndex]
-                          }
-                          title={
-                            savedCandidateIds[visibleCandidateIndex]
-                              ? "Already kept"
-                              : "Keep branch"
-                          }
-                          className="bw-button"
-                        >
-                          {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={clearBranchPicker}
-                          disabled={streaming || saving}
-                          className="bw-button"
-                        >
-                          Clear
-                        </button>
-                        <span className="bw-inline-meta">
-                          Branch {visibleCandidateIndex + 1}
-                          {candidates.length > 1 ? ` of ${candidates.length}` : ""}
-                          {visibleCandidate.text
-                            ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
-                            : ""}
-                          {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
-                          {streaming && !visibleCandidate.done && " · streaming"}
-                        </span>
-                      </div>
-                    )}
                   {workspaceMode === "autocomplete" && (
                     <div className="bw-autocomplete-hint">
                       {autocompleteStatus ??
@@ -2690,6 +2655,76 @@ export default function App() {
                   )}
                 </section>
               </div>
+              {showInlineCandidateControls && visibleCandidate && (
+                <div
+                  className="bw-inline-controls"
+                  data-streaming={streaming && !visibleCandidate.done}
+                >
+                  {candidates.length > 1 && (
+                    <div className="bw-inline-cycler" aria-label="Cycle branches">
+                      <button
+                        type="button"
+                        onClick={() => cycleVisibleCandidate(-1)}
+                        aria-label="Previous branch"
+                      >
+                        ‹
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => cycleVisibleCandidate(1)}
+                        aria-label="Next branch"
+                      >
+                        ›
+                      </button>
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => onUseCandidate(visibleCandidateIndex)}
+                    disabled={!visibleCandidate.text || streaming || saving}
+                    className="bw-button bw-button-primary"
+                  >
+                    Use
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onKeepCandidate(visibleCandidateIndex)}
+                    disabled={
+                      !visibleCandidate.text ||
+                      saving ||
+                      !!savedCandidateIds[visibleCandidateIndex]
+                    }
+                    title={
+                      savedCandidateIds[visibleCandidateIndex]
+                        ? "Already kept"
+                        : "Keep branch"
+                    }
+                    className="bw-button"
+                  >
+                    {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={clearBranchPicker}
+                    disabled={streaming || saving}
+                    className="bw-button"
+                  >
+                    Clear
+                  </button>
+                  <span className="bw-inline-placement">
+                    inserts at end of draft
+                  </span>
+                  <span className="bw-inline-meta">
+                    Branch {visibleCandidateIndex + 1}
+                    {candidates.length > 1 ? ` of ${candidates.length}` : ""}
+                    {visibleCandidate.text
+                      ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
+                      : ""}
+                    {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
+                    {streaming && !visibleCandidate.done && " · streaming"}
+                  </span>
+                </div>
+              )}
             </div>
 
             <footer className="bw-actionbar">
@@ -2729,24 +2764,31 @@ export default function App() {
                   <label className="bw-field">
                     Branches
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       min={1}
                       max={maxBranches}
                       value={branchCountText}
                       onChange={(event) => {
                         setBranchCountText(event.target.value);
                         setBranchLimitHint(false);
+                        setBranchCountError(null);
                       }}
                       onBlur={() => {
                         normalizeBranchCount();
                       }}
+                      aria-invalid={branchCountError !== null}
                       disabled={streaming || saving}
                       className="bw-input w-16"
-                      title={`Max ${maxBranches} with this model`}
+                      title={branchLimitMessage}
                     />
-                    {branchLimitHint && (
-                      <span className="bw-field-note">
-                        max {maxBranches} with this model
+                    {(branchCountError || branchLimitHint) && (
+                      <span
+                        className="bw-field-note"
+                        data-error={branchCountError !== null}
+                      >
+                        {branchCountError ?? branchLimitMessage}
                       </span>
                     )}
                   </label>
