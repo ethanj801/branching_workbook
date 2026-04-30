@@ -188,7 +188,7 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         source=r["source"],
         hidden=bool(r["hidden"]),
         is_main_path=bool(r["is_main_path"]),
-        starred=bool(r["starred"]) if "starred" in r.keys() else False,
+        starred=bool(r["starred"]) if "starred" in r else False,
         created_at=r["created_at"],
         prior_context_hash=r["prior_context_hash"],
         sampler_snapshot=(

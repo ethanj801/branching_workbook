@@ -33,6 +33,7 @@ type WorkbookEditorProps = {
   value: string;
   onChange: (value: string) => void;
   onSelectionChange?: (selection: EditorSelection) => void;
+  onFocus?: () => void;
   onBlur?: () => void;
   disabled?: boolean;
   placeholder?: string;
@@ -154,6 +155,7 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
       value,
       onChange,
       onSelectionChange,
+      onFocus,
       onBlur,
       disabled = false,
       placeholder = "",
@@ -166,6 +168,7 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
     const viewRef = useRef<EditorView | null>(null);
     const onChangeRef = useRef(onChange);
     const onSelectionChangeRef = useRef(onSelectionChange);
+    const onFocusRef = useRef(onFocus);
     const onBlurRef = useRef(onBlur);
     const disabledCompartment = useRef(new Compartment());
     const placeholderCompartment = useRef(new Compartment());
@@ -174,6 +177,7 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
 
     onChangeRef.current = onChange;
     onSelectionChangeRef.current = onSelectionChange;
+    onFocusRef.current = onFocus;
     onBlurRef.current = onBlur;
 
     useImperativeHandle(ref, () => ({
@@ -221,6 +225,9 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
             ),
             ghostCompartment.current.of(ghostExtension(ghostText)),
             EditorView.domEventHandlers({
+              focus: () => {
+                onFocusRef.current?.();
+              },
               blur: () => {
                 onBlurRef.current?.();
               },

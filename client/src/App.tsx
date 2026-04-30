@@ -407,6 +407,8 @@ export default function App() {
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  const bufferSelectionArmedRef = useRef(false);
+  const preserveUsedRangeForBufferRef = useRef<string | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
@@ -506,9 +508,23 @@ export default function App() {
 
   function saveProjectSettings(patch: ProjectSettingsPatch) {
     if (!project) return;
-    void updateProjectSettings(patch).catch((err) => {
-      setError(formatError(err));
-    });
+    void updateProjectSettings(patch)
+      .then(() => {
+        setError((current) =>
+          current?.includes("/api/project/settings") ? null : current,
+        );
+      })
+      .catch((err) => {
+        setError(formatError(err));
+      });
+  }
+
+  function resetRecordedSelectionToEnd(nextBuffer: string) {
+    bufferSelectionRef.current = {
+      start: nextBuffer.length,
+      end: nextBuffer.length,
+    };
+    bufferSelectionArmedRef.current = false;
   }
 
   const loadProject = useCallback(
@@ -518,10 +534,14 @@ export default function App() {
         getProjectSettings(),
       ]);
       const loaded = loadedTreeFromModels(nodes);
+      const loadedBuffer = concatPathText(
+        pathFromRoot(loaded.tree, loaded.currentId),
+      );
       setProject(info);
       setTree(loaded.tree);
       setCurrentId(loaded.currentId);
-      setBuffer(concatPathText(pathFromRoot(loaded.tree, loaded.currentId)));
+      setBuffer(loadedBuffer);
+      resetRecordedSelectionToEnd(loadedBuffer);
       applyProjectSettings(settings);
       clearBranchPicker();
 
@@ -609,6 +629,7 @@ export default function App() {
       setAutocompleteStatus(null);
       return;
     }
+    setAutocompleteState({ phase: "idle" });
     if (!currentTabbyModel) {
       setAutocompleteState({ phase: "idle" });
       setAutocompleteStatus("no model loaded");
@@ -963,6 +984,7 @@ export default function App() {
       setTree(null);
       setCurrentId(null);
       setBuffer("");
+      resetRecordedSelectionToEnd("");
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
       // subsequent project open doesn't briefly show the wrong "active" name.
@@ -1151,6 +1173,7 @@ export default function App() {
       ? nodeIdToSelect
       : committed.currentId;
     const path = pathFromRoot(committed.tree, targetId);
+    const nextBuffer = concatPathText(path);
 
     setSaving(true);
     setError(null);
@@ -1158,7 +1181,8 @@ export default function App() {
       await mutateNodes({ main_path: path.map((node) => node.id) });
       setTree(committed.tree);
       setCurrentId(targetId);
-      setBuffer(concatPathText(path));
+      setBuffer(nextBuffer);
+      resetRecordedSelectionToEnd(nextBuffer);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -1364,7 +1388,16 @@ export default function App() {
   function recordBufferSelection() {
     const selection = editorRef.current?.getSelection();
     if (!selection) return;
+    bufferSelectionArmedRef.current = true;
     bufferSelectionRef.current = selection;
+  }
+
+  function recordBufferFocus() {
+    bufferSelectionArmedRef.current = true;
+    const selection = editorRef.current?.getSelection();
+    if (selection) {
+      bufferSelectionRef.current = selection;
+    }
   }
 
   function onUseCandidate(index: number) {
@@ -1375,15 +1408,17 @@ export default function App() {
     }
 
     const canReplaceUsed =
-      branchViewMode === "strip" &&
       pickedCandidateIndex !== null &&
       usedCandidateRange !== null;
     // Inline compose pins insertion to the end of the document. The ghost
     // preview is rendered at end-of-doc, and clicking "Use" while the
     // editor isn't focused would otherwise pull the cursor to a stale
     // selection — sometimes way above the visible region.
-    const useEnd = composeDisplayMode === "inline" && !canReplaceUsed;
-    const selection = bufferSelectionRef.current;
+    const selection = bufferSelectionArmedRef.current
+      ? bufferSelectionRef.current
+      : null;
+    const useEnd =
+      !canReplaceUsed && (composeDisplayMode === "inline" || selection === null);
     const start = canReplaceUsed
       ? Math.max(0, Math.min(buffer.length, usedCandidateRange.start))
       : useEnd
@@ -1397,7 +1432,9 @@ export default function App() {
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
+    preserveUsedRangeForBufferRef.current = nextBuffer;
     setBuffer(nextBuffer);
+    bufferSelectionArmedRef.current = true;
     bufferSelectionRef.current = { start: nextCursor, end: nextCursor };
     setUsedCandidateRange({ start, end: nextCursor });
     setPickedCandidateIndex(index);
@@ -1866,7 +1903,14 @@ export default function App() {
         </div>
       </header>
 
-      {error && <div className="bw-error">{error}</div>}
+      {error && (
+        <div className="bw-error" role="alert">
+          <span>{error}</span>
+          <button type="button" onClick={() => setError(null)}>
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {closeConfirmOpen && (
         <div
@@ -2455,7 +2499,10 @@ export default function App() {
                           <div className="bw-branch-mini-actions">
                             <button
                               type="button"
-                              onClick={() => void onKeepCandidate(index)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                void onKeepCandidate(index);
+                              }}
                               disabled={!hasText || saving || kept}
                               title={kept ? "Already kept" : "Keep branch"}
                             >
@@ -2463,7 +2510,10 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => onUseCandidate(index)}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onUseCandidate(index);
+                              }}
                               disabled={!hasText || saving || picked}
                               title={picked ? "Already used" : "Use instead"}
                             >
@@ -2471,7 +2521,10 @@ export default function App() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => setBranchViewMode("grid")}
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setBranchViewMode("grid");
+                              }}
                               title="Expand branches"
                             >
                               Expand
@@ -2525,11 +2578,19 @@ export default function App() {
                     value={buffer}
                     onChange={(nextBuffer) => {
                       setBuffer(nextBuffer);
-                      setUsedCandidateRange(null);
+                      if (preserveUsedRangeForBufferRef.current === nextBuffer) {
+                        preserveUsedRangeForBufferRef.current = null;
+                      } else {
+                        preserveUsedRangeForBufferRef.current = null;
+                        setUsedCandidateRange(null);
+                      }
                     }}
                     onSelectionChange={(selection: EditorSelection) => {
-                      bufferSelectionRef.current = selection;
+                      if (bufferSelectionArmedRef.current) {
+                        bufferSelectionRef.current = selection;
+                      }
                     }}
+                    onFocus={recordBufferFocus}
                     onBlur={recordBufferSelection}
                     placeholder="Start writing..."
                     disabled={saving}

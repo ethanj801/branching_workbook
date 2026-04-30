@@ -149,11 +149,25 @@ textarea:disabled {
 }
 
 .bw-error {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
   border-bottom: 1px solid #fed7aa;
   background: #fff7ed;
   color: #9a3412;
   padding: 0.55rem 1rem;
   font-size: 0.82rem;
+}
+
+.bw-error button {
+  flex: 0 0 auto;
+  border: 1px solid rgba(154, 52, 18, 0.3);
+  border-radius: 999px;
+  background: rgba(255, 247, 237, 0.8);
+  color: inherit;
+  padding: 0.12rem 0.5rem;
+  font-size: 0.72rem;
 }
 
 .bw-workspace {
@@ -1218,6 +1232,7 @@ textarea:disabled {
 .bw-branch-mini-actions {
   position: absolute;
   inset: 0.18rem 0.18rem auto auto;
+  z-index: 2;
   display: flex;
   gap: 0.12rem;
   opacity: 0;
