@@ -349,8 +349,8 @@ textarea:disabled {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1rem;
-  flex: 0 0 1rem;
+  width: 0.85rem;
+  flex: 0 0 0.85rem;
   border: 0;
   background: transparent;
   color: var(--ink-muted);
@@ -430,8 +430,8 @@ textarea:disabled {
 }
 
 .bw-tree-star {
-  flex: 0 0 1.1rem;
-  width: 1.1rem;
+  flex: 0 0 0.95rem;
+  width: 0.95rem;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -440,8 +440,8 @@ textarea:disabled {
   color: rgba(117, 107, 92, 0.42);
   cursor: pointer;
   padding: 0;
-  margin: 0.32rem 0.1rem;
-  font-size: 0.92rem;
+  margin: 0.32rem 0.05rem;
+  font-size: 0.85rem;
   line-height: 1;
   border-radius: 0.12rem;
   transition: color 140ms ease, background 140ms ease, transform 120ms ease;
@@ -522,14 +522,17 @@ textarea:disabled {
 }
 
 .bw-tree-preview {
-  display: block;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
   overflow: hidden;
   color: var(--ink-muted);
   font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   font-size: 0.82rem;
-  line-height: 1.45;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .bw-tree-meta {
@@ -705,6 +708,54 @@ textarea:disabled {
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
+}
+
+.bw-manuscript-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.bw-manuscript-head .bw-node-name,
+.bw-manuscript-head .bw-node-name-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.bw-node-star {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  border: 0;
+  background: transparent;
+  color: rgba(117, 107, 92, 0.55);
+  cursor: pointer;
+  padding: 0;
+  font-size: 1.15rem;
+  line-height: 1;
+  border-radius: 0.2rem;
+  transition: color 140ms ease, background 140ms ease;
+}
+
+.bw-node-star:hover:not(:disabled) {
+  color: var(--ink);
+  background: rgba(0, 0, 0, 0.04);
+}
+
+.bw-node-star[data-on="true"] {
+  color: #c89934;
+}
+
+.bw-node-star[data-on="true"]:hover:not(:disabled) {
+  color: #b3851d;
+}
+
+.bw-node-star:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 
 .bw-node-name,

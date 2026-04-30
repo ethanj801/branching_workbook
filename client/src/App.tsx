@@ -1750,7 +1750,7 @@ export default function App() {
       <div key={node.id}>
         <div
           className="bw-tree-row-wrap"
-          style={{ "--depth": `${depth * 0.85}rem` } as CSSProperties}
+          style={{ "--depth": `${Math.min(depth, 10) * 0.55}rem` } as CSSProperties}
         >
           {hasChildren ? (
             <button
@@ -2496,12 +2496,28 @@ export default function App() {
               <div className="bw-manuscript-scroll">
                 <section className="bw-manuscript">
                   {currentNode && (
-                    <div className="mb-4">
+                    <div className="bw-manuscript-head mb-4">
                       <NodeNameEditor
                         node={currentNode}
                         disabled={saving || streaming}
                         onRename={(name) => void onRenameCurrentNode(name)}
                       />
+                      <button
+                        type="button"
+                        className="bw-node-star"
+                        data-on={currentNode.starred}
+                        aria-label={
+                          currentNode.starred ? "Unstar this node" : "Star this node"
+                        }
+                        aria-pressed={currentNode.starred}
+                        title={currentNode.starred ? "Unstar this node" : "Star this node"}
+                        disabled={saving || streaming}
+                        onClick={() =>
+                          void onSetNodeStarred(currentNode.id, !currentNode.starred)
+                        }
+                      >
+                        {currentNode.starred ? "★" : "☆"}
+                      </button>
                     </div>
                   )}
                   <WorkbookEditor
