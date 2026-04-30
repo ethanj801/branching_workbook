@@ -108,6 +108,12 @@ function previewText(text: string): string {
   return normalized.length > 88 ? `${normalized.slice(0, 88)}...` : normalized;
 }
 
+function displayBranchText(text: string): string {
+  // Preserve raw continuation text for insertion, but don't make card bodies
+  // look indented just because the model correctly emitted a leading space.
+  return text.replace(/^\s+/, "");
+}
+
 function approxTokenCount(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -433,6 +439,15 @@ export default function App() {
   const contextPct =
     tokenCount !== null && contextMax ? tokenCount / contextMax : null;
   const contextWarn = contextPct !== null && contextPct >= 0.9;
+  const modelStatusLabel = streaming
+    ? "Model loaded; generation streaming"
+    : currentTabbyModel
+      ? "Model loaded and idle"
+      : "No model loaded";
+  const tokenMeterLabel =
+    tokenCount === null || contextMax === null
+      ? "Current draft token count and loaded context length are unavailable"
+      : `${tokenCount.toLocaleString()} current draft tokens out of ${contextMax.toLocaleString()} loaded context tokens`;
 
   const activePreset = useMemo(
     () => presets.find((preset) => preset.id === activePresetId) ?? null,
@@ -459,6 +474,40 @@ export default function App() {
     setVisibleCandidateIndex(0);
     setBranchViewMode("grid");
   }, []);
+
+  function dropCandidate(indexToDrop: number) {
+    if (streaming || saving) return;
+    const nextCandidates = candidates.filter((_, index) => index !== indexToDrop);
+    if (nextCandidates.length === 0) {
+      clearBranchPicker();
+      return;
+    }
+
+    setCandidates(nextCandidates);
+    setSavedCandidateIds((current) => {
+      const next: Record<number, string> = {};
+      for (const [rawIndex, nodeId] of Object.entries(current)) {
+        const index = Number(rawIndex);
+        if (!Number.isInteger(index) || index === indexToDrop) continue;
+        next[index > indexToDrop ? index - 1 : index] = nodeId;
+      }
+      return next;
+    });
+    setPickedCandidateIndex((current) => {
+      if (current === null) return null;
+      if (current === indexToDrop) return null;
+      return current > indexToDrop ? current - 1 : current;
+    });
+    setVisibleCandidateIndex((current) => {
+      if (current === indexToDrop) {
+        return Math.min(indexToDrop, nextCandidates.length - 1);
+      }
+      return Math.min(
+        current > indexToDrop ? current - 1 : current,
+        nextCandidates.length - 1,
+      );
+    });
+  }
 
   const refreshPresets = useCallback(async () => {
     try {
@@ -1446,9 +1495,7 @@ export default function App() {
       return;
     }
 
-    const canReplaceUsed =
-      pickedCandidateIndex !== null &&
-      usedCandidateRange !== null;
+    const canReplaceUsed = usedCandidateRange !== null;
     // Inline compose pins insertion to the end of the document. The ghost
     // preview is rendered at end-of-doc, and clicking "Use" while the
     // editor isn't focused would otherwise pull the cursor to a stale
@@ -1923,7 +1970,14 @@ export default function App() {
           <div className="bw-project-title">{projectTitle || "No project open"}</div>
         </div>
         <div className="bw-status">
-          <span className="bw-dot" data-live={currentTabbyModel !== null} />
+          <span
+            className="bw-dot"
+            data-live={currentTabbyModel !== null}
+            data-streaming={streaming}
+            role="status"
+            aria-label={modelStatusLabel}
+            title={modelStatusLabel}
+          />
           <button
             type="button"
             className="bw-link-button"
@@ -1933,7 +1987,12 @@ export default function App() {
           </button>
           {project && (
             <>
-              <span className={contextWarn ? "text-[color:var(--warn)]" : ""}>
+              <span
+                className="bw-token-meter"
+                data-warn={contextWarn}
+                aria-label={tokenMeterLabel}
+                title={tokenMeterLabel}
+              >
                 <strong>
                   {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
                 </strong>
@@ -2475,7 +2534,7 @@ export default function App() {
                           </div>
                           <div className="bw-branch-text">
                             {hasText ? (
-                              candidate.text
+                              displayBranchText(candidate.text)
                             ) : (
                               <span className="bw-empty">
                                 {streaming ? "Waiting for tokens..." : "No text."}
@@ -2587,6 +2646,18 @@ export default function App() {
                               title="Expand branches"
                             >
                               Expand
+                            </button>
+                            <button
+                              type="button"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                dropCandidate(index);
+                              }}
+                              disabled={saving || streaming}
+                              aria-label={`Drop branch ${index + 1}`}
+                              title="Drop this branch from the strip"
+                            >
+                              Drop
                             </button>
                           </div>
                         </div>
