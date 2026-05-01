@@ -108,7 +108,11 @@ function nowEpoch(): number {
 }
 
 function previewText(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
+  const normalized = text
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/^[\s.,;:!?'"“”‘’()[\]{}\-–—…]+/, "")
+    .trim();
   if (!normalized) return "root";
   return normalized.length > 88 ? `${normalized.slice(0, 88)}...` : normalized;
 }
@@ -1674,17 +1678,23 @@ export default function App() {
   // node passes if its label (name or text preview) contains the query, or
   // if it's an ancestor or descendant of one that does — same shape as the
   // starred filter. Empty query → null (filter is a no-op).
-  const searchLineageIds = useMemo<Set<string> | null>(() => {
+  const searchMatchIds = useMemo<Set<string> | null>(() => {
     if (!tree) return null;
     const query = treeSearch.trim().toLowerCase();
     if (query.length === 0) return null;
-    const matchIds = Object.values(tree.nodes)
+    return new Set(
+      Object.values(tree.nodes)
       .filter((node) => nodeLabel(node).toLowerCase().includes(query))
-      .map((node) => node.id);
-    if (matchIds.length === 0) return new Set<string>();
+        .map((node) => node.id),
+    );
+  }, [tree, treeSearch]);
+
+  const searchLineageIds = useMemo<Set<string> | null>(() => {
+    if (!tree || searchMatchIds === null) return null;
+    if (searchMatchIds.size === 0) return new Set<string>();
 
     const lineage = new Set<string>();
-    for (const id of matchIds) {
+    for (const id of searchMatchIds) {
       let cur: string | null | undefined = id;
       while (cur && !lineage.has(cur)) {
         lineage.add(cur);
@@ -1696,7 +1706,7 @@ export default function App() {
       if (node.parentId === null) continue;
       (childrenByParent[node.parentId] ??= []).push(node.id);
     }
-    const stack = [...matchIds];
+    const stack = [...searchMatchIds];
     while (stack.length > 0) {
       const id = stack.pop()!;
       for (const childId of childrenByParent[id] ?? []) {
@@ -1706,7 +1716,26 @@ export default function App() {
       }
     }
     return lineage;
-  }, [tree, treeSearch]);
+  }, [searchMatchIds, tree]);
+  const searchMatchCount = searchMatchIds?.size ?? null;
+  const hasStarredNodes =
+    tree !== null && Object.values(tree.nodes).some((node) => node.starred);
+  const activeHiddenByFilters =
+    tree !== null &&
+    currentId !== null &&
+    ((starredOnly &&
+      starredLineageIds !== null &&
+      !starredLineageIds.has(currentId)) ||
+      (searchLineageIds !== null && !searchLineageIds.has(currentId)));
+  const searchHasNoMatches = searchMatchCount === 0;
+  const treeFilterNote =
+    searchHasNoMatches
+      ? "No node names match this search. Showing your current path for context."
+      : starredOnly && !hasStarredNodes
+        ? "No starred nodes yet. Star a node to use this filter."
+        : activeHiddenByFilters
+          ? "Current path is pinned because filters would otherwise hide it."
+          : null;
   const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
   const showInlineCandidateControls =
     workspaceMode === "compose" &&
@@ -1898,18 +1927,45 @@ export default function App() {
   function visibleTreeChildren(node: TreeNode): TreeNode[] {
     if (!tree) return [];
     return childrenOf(tree, node.id)
-      .filter((child) => showHidden || !child.hidden)
+      .filter((child) => showHidden || !child.hidden || currentPathIds.has(child.id))
       .filter(
         (child) =>
           !starredOnly ||
           starredLineageIds === null ||
-          starredLineageIds.has(child.id),
+          starredLineageIds.has(child.id) ||
+          currentPathIds.has(child.id),
       )
       .filter(
         (child) =>
-          searchLineageIds === null || searchLineageIds.has(child.id),
+          searchLineageIds === null ||
+          searchLineageIds.has(child.id) ||
+          currentPathIds.has(child.id),
       )
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+  }
+
+  function visibleTreeNodeCount(): number {
+    if (!tree) return 0;
+    return Object.values(tree.nodes).filter((node) => {
+      if (node.parentId === null) return true;
+      if (!showHidden && node.hidden && !currentPathIds.has(node.id)) return false;
+      if (
+        starredOnly &&
+        starredLineageIds !== null &&
+        !starredLineageIds.has(node.id) &&
+        !currentPathIds.has(node.id)
+      ) {
+        return false;
+      }
+      if (
+        searchLineageIds !== null &&
+        !searchLineageIds.has(node.id) &&
+        !currentPathIds.has(node.id)
+      ) {
+        return false;
+      }
+      return true;
+    }).length;
   }
 
   function isLinearChainBoundary(node: TreeNode, childNodes: TreeNode[]): boolean {
@@ -2056,11 +2112,12 @@ export default function App() {
     const expanded = !!expandedChains[key];
     const first = chain.nodes[0];
     const last = chain.nodes[chain.nodes.length - 1];
-    const chainOnPath = chain.nodes.some((node) => currentPathIds.has(node.id));
-    const summary =
-      chain.nodes.length === 2
-        ? `2 nodes · "${previewText(first.text)}" -> "${previewText(last.text)}"`
-        : `${chain.nodes.length} nodes · "${previewText(first.text)}" -> "${previewText(last.text)}"`;
+    const destination = chain.successor ?? last;
+    const visibleCount = chain.nodes.length + (chain.successor ? 1 : 0);
+    const chainOnPath =
+      chain.nodes.some((node) => currentPathIds.has(node.id)) ||
+      (chain.successor !== null && currentPathIds.has(chain.successor.id));
+    const summary = `${visibleCount} nodes · "${previewText(first.text)}" -> "${previewText(destination.text)}"`;
 
     return (
       <div key={`chain-${key}`} className="bw-tree-chain">
@@ -2096,22 +2153,26 @@ export default function App() {
             type="button"
             className="bw-tree-chain-row"
             data-path={chainOnPath}
-            onClick={() => toggleChainExpanded(key)}
-            title={expanded ? "Collapse linear run" : "Expand linear run"}
+            onClick={() => {
+              setExpandedChains((prev) => ({ ...prev, [key]: true }));
+              void onSelectNode(destination.id);
+            }}
+            title={`Go to ${nodeLabel(destination)}`}
           >
             <span className="bw-tree-chain-summary">... {summary}</span>
-            <span className="bw-tree-chain-action">
-              {expanded ? "collapse" : "expand"}
-            </span>
           </button>
         </div>
         {expanded
           ? chain.nodes.map((node, index) =>
               renderTreeNode(node.id, depth + index, {
                 key: `chain-${key}-${node.id}`,
-                renderChildren: index === chain.nodes.length - 1,
-                hideCaret: index !== chain.nodes.length - 1,
+                renderChildren: false,
+                hideCaret: true,
               }),
+            ).concat(
+              chain.successor
+                ? [renderTreeEntry(chain.successor.id, depth + chain.nodes.length)]
+                : [],
             )
           : chain.successor
             ? renderTreeEntry(chain.successor.id, depth)
@@ -2531,21 +2592,29 @@ export default function App() {
                   </button>
                 )}
               </div>
-              <div className="bw-tree-list">{renderTreeNode(tree.rootId)}</div>
+              <div className="bw-tree-list">
+                {treeFilterNote && (
+                  <div className="bw-tree-filter-note">{treeFilterNote}</div>
+                )}
+                {renderTreeNode(tree.rootId)}
+              </div>
               <div className="bw-tree-foot">
-                {Object.keys(tree.nodes).length.toLocaleString()} nodes
+                {visibleTreeNodeCount().toLocaleString()} visible ·{" "}
+                {Object.keys(tree.nodes).length.toLocaleString()} total
               </div>
             </aside>
           ) : workspaceMode === "compose" ? (
-            <button
-              type="button"
-              className="bw-rail-handle bw-rail-handle-left"
-              onClick={() => setTreeVisible(true)}
-              aria-label="Show tree panel"
-              title="Show tree"
-            >
-              Tree
-            </button>
+            <div className="bw-collapsed-rail bw-collapsed-rail-left">
+              <button
+                type="button"
+                className="bw-edge-toggle bw-edge-toggle-tree bw-edge-toggle-collapsed"
+                onClick={() => setTreeVisible(true)}
+                aria-label="Show tree panel"
+                title="Show tree"
+              >
+                ›
+              </button>
+            </div>
           ) : null}
 
           {workspaceMode === "compose" && treeVisible && (
@@ -2862,6 +2931,7 @@ export default function App() {
                     </div>
                   )}
                   <WorkbookEditor
+                    key={currentId}
                     ref={editorRef}
                     value={buffer}
                     onChange={(nextBuffer) => {
