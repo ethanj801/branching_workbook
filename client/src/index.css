@@ -188,11 +188,26 @@ textarea:disabled {
 }
 
 .bw-splitter {
+  position: relative;
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid var(--line);
   border-right: 1px solid transparent;
   transition: background 140ms ease, border-color 140ms ease;
+}
+
+/* Expand the hit area without growing the visual. The visible track stays at
+   6 px so the layout doesn't shift, but pointer events are caught across a
+   wider strip. Otherwise the 6 px target is essentially un-grabbable and a
+   miss starts a text selection in the panel next to it. */
+.bw-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -5px;
+  right: -5px;
+  z-index: 1;
 }
 
 .bw-splitter:hover,
@@ -1135,6 +1150,20 @@ textarea:disabled {
   height: 1px;
   transform: translateY(-50%);
   background: var(--line-dark);
+}
+
+/* Expand the row splitter's grab zone the same way bw-splitter does. With
+   only 6 px visible, the cursor lands above or below the target on most
+   drag attempts and starts selecting card or buffer text instead of
+   resizing. The visible track is unchanged. */
+.bw-row-splitter::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -5px;
+  bottom: -5px;
+  z-index: 1;
 }
 
 .bw-row-splitter:hover {

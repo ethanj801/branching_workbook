@@ -362,6 +362,8 @@ export default function App() {
   const [branchLimitHint, setBranchLimitHint] = useState(false);
   const [branchCountError, setBranchCountError] = useState<string | null>(null);
   const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
+  const [maxTokensError, setMaxTokensError] = useState<string | null>(null);
+  const [maxTokensLimitHint, setMaxTokensLimitHint] = useState(false);
   const [tokensPerSuggestionText, setTokensPerSuggestionText] = useState(
     String(DEFAULT_TOKENS_PER_SUGGESTION),
   );
@@ -1306,13 +1308,28 @@ export default function App() {
   }
 
   function normalizeMaxTokens(): number {
-    const normalized = Math.max(
-      1,
-      parsePositiveInt(maxTokensText, DEFAULT_MAX_TOKENS),
-    );
-    setMaxTokensText(String(normalized));
-    saveProjectSettings({ max_tokens: normalized });
-    return normalized;
+    const trimmed = maxTokensText.trim();
+    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
+    // The visual cap mirrors the loaded model's context length when known so
+    // a typo like 999999 doesn't ship a request the backend will silently
+    // truncate or reject. With no model loaded, fall back to a generous but
+    // sane upper bound rather than letting unbounded values through.
+    const ceiling = contextMax ?? 32768;
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      // Empty/garbage: snap to default and flag, mirroring the Branches input
+      // pattern so the user sees what value will actually be sent.
+      setMaxTokensText(String(DEFAULT_MAX_TOKENS));
+      setMaxTokensError(`Enter 1-${ceiling.toLocaleString()} tokens.`);
+      setMaxTokensLimitHint(false);
+      saveProjectSettings({ max_tokens: DEFAULT_MAX_TOKENS });
+      return DEFAULT_MAX_TOKENS;
+    }
+    const clamped = Math.min(parsed, ceiling);
+    setMaxTokensText(String(clamped));
+    setMaxTokensLimitHint(parsed > ceiling);
+    setMaxTokensError(null);
+    saveProjectSettings({ max_tokens: clamped });
+    return clamped;
   }
 
   function normalizeTokensPerSuggestion(): number {
@@ -3012,9 +3029,20 @@ export default function App() {
                       max={maxBranches}
                       value={branchCountText}
                       onChange={(event) => {
-                        setBranchCountText(event.target.value);
+                        const next = event.target.value;
+                        setBranchCountText(next);
                         setBranchLimitHint(false);
-                        setBranchCountError(null);
+                        // Real-time validation: a non-empty, non-digit value
+                        // (e.g. "abc") used to silently sit there until blur
+                        // or Generate. Surface it immediately so the user
+                        // doesn't think a bogus value was accepted. Empty
+                        // strings stay error-free as a transient mid-edit
+                        // state — the blur handler covers that case.
+                        if (next.trim() === "" || /^\d+$/.test(next.trim())) {
+                          setBranchCountError(null);
+                        } else {
+                          setBranchCountError(`Enter 1-${maxBranches} branches.`);
+                        }
                       }}
                       onBlur={() => {
                         normalizeBranchCount();
@@ -3036,16 +3064,40 @@ export default function App() {
                   <label className="bw-field">
                     Max tokens
                     <input
-                      type="number"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
                       min={1}
+                      max={contextMax ?? undefined}
                       value={maxTokensText}
-                      onChange={(event) => setMaxTokensText(event.target.value)}
+                      onChange={(event) => {
+                        setMaxTokensText(event.target.value);
+                        setMaxTokensError(null);
+                        setMaxTokensLimitHint(false);
+                      }}
                       onBlur={() => {
                         normalizeMaxTokens();
                       }}
+                      aria-invalid={maxTokensError !== null}
                       disabled={streaming || saving}
                       className="bw-input w-24"
+                      title={
+                        contextMax
+                          ? `1-${contextMax.toLocaleString()} (loaded context)`
+                          : undefined
+                      }
                     />
+                    {(maxTokensError || maxTokensLimitHint) && (
+                      <span
+                        className="bw-field-note"
+                        data-error={maxTokensError !== null}
+                      >
+                        {maxTokensError ??
+                          (contextMax
+                            ? `capped at ${contextMax.toLocaleString()} (loaded context)`
+                            : "capped at the loaded context length")}
+                      </span>
+                    )}
                   </label>
                   <div className="bw-display-toggle" aria-label="Display mode">
                     <span>Display</span>
@@ -3095,7 +3147,7 @@ export default function App() {
                 <button
                   type="button"
                   onClick={() => void onSave()}
-                  disabled={saving || streaming}
+                  disabled={saving || streaming || !dirtyBuffer}
                   data-dirty={dirtyBuffer}
                   className="bw-button"
                   title={dirtyBuffer ? "Save unsaved buffer changes" : "Buffer is saved"}
