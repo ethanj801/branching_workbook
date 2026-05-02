@@ -2491,6 +2491,11 @@ export default function App() {
     setMapDragging(false);
   }
 
+  async function onSelectMapNode(nodeIdToSelect: string) {
+    await onSelectNode(nodeIdToSelect);
+    setMapCenterRequest((value) => value + 1);
+  }
+
   function renderNodeMap() {
     if (!tree || !currentId || !currentNode || !nodeMapLayout) return null;
 
@@ -2508,6 +2513,9 @@ export default function App() {
       !actionDisabled;
     const canMergeDown =
       currentNode.parentId !== null && childNodes.length === 1 && !actionDisabled;
+    const starredNodes = Object.values(tree.nodes)
+      .filter((node) => node.starred)
+      .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 
     return (
       <section className="bw-node-map-shell" aria-label="Node map">
@@ -2587,7 +2595,7 @@ export default function App() {
                       width: item.width,
                       height: item.height,
                     }}
-                    onClick={() => void onSelectNode(node.id)}
+                    onClick={() => void onSelectMapNode(node.id)}
                     disabled={actionDisabled}
                     title={`Go to ${nodeLabel(node)}`}
                   >
@@ -2618,6 +2626,35 @@ export default function App() {
                 {childNodes.length} child{childNodes.length === 1 ? "" : "ren"}
                 {currentNode.hidden ? " · hidden" : ""}
               </div>
+            </div>
+            <div className="bw-node-map-starred">
+              <div className="bw-node-map-section-title">
+                <span>Starred</span>
+                <span>{starredNodes.length}</span>
+              </div>
+              {starredNodes.length > 0 ? (
+                <div className="bw-node-map-starred-list">
+                  {starredNodes.map((node) => (
+                    <button
+                      key={node.id}
+                      type="button"
+                      className="bw-node-map-starred-item"
+                      data-current={node.id === currentId}
+                      data-hidden={node.hidden}
+                      onClick={() => void onSelectMapNode(node.id)}
+                      disabled={actionDisabled || node.id === currentId}
+                      title={`Jump to ${nodeLabel(node)}`}
+                    >
+                      <span>{nodeLabel(node)}</span>
+                      {node.hidden && <small>hidden</small>}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="bw-node-map-empty-starred">
+                  Star nodes to make them available here.
+                </div>
+              )}
             </div>
             <div className="bw-node-map-actions">
               <button

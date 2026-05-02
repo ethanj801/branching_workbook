@@ -180,6 +180,7 @@ def _close_current(request: Request) -> None:
 
 
 def _row_to_node(r: sqlite3.Row) -> NodeModel:
+    columns = set(r.keys())
     return NodeModel(
         id=r["id"],
         parent_id=r["parent_id"],
@@ -188,7 +189,7 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         source=r["source"],
         hidden=bool(r["hidden"]),
         is_main_path=bool(r["is_main_path"]),
-        starred=bool(r["starred"]) if "starred" in r else False,
+        starred=bool(r["starred"]) if "starred" in columns else False,
         created_at=r["created_at"],
         prior_context_hash=r["prior_context_hash"],
         sampler_snapshot=(
