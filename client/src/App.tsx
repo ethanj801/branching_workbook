@@ -7,6 +7,7 @@ import {
   type CSSProperties,
   type FormEvent,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   closeProject as closeProjectApi,
@@ -78,7 +79,7 @@ type Candidate = {
 
 type BranchViewMode = "grid" | "strip";
 
-type WorkspaceMode = "compose" | "autocomplete";
+type WorkspaceMode = "compose" | "autocomplete" | "map";
 
 type UsedCandidateRange = {
   start: number;
@@ -90,10 +91,49 @@ type LinearChain = {
   successor: TreeNode | null;
 };
 
+type NodeMapItem = {
+  node: TreeNode;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  depth: number;
+};
+
+type NodeMapEdge = {
+  parentId: string;
+  childId: string;
+  fromX: number;
+  fromY: number;
+  toX: number;
+  toY: number;
+};
+
+type NodeMapLayout = {
+  nodes: NodeMapItem[];
+  edges: NodeMapEdge[];
+  width: number;
+  height: number;
+};
+
+type NodeMapDrag = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  panX: number;
+  panY: number;
+};
+
 type AutocompleteState =
   | { phase: "idle" }
   | { phase: "thinking" }
   | { phase: "showing"; suggestions: string[]; visibleIdx: number };
+
+const NODE_MAP_NODE_WIDTH = 174;
+const NODE_MAP_NODE_HEIGHT = 88;
+const NODE_MAP_LEVEL_GAP = 150;
+const NODE_MAP_NODE_GAP = 58;
+const NODE_MAP_PADDING = 72;
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
@@ -184,6 +224,96 @@ function nodeLabel(node: TreeNode): string {
   const name = node.name?.trim();
   if (name) return name;
   return previewText(node.text);
+}
+
+function sortedChildrenOf(tree: Tree, nodeIdToSort: string): TreeNode[] {
+  return childrenOf(tree, nodeIdToSort).sort(
+    (a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id),
+  );
+}
+
+function buildNodeMapLayout(tree: Tree): NodeMapLayout {
+  const rawItems: NodeMapItem[] = [];
+  let nextX = 0;
+
+  function place(nodeIdToPlace: string, depth: number): number {
+    const node = tree.nodes[nodeIdToPlace];
+    if (!node) return nextX;
+
+    const childNodes = sortedChildrenOf(tree, node.id);
+    let centerX: number;
+    if (childNodes.length === 0) {
+      centerX = nextX + NODE_MAP_NODE_WIDTH / 2;
+      nextX += NODE_MAP_NODE_WIDTH + NODE_MAP_NODE_GAP;
+    } else {
+      const childCenters = childNodes.map((child) => place(child.id, depth + 1));
+      centerX = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
+    }
+
+    rawItems.push({
+      node,
+      x: centerX - NODE_MAP_NODE_WIDTH / 2,
+      y: depth * (NODE_MAP_NODE_HEIGHT + NODE_MAP_LEVEL_GAP),
+      width: NODE_MAP_NODE_WIDTH,
+      height: NODE_MAP_NODE_HEIGHT,
+      depth,
+    });
+    return centerX;
+  }
+
+  place(tree.rootId, 0);
+
+  const minX = Math.min(...rawItems.map((item) => item.x), 0);
+  const minY = Math.min(...rawItems.map((item) => item.y), 0);
+  const nodes = rawItems
+    .map((item) => ({
+      ...item,
+      x: item.x - minX + NODE_MAP_PADDING,
+      y: item.y - minY + NODE_MAP_PADDING,
+    }))
+    .sort((a, b) => a.depth - b.depth || a.x - b.x);
+
+  const itemById = new Map(nodes.map((item) => [item.node.id, item]));
+  const edges: NodeMapEdge[] = [];
+  for (const item of nodes) {
+    for (const child of sortedChildrenOf(tree, item.node.id)) {
+      const childItem = itemById.get(child.id);
+      if (!childItem) continue;
+      edges.push({
+        parentId: item.node.id,
+        childId: child.id,
+        fromX: item.x + item.width / 2,
+        fromY: item.y + item.height,
+        toX: childItem.x + childItem.width / 2,
+        toY: childItem.y,
+      });
+    }
+  }
+
+  const width = Math.max(
+    640,
+    ...nodes.map((item) => item.x + item.width + NODE_MAP_PADDING),
+  );
+  const height = Math.max(
+    520,
+    ...nodes.map((item) => item.y + item.height + NODE_MAP_PADDING),
+  );
+
+  return { nodes, edges, width, height };
+}
+
+function collectSubtreeNodeIds(tree: Tree, nodeIdToCollect: string): string[] {
+  const collected: string[] = [];
+  const stack = [nodeIdToCollect];
+  while (stack.length > 0) {
+    const nodeIdFromStack = stack.pop()!;
+    if (!tree.nodes[nodeIdFromStack]) continue;
+    collected.push(nodeIdFromStack);
+    for (const child of childrenOf(tree, nodeIdFromStack)) {
+      stack.push(child.id);
+    }
+  }
+  return collected;
 }
 
 function NodeNameEditor({
@@ -432,9 +562,14 @@ export default function App() {
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
+  const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
+  const [mapDragging, setMapDragging] = useState(false);
+  const [mapCenterRequest, setMapCenterRequest] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
+  const mapViewportRef = useRef<HTMLDivElement | null>(null);
+  const mapDragRef = useRef<NodeMapDrag | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
@@ -458,6 +593,10 @@ export default function App() {
     : currentTabbyModel
       ? "Model loaded and idle"
       : "No model loaded";
+  const nodeMapLayout = useMemo(
+    () => (tree ? buildNodeMapLayout(tree) : null),
+    [tree],
+  );
   const tokenMeterLabel =
     tokenCount === null || contextMax === null
       ? "Current draft token count and loaded context length are unavailable"
@@ -935,6 +1074,26 @@ export default function App() {
     window.addEventListener("pointerdown", onPointerDown);
     return () => window.removeEventListener("pointerdown", onPointerDown);
   }, [treeMenu]);
+
+  useEffect(() => {
+    if (
+      workspaceMode !== "map" ||
+      !nodeMapLayout ||
+      !currentId ||
+      mapCenterRequest === 0
+    ) {
+      return;
+    }
+
+    const viewport = mapViewportRef.current;
+    const item = nodeMapLayout.nodes.find((candidate) => candidate.node.id === currentId);
+    if (!viewport || !item) return;
+
+    setMapPan({
+      x: Math.round(viewport.clientWidth / 2 - item.x - item.width / 2),
+      y: Math.round(Math.min(96, viewport.clientHeight / 2 - item.y - item.height / 2)),
+    });
+  }, [currentId, mapCenterRequest, nodeMapLayout, workspaceMode]);
 
   useEffect(() => {
     if (branchCountText.trim() === "") return;
@@ -1829,7 +1988,7 @@ export default function App() {
       ? project.title
       : null;
   const workspaceColumns =
-    workspaceMode === "autocomplete"
+    workspaceMode !== "compose"
       ? "minmax(18rem, 1fr)"
       : [
           treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
@@ -1917,6 +2076,122 @@ export default function App() {
       setSaving(false);
       setTreeMenu(null);
     }
+  }
+
+  async function persistTreeEdit(
+    beforeTree: Tree,
+    nextTree: Tree,
+    nextCurrentId: string,
+  ) {
+    const nextPath = pathFromRoot(nextTree, nextCurrentId);
+    const nextBuffer = concatPathText(nextPath);
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
+      setTree(nextTree);
+      setCurrentId(nextCurrentId);
+      setBuffer(nextBuffer);
+      resetRecordedSelectionToEnd(nextBuffer);
+      setMapCenterRequest((value) => value + 1);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onDeleteCurrentMapNode() {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const committed = await commitBuffer();
+    if (!committed) return;
+
+    const node = committed.tree.nodes[committed.currentId];
+    if (!node || node.parentId === null) return;
+
+    const idsToDelete = new Set(collectSubtreeNodeIds(committed.tree, node.id));
+    const nextNodes = { ...committed.tree.nodes };
+    for (const nodeIdToDelete of idsToDelete) {
+      delete nextNodes[nodeIdToDelete];
+    }
+
+    const fallbackId = nextNodes[node.parentId] ? node.parentId : committed.tree.rootId;
+    const nextTree: Tree = {
+      rootId: committed.tree.rootId,
+      nodes: nextNodes,
+    };
+
+    await persistTreeEdit(committed.tree, nextTree, fallbackId);
+  }
+
+  function buildMergedTree(
+    baseTree: Tree,
+    upstreamId: string,
+    downstreamId: string,
+  ): Tree | null {
+    const upstream = baseTree.nodes[upstreamId];
+    const downstream = baseTree.nodes[downstreamId];
+    if (!upstream || !downstream || downstream.parentId !== upstream.id) return null;
+    if (upstream.parentId === null) return null;
+    if (childrenOf(baseTree, upstream.id).length !== 1) return null;
+
+    const nextNodes = { ...baseTree.nodes };
+    const merged: TreeNode = {
+      ...upstream,
+      text: `${upstream.text}${downstream.text}`,
+      name: upstream.name ?? downstream.name ?? null,
+      source: upstream.source === downstream.source ? upstream.source : "composed",
+      starred: upstream.starred || downstream.starred,
+    };
+
+    for (const child of childrenOf(baseTree, downstream.id)) {
+      nextNodes[child.id] = { ...child, parentId: upstream.id };
+    }
+    nextNodes[upstream.id] = merged;
+    delete nextNodes[downstream.id];
+
+    return {
+      rootId: baseTree.rootId,
+      nodes: nextNodes,
+    };
+  }
+
+  async function onMergeCurrentIntoParent() {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const committed = await commitBuffer();
+    if (!committed) return;
+
+    const node = committed.tree.nodes[committed.currentId];
+    const parent = node?.parentId ? committed.tree.nodes[node.parentId] : null;
+    if (!node || !parent) return;
+
+    const nextTree = buildMergedTree(committed.tree, parent.id, node.id);
+    if (!nextTree) return;
+
+    const nextCurrentId =
+      committed.currentId === node.id ? parent.id : committed.currentId;
+    await persistTreeEdit(committed.tree, nextTree, nextCurrentId);
+  }
+
+  async function onMergeCurrentWithOnlyChild() {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const committed = await commitBuffer();
+    if (!committed) return;
+
+    const node = committed.tree.nodes[committed.currentId];
+    if (!node) return;
+
+    const child = childrenOf(committed.tree, node.id)[0] ?? null;
+    if (!child) return;
+
+    const nextTree = buildMergedTree(committed.tree, node.id, child.id);
+    if (!nextTree) return;
+
+    await persistTreeEdit(committed.tree, nextTree, node.id);
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2178,6 +2453,239 @@ export default function App() {
             ? renderTreeEntry(chain.successor.id, depth)
             : null}
       </div>
+    );
+  }
+
+  function onNodeMapPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.button !== 0) return;
+    const target = event.target as HTMLElement;
+    if (target.closest("button")) return;
+
+    event.currentTarget.setPointerCapture(event.pointerId);
+    mapDragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      panX: mapPan.x,
+      panY: mapPan.y,
+    };
+    setMapDragging(true);
+  }
+
+  function onNodeMapPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = mapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    setMapPan({
+      x: drag.panX + event.clientX - drag.startX,
+      y: drag.panY + event.clientY - drag.startY,
+    });
+  }
+
+  function finishNodeMapDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    const drag = mapDragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+    mapDragRef.current = null;
+    setMapDragging(false);
+  }
+
+  function renderNodeMap() {
+    if (!tree || !currentId || !currentNode || !nodeMapLayout) return null;
+
+    const childNodes = childrenOf(tree, currentNode.id);
+    const parentNode = currentNode.parentId ? tree.nodes[currentNode.parentId] : null;
+    const parentChildCount = parentNode ? childrenOf(tree, parentNode.id).length : 0;
+    const actionDisabled = saving || streaming;
+    const canDelete = currentNode.parentId !== null && !actionDisabled;
+    const canHide = currentNode.parentId !== null && !actionDisabled;
+    const canMergeUp =
+      currentNode.parentId !== null &&
+      parentNode !== null &&
+      parentNode.parentId !== null &&
+      parentChildCount === 1 &&
+      !actionDisabled;
+    const canMergeDown =
+      currentNode.parentId !== null && childNodes.length === 1 && !actionDisabled;
+
+    return (
+      <section className="bw-node-map-shell" aria-label="Node map">
+        <div className="bw-node-map-head">
+          <div>
+            <div className="bw-kicker">Node Map</div>
+            <div className="bw-node-map-summary">
+              {nodeMapLayout.nodes.length.toLocaleString()} nodes · drag canvas to pan
+            </div>
+          </div>
+          <button
+            type="button"
+            className="bw-button"
+            onClick={() => setMapCenterRequest((value) => value + 1)}
+          >
+            Locate current
+          </button>
+        </div>
+        <div className="bw-node-map-body">
+          <div
+            ref={mapViewportRef}
+            className="bw-node-map-viewport"
+            data-dragging={mapDragging}
+            onPointerDown={onNodeMapPointerDown}
+            onPointerMove={onNodeMapPointerMove}
+            onPointerUp={finishNodeMapDrag}
+            onPointerCancel={finishNodeMapDrag}
+          >
+            <div
+              className="bw-node-map-canvas"
+              style={{
+                width: nodeMapLayout.width,
+                height: nodeMapLayout.height,
+                transform: `translate(${mapPan.x}px, ${mapPan.y}px)`,
+              }}
+            >
+              <svg
+                className="bw-node-map-edges"
+                viewBox={`0 0 ${nodeMapLayout.width} ${nodeMapLayout.height}`}
+                aria-hidden="true"
+              >
+                {nodeMapLayout.edges.map((edge) => {
+                  const child = tree.nodes[edge.childId];
+                  const active =
+                    currentPathIds.has(edge.parentId) &&
+                    currentPathIds.has(edge.childId);
+                  const midY =
+                    edge.fromY + Math.max(42, (edge.toY - edge.fromY) * 0.48);
+                  return (
+                    <path
+                      key={`${edge.parentId}-${edge.childId}`}
+                      className="bw-node-map-edge"
+                      data-path={active}
+                      data-hidden={child?.hidden ?? false}
+                      d={`M ${edge.fromX} ${edge.fromY} C ${edge.fromX} ${midY}, ${edge.toX} ${midY}, ${edge.toX} ${edge.toY}`}
+                    />
+                  );
+                })}
+              </svg>
+              {nodeMapLayout.nodes.map((item) => {
+                const node = item.node;
+                const isCurrent = node.id === currentId;
+                const isOnPath = currentPathIds.has(node.id);
+                const nodeChildren = childrenOf(tree, node.id);
+                return (
+                  <button
+                    key={node.id}
+                    type="button"
+                    className="bw-node-map-node"
+                    data-current={isCurrent}
+                    data-path={isOnPath}
+                    data-hidden={node.hidden}
+                    data-starred={node.starred}
+                    style={{
+                      left: item.x,
+                      top: item.y,
+                      width: item.width,
+                      height: item.height,
+                    }}
+                    onClick={() => void onSelectNode(node.id)}
+                    disabled={actionDisabled}
+                    title={`Go to ${nodeLabel(node)}`}
+                  >
+                    <span className="bw-node-map-node-title">
+                      {node.starred && <span aria-hidden="true">★</span>}
+                      {nodeLabel(node)}
+                    </span>
+                    <span className="bw-node-map-node-meta">
+                      {node.source.replace("_", " ")}
+                      {nodeChildren.length > 0
+                        ? ` · ${nodeChildren.length} child${
+                            nodeChildren.length === 1 ? "" : "ren"
+                          }`
+                        : ""}
+                      {node.hidden ? " · hidden" : ""}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <aside className="bw-node-map-inspector" aria-label="Selected node">
+            <div className="bw-node-map-inspector-head">
+              <div className="bw-kicker">Selected</div>
+              <div className="bw-node-map-current">{nodeLabel(currentNode)}</div>
+              <div className="bw-node-map-current-meta">
+                {currentNode.source.replace("_", " ")} ·{" "}
+                {childNodes.length} child{childNodes.length === 1 ? "" : "ren"}
+                {currentNode.hidden ? " · hidden" : ""}
+              </div>
+            </div>
+            <div className="bw-node-map-actions">
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() =>
+                  void onSetNodeStarred(currentNode.id, !currentNode.starred)
+                }
+                disabled={actionDisabled}
+              >
+                {currentNode.starred ? "Unstar" : "Star"}
+              </button>
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() =>
+                  void onSetNodeHidden(currentNode.id, !currentNode.hidden)
+                }
+                disabled={!canHide}
+              >
+                {currentNode.hidden ? "Unhide" : "Hide"}
+              </button>
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() => void onMergeCurrentIntoParent()}
+                disabled={!canMergeUp}
+                title={
+                  canMergeUp
+                    ? "Merge this node into its parent"
+                    : "Available when the parent is not root and has exactly one child"
+                }
+              >
+                Merge up
+              </button>
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() => void onMergeCurrentWithOnlyChild()}
+                disabled={!canMergeDown}
+                title={
+                  canMergeDown
+                    ? "Merge this node with its only child"
+                    : "Available when this node has exactly one child"
+                }
+              >
+                Merge down
+              </button>
+              <button
+                type="button"
+                className="bw-button bw-button-danger"
+                onClick={() => void onDeleteCurrentMapNode()}
+                disabled={!canDelete}
+                title={
+                  canDelete
+                    ? "Delete this node and its descendants"
+                    : "Root cannot be deleted"
+                }
+              >
+                Delete
+              </button>
+            </div>
+            <div className="bw-node-map-merge-note">
+              Merge is blocked whenever the upstream node has more than one child.
+            </div>
+          </aside>
+        </div>
+      </section>
     );
   }
 
@@ -2646,7 +3154,7 @@ export default function App() {
                 type="button"
                 data-active={workspaceMode === "compose"}
                 onClick={() => {
-                  if (workspaceMode === "autocomplete") {
+                  if (workspaceMode !== "compose") {
                     void commitBuffer();
                   }
                   setWorkspaceMode("compose");
@@ -2674,6 +3182,24 @@ export default function App() {
                 disabled={streaming}
               >
                 Autocomplete
+              </button>
+              <button
+                type="button"
+                data-active={workspaceMode === "map"}
+                onClick={() => {
+                  if (streaming) return;
+                  clearAutocomplete();
+                  setWorkspaceMode("map");
+                  setMapCenterRequest((value) => value + 1);
+                  if (dirtyBuffer) {
+                    void commitBuffer().finally(() =>
+                      setMapCenterRequest((value) => value + 1),
+                    );
+                  }
+                }}
+                disabled={streaming || saving}
+              >
+                Node Map
               </button>
             </nav>
             <div
@@ -2903,190 +3429,215 @@ export default function App() {
                 </section>
               )}
 
-              <div className="bw-manuscript-scroll">
-                <section className="bw-manuscript">
-                  {currentNode && (
-                    <div className="bw-manuscript-head mb-4">
-                      <NodeNameEditor
-                        node={currentNode}
-                        disabled={saving || streaming}
-                        onRename={(name) => void onRenameCurrentNode(name)}
+              {workspaceMode === "map" ? (
+                renderNodeMap()
+              ) : (
+                <>
+                  <div className="bw-manuscript-scroll">
+                    <section className="bw-manuscript">
+                      {currentNode && (
+                        <div className="bw-manuscript-head mb-4">
+                          <NodeNameEditor
+                            node={currentNode}
+                            disabled={saving || streaming}
+                            onRename={(name) => void onRenameCurrentNode(name)}
+                          />
+                          <button
+                            type="button"
+                            className="bw-node-star"
+                            data-on={currentNode.starred}
+                            aria-label={
+                              currentNode.starred
+                                ? "Unstar this node"
+                                : "Star this node"
+                            }
+                            aria-pressed={currentNode.starred}
+                            title={
+                              currentNode.starred
+                                ? "Unstar this node"
+                                : "Star this node"
+                            }
+                            disabled={saving || streaming}
+                            onClick={() =>
+                              void onSetNodeStarred(
+                                currentNode.id,
+                                !currentNode.starred,
+                              )
+                            }
+                          >
+                            {currentNode.starred ? "★" : "☆"}
+                          </button>
+                        </div>
+                      )}
+                      <WorkbookEditor
+                        key={currentId}
+                        ref={editorRef}
+                        value={buffer}
+                        onChange={(nextBuffer) => {
+                          setBuffer(nextBuffer);
+                          if (preserveUsedRangeForBufferRef.current === nextBuffer) {
+                            preserveUsedRangeForBufferRef.current = null;
+                          } else {
+                            preserveUsedRangeForBufferRef.current = null;
+                            setUsedCandidateRange(null);
+                          }
+                        }}
+                        onSelectionChange={(selection: EditorSelection) => {
+                          if (bufferSelectionArmedRef.current) {
+                            bufferSelectionRef.current = selection;
+                          }
+                        }}
+                        onFocus={recordBufferFocus}
+                        onBlur={recordBufferSelection}
+                        placeholder="Start writing..."
+                        disabled={saving}
+                        ghostText={
+                          workspaceMode === "autocomplete"
+                            ? autocompleteSuggestion
+                            : workspaceMode === "compose" &&
+                                composeDisplayMode === "inline" &&
+                                branchPickerOpen &&
+                                branchViewMode === "grid" &&
+                                visibleCandidate
+                              ? visibleCandidate.text
+                              : null
+                        }
+                        keyBindings={editorKeyBindings}
                       />
+                      {emptyDraftStartsFromRoot && (
+                        <div className="bw-root-start-warning">
+                          Empty draft: the next save or generation starts a new path
+                          from root.
+                        </div>
+                      )}
+                      {workspaceMode === "autocomplete" && (
+                        <div className="bw-autocomplete-hint">
+                          {autocompleteStatus ??
+                            (autocompleteState.phase === "thinking"
+                              ? "autocomplete thinking"
+                              : autocompleteSuggestion
+                                ? "Tab accept · Esc dismiss · Ctrl+] / Ctrl+[ cycle"
+                                : "autocomplete ready")}
+                        </div>
+                      )}
+                    </section>
+                  </div>
+                  {showInlineCandidateControls && visibleCandidate && (
+                    <div
+                      className="bw-inline-controls"
+                      data-streaming={streaming && !visibleCandidate.done}
+                    >
+                      {candidates.length > 1 && (
+                        <div
+                          className="bw-inline-cycler"
+                          aria-label="Cycle branches"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => cycleVisibleCandidate(-1)}
+                            aria-label="Previous branch"
+                          >
+                            ‹
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => cycleVisibleCandidate(1)}
+                            aria-label="Next branch"
+                          >
+                            ›
+                          </button>
+                        </div>
+                      )}
                       <button
                         type="button"
-                        className="bw-node-star"
-                        data-on={currentNode.starred}
-                        aria-label={
-                          currentNode.starred ? "Unstar this node" : "Star this node"
+                        onClick={() => onUseCandidate(visibleCandidateIndex)}
+                        disabled={!visibleCandidate.text || streaming || saving}
+                        className="bw-button bw-button-primary"
+                      >
+                        Use
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onKeepCandidate(visibleCandidateIndex)}
+                        disabled={
+                          !visibleCandidate.text ||
+                          saving ||
+                          !!savedCandidateIds[visibleCandidateIndex]
                         }
-                        aria-pressed={currentNode.starred}
-                        title={currentNode.starred ? "Unstar this node" : "Star this node"}
-                        disabled={saving || streaming}
-                        onClick={() =>
-                          void onSetNodeStarred(currentNode.id, !currentNode.starred)
+                        title={
+                          savedCandidateIds[visibleCandidateIndex]
+                            ? "Already kept"
+                            : "Keep branch"
                         }
+                        className="bw-button"
                       >
-                        {currentNode.starred ? "★" : "☆"}
-                      </button>
-                    </div>
-                  )}
-                  <WorkbookEditor
-                    key={currentId}
-                    ref={editorRef}
-                    value={buffer}
-                    onChange={(nextBuffer) => {
-                      setBuffer(nextBuffer);
-                      if (preserveUsedRangeForBufferRef.current === nextBuffer) {
-                        preserveUsedRangeForBufferRef.current = null;
-                      } else {
-                        preserveUsedRangeForBufferRef.current = null;
-                        setUsedCandidateRange(null);
-                      }
-                    }}
-                    onSelectionChange={(selection: EditorSelection) => {
-                      if (bufferSelectionArmedRef.current) {
-                        bufferSelectionRef.current = selection;
-                      }
-                    }}
-                    onFocus={recordBufferFocus}
-                    onBlur={recordBufferSelection}
-                    placeholder="Start writing..."
-                    disabled={saving}
-                    ghostText={
-                      workspaceMode === "autocomplete"
-                        ? autocompleteSuggestion
-                        : workspaceMode === "compose" &&
-                            composeDisplayMode === "inline" &&
-                            branchPickerOpen &&
-                            branchViewMode === "grid" &&
-                            visibleCandidate
-                          ? visibleCandidate.text
-                          : null
-                    }
-                    keyBindings={editorKeyBindings}
-                  />
-                  {emptyDraftStartsFromRoot && (
-                    <div className="bw-root-start-warning">
-                      Empty draft: the next save or generation starts a new path
-                      from root.
-                    </div>
-                  )}
-                  {workspaceMode === "autocomplete" && (
-                    <div className="bw-autocomplete-hint">
-                      {autocompleteStatus ??
-                        (autocompleteState.phase === "thinking"
-                          ? "autocomplete thinking"
-                          : autocompleteSuggestion
-                            ? "Tab accept · Esc dismiss · Ctrl+] / Ctrl+[ cycle"
-                            : "autocomplete ready")}
-                    </div>
-                  )}
-                </section>
-              </div>
-              {showInlineCandidateControls && visibleCandidate && (
-                <div
-                  className="bw-inline-controls"
-                  data-streaming={streaming && !visibleCandidate.done}
-                >
-                  {candidates.length > 1 && (
-                    <div className="bw-inline-cycler" aria-label="Cycle branches">
-                      <button
-                        type="button"
-                        onClick={() => cycleVisibleCandidate(-1)}
-                        aria-label="Previous branch"
-                      >
-                        ‹
+                        {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
                       </button>
                       <button
                         type="button"
-                        onClick={() => cycleVisibleCandidate(1)}
-                        aria-label="Next branch"
+                        onClick={clearBranchPicker}
+                        disabled={streaming || saving}
+                        className="bw-button"
                       >
-                        ›
+                        Clear
                       </button>
+                      <span className="bw-inline-placement">
+                        inserts at end of draft
+                      </span>
+                      <span className="bw-inline-meta">
+                        Branch {visibleCandidateIndex + 1}
+                        {candidates.length > 1 ? ` of ${candidates.length}` : ""}
+                        {visibleCandidate.text
+                          ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
+                          : ""}
+                        {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
+                        {streaming && !visibleCandidate.done && " · streaming"}
+                      </span>
                     </div>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => onUseCandidate(visibleCandidateIndex)}
-                    disabled={!visibleCandidate.text || streaming || saving}
-                    className="bw-button bw-button-primary"
-                  >
-                    Use
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => void onKeepCandidate(visibleCandidateIndex)}
-                    disabled={
-                      !visibleCandidate.text ||
-                      saving ||
-                      !!savedCandidateIds[visibleCandidateIndex]
-                    }
-                    title={
-                      savedCandidateIds[visibleCandidateIndex]
-                        ? "Already kept"
-                        : "Keep branch"
-                    }
-                    className="bw-button"
-                  >
-                    {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={clearBranchPicker}
-                    disabled={streaming || saving}
-                    className="bw-button"
-                  >
-                    Clear
-                  </button>
-                  <span className="bw-inline-placement">
-                    inserts at end of draft
-                  </span>
-                  <span className="bw-inline-meta">
-                    Branch {visibleCandidateIndex + 1}
-                    {candidates.length > 1 ? ` of ${candidates.length}` : ""}
-                    {visibleCandidate.text
-                      ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
-                      : ""}
-                    {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
-                    {streaming && !visibleCandidate.done && " · streaming"}
-                  </span>
-                </div>
+                </>
               )}
             </div>
 
             <footer className="bw-actionbar">
-              <label className="bw-field">
-                Preset
-                <select
-                  value={activePresetId ?? ""}
-                  onChange={(event) =>
-                    void onSelectPreset(event.target.value || null)
-                  }
-                  disabled={samplerBusy || streaming}
-                  className="bw-select min-w-36"
-                >
-                  <option value="">none</option>
-                  {presets.map((preset) => (
-                    <option key={preset.id} value={preset.id}>
-                      {preset.name}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {draftDirty && (
-                <span title="Unsaved sampler changes" className="text-[color:var(--warn)]">
-                  *
-                </span>
+              {workspaceMode !== "map" && (
+                <>
+                  <label className="bw-field">
+                    Preset
+                    <select
+                      value={activePresetId ?? ""}
+                      onChange={(event) =>
+                        void onSelectPreset(event.target.value || null)
+                      }
+                      disabled={samplerBusy || streaming}
+                      className="bw-select min-w-36"
+                    >
+                      <option value="">none</option>
+                      {presets.map((preset) => (
+                        <option key={preset.id} value={preset.id}>
+                          {preset.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {draftDirty && (
+                    <span
+                      title="Unsaved sampler changes"
+                      className="text-[color:var(--warn)]"
+                    >
+                      *
+                    </span>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setSamplerOpen(true)}
+                    disabled={samplerBusy}
+                    className="bw-button"
+                  >
+                    Samplers
+                  </button>
+                </>
               )}
-              <button
-                type="button"
-                onClick={() => setSamplerOpen(true)}
-                disabled={samplerBusy}
-                className="bw-button"
-              >
-                Samplers
-              </button>
               {workspaceMode === "compose" ? (
                 <>
                   <label className="bw-field">
@@ -3193,7 +3744,7 @@ export default function App() {
                     </button>
                   </div>
                 </>
-              ) : (
+              ) : workspaceMode === "autocomplete" ? (
                 <label className="bw-field">
                   Tokens per suggestion
                   <input
@@ -3211,7 +3762,7 @@ export default function App() {
                     className="bw-input w-16"
                   />
                 </label>
-              )}
+              ) : null}
               <div className="flex-1" />
               <div className="bw-action-main">
                 <button

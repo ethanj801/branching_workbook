@@ -105,6 +105,9 @@ export function mutationBatchFromTrees(
   for (const nodeId of Object.keys(before.nodes)) {
     if (!after.nodes[nodeId]) deletes.push(nodeId);
   }
+  deletes.sort(
+    (a, b) => pathFromRoot(before, b).length - pathFromRoot(before, a).length,
+  );
 
   return {
     creates,
