@@ -134,6 +134,9 @@ const NODE_MAP_NODE_HEIGHT = 88;
 const NODE_MAP_LEVEL_GAP = 150;
 const NODE_MAP_NODE_GAP = 58;
 const NODE_MAP_PADDING = 72;
+const NODE_MAP_FIT_PADDING = 36;
+const NODE_MAP_MIN_SCALE = 0.28;
+const NODE_MAP_MAX_SCALE = 1.1;
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
@@ -314,6 +317,10 @@ function collectSubtreeNodeIds(tree: Tree, nodeIdToCollect: string): string[] {
     }
   }
   return collected;
+}
+
+function clampNodeMapScale(scale: number): number {
+  return Math.max(NODE_MAP_MIN_SCALE, Math.min(NODE_MAP_MAX_SCALE, scale));
 }
 
 function NodeNameEditor({
@@ -563,8 +570,10 @@ export default function App() {
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
+  const [mapScale, setMapScale] = useState(1);
   const [mapDragging, setMapDragging] = useState(false);
-  const [mapCenterRequest, setMapCenterRequest] = useState(0);
+  const [mapLocateRequest, setMapLocateRequest] = useState(0);
+  const [mapFitRequest, setMapFitRequest] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
@@ -1080,7 +1089,7 @@ export default function App() {
       workspaceMode !== "map" ||
       !nodeMapLayout ||
       !currentId ||
-      mapCenterRequest === 0
+      mapLocateRequest === 0
     ) {
       return;
     }
@@ -1088,12 +1097,39 @@ export default function App() {
     const viewport = mapViewportRef.current;
     const item = nodeMapLayout.nodes.find((candidate) => candidate.node.id === currentId);
     if (!viewport || !item) return;
+    const scale = mapScale;
 
     setMapPan({
-      x: Math.round(viewport.clientWidth / 2 - item.x - item.width / 2),
-      y: Math.round(Math.min(96, viewport.clientHeight / 2 - item.y - item.height / 2)),
+      x: Math.round(viewport.clientWidth / 2 - (item.x + item.width / 2) * scale),
+      y: Math.round(
+        Math.min(
+          96,
+          viewport.clientHeight / 2 - (item.y + item.height / 2) * scale,
+        ),
+      ),
     });
-  }, [currentId, mapCenterRequest, nodeMapLayout, workspaceMode]);
+  }, [currentId, mapLocateRequest, mapScale, nodeMapLayout, workspaceMode]);
+
+  useEffect(() => {
+    if (workspaceMode !== "map" || !nodeMapLayout || mapFitRequest === 0) {
+      return;
+    }
+
+    const viewport = mapViewportRef.current;
+    if (!viewport) return;
+
+    const availableWidth = Math.max(1, viewport.clientWidth - NODE_MAP_FIT_PADDING * 2);
+    const availableHeight = Math.max(1, viewport.clientHeight - NODE_MAP_FIT_PADDING * 2);
+    const scale = clampNodeMapScale(
+      Math.min(1, availableWidth / nodeMapLayout.width, availableHeight / nodeMapLayout.height),
+    );
+
+    setMapScale(scale);
+    setMapPan({
+      x: Math.round((viewport.clientWidth - nodeMapLayout.width * scale) / 2),
+      y: Math.round((viewport.clientHeight - nodeMapLayout.height * scale) / 2),
+    });
+  }, [mapFitRequest, nodeMapLayout, workspaceMode]);
 
   useEffect(() => {
     if (branchCountText.trim() === "") return;
@@ -2094,7 +2130,7 @@ export default function App() {
       setCurrentId(nextCurrentId);
       setBuffer(nextBuffer);
       resetRecordedSelectionToEnd(nextBuffer);
-      setMapCenterRequest((value) => value + 1);
+      setMapFitRequest((value) => value + 1);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -2491,9 +2527,14 @@ export default function App() {
     setMapDragging(false);
   }
 
-  async function onSelectMapNode(nodeIdToSelect: string) {
+  async function onSelectMapNode(
+    nodeIdToSelect: string,
+    options: { locate?: boolean } = {},
+  ) {
     await onSelectNode(nodeIdToSelect);
-    setMapCenterRequest((value) => value + 1);
+    if (options.locate) {
+      setMapLocateRequest((value) => value + 1);
+    }
   }
 
   function renderNodeMap() {
@@ -2516,6 +2557,7 @@ export default function App() {
     const starredNodes = Object.values(tree.nodes)
       .filter((node) => node.starred)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+    const mapScaleLabel = `${Math.round(mapScale * 100)}%`;
 
     return (
       <section className="bw-node-map-shell" aria-label="Node map">
@@ -2523,16 +2565,26 @@ export default function App() {
           <div>
             <div className="bw-kicker">Node Map</div>
             <div className="bw-node-map-summary">
-              {nodeMapLayout.nodes.length.toLocaleString()} nodes · drag canvas to pan
+              All {nodeMapLayout.nodes.length.toLocaleString()} nodes shown ·{" "}
+              {mapScaleLabel} · drag canvas to pan
             </div>
           </div>
-          <button
-            type="button"
-            className="bw-button"
-            onClick={() => setMapCenterRequest((value) => value + 1)}
-          >
-            Locate current
-          </button>
+          <div className="bw-node-map-controls" aria-label="Map view controls">
+            <button
+              type="button"
+              className="bw-button"
+              onClick={() => setMapFitRequest((value) => value + 1)}
+            >
+              Fit all
+            </button>
+            <button
+              type="button"
+              className="bw-button"
+              onClick={() => setMapLocateRequest((value) => value + 1)}
+            >
+              Locate current
+            </button>
+          </div>
         </div>
         <div className="bw-node-map-body">
           <div
@@ -2549,7 +2601,7 @@ export default function App() {
               style={{
                 width: nodeMapLayout.width,
                 height: nodeMapLayout.height,
-                transform: `translate(${mapPan.x}px, ${mapPan.y}px)`,
+                transform: `translate(${mapPan.x}px, ${mapPan.y}px) scale(${mapScale})`,
               }}
             >
               <svg
@@ -2641,7 +2693,9 @@ export default function App() {
                       className="bw-node-map-starred-item"
                       data-current={node.id === currentId}
                       data-hidden={node.hidden}
-                      onClick={() => void onSelectMapNode(node.id)}
+                      onClick={() =>
+                        void onSelectMapNode(node.id, { locate: true })
+                      }
                       disabled={actionDisabled || node.id === currentId}
                       title={`Jump to ${nodeLabel(node)}`}
                     >
@@ -3227,10 +3281,10 @@ export default function App() {
                   if (streaming) return;
                   clearAutocomplete();
                   setWorkspaceMode("map");
-                  setMapCenterRequest((value) => value + 1);
+                  setMapFitRequest((value) => value + 1);
                   if (dirtyBuffer) {
                     void commitBuffer().finally(() =>
-                      setMapCenterRequest((value) => value + 1),
+                      setMapFitRequest((value) => value + 1),
                     );
                   }
                 }}

@@ -846,6 +846,13 @@ textarea:disabled {
   font-size: 0.76rem;
 }
 
+.bw-node-map-controls {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.5rem;
+}
+
 .bw-node-map-body {
   display: grid;
   flex: 1;
