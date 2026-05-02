@@ -117,6 +117,10 @@ type NodeMapLayout = {
   height: number;
 };
 
+type NodeMapMergeAnalysis =
+  | { ok: true; orderedIds: string[] }
+  | { ok: false; reason: string };
+
 type NodeMapDrag = {
   pointerId: number;
   startX: number;
@@ -126,13 +130,21 @@ type NodeMapDrag = {
   moved: boolean;
 };
 
+type MapTooltip = {
+  text: string;
+  x: number;
+  y: number;
+};
+
 type AutocompleteState =
   | { phase: "idle" }
   | { phase: "thinking" }
   | { phase: "showing"; suggestions: string[]; visibleIdx: number };
 
-const NODE_MAP_NODE_WIDTH = 174;
-const NODE_MAP_NODE_HEIGHT = 88;
+const NODE_MAP_NODE_MIN_WIDTH = 156;
+const NODE_MAP_NODE_MAX_WIDTH = 224;
+const NODE_MAP_NODE_MIN_HEIGHT = 74;
+const NODE_MAP_NODE_MAX_HEIGHT = 122;
 const NODE_MAP_LEVEL_GAP = 150;
 const NODE_MAP_NODE_GAP = 58;
 const NODE_MAP_PADDING = 72;
@@ -140,6 +152,8 @@ const NODE_MAP_FIT_PADDING = 36;
 const NODE_MAP_MIN_SCALE = 0.28;
 const NODE_MAP_MAX_SCALE = 1.1;
 const NODE_MAP_PAN_MARGIN = 48;
+const NODE_MAP_MINIMAP_MAX_WIDTH = 172;
+const NODE_MAP_MINIMAP_MAX_HEIGHT = 118;
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
@@ -238,6 +252,23 @@ function sortedChildrenOf(tree: Tree, nodeIdToSort: string): TreeNode[] {
   );
 }
 
+function nodeMapNodeSize(node: TreeNode): { width: number; height: number } {
+  const labelLength = nodeLabel(node).length;
+  const bodyLength = displayBranchText(node.text).length;
+  return {
+    width: clampNumber(
+      146 + Math.min(78, labelLength * 1.45),
+      NODE_MAP_NODE_MIN_WIDTH,
+      NODE_MAP_NODE_MAX_WIDTH,
+    ),
+    height: clampNumber(
+      72 + Math.min(50, Math.floor(bodyLength / 36) * 12),
+      NODE_MAP_NODE_MIN_HEIGHT,
+      NODE_MAP_NODE_MAX_HEIGHT,
+    ),
+  };
+}
+
 function buildNodeMapLayout(tree: Tree): NodeMapLayout {
   const rawItems: NodeMapItem[] = [];
   let nextX = 0;
@@ -246,11 +277,12 @@ function buildNodeMapLayout(tree: Tree): NodeMapLayout {
     const node = tree.nodes[nodeIdToPlace];
     if (!node) return nextX;
 
+    const size = nodeMapNodeSize(node);
     const childNodes = sortedChildrenOf(tree, node.id);
     let centerX: number;
     if (childNodes.length === 0) {
-      centerX = nextX + NODE_MAP_NODE_WIDTH / 2;
-      nextX += NODE_MAP_NODE_WIDTH + NODE_MAP_NODE_GAP;
+      centerX = nextX + size.width / 2;
+      nextX += size.width + NODE_MAP_NODE_GAP;
     } else {
       const childCenters = childNodes.map((child) => place(child.id, depth + 1));
       centerX = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
@@ -258,10 +290,10 @@ function buildNodeMapLayout(tree: Tree): NodeMapLayout {
 
     rawItems.push({
       node,
-      x: centerX - NODE_MAP_NODE_WIDTH / 2,
-      y: depth * (NODE_MAP_NODE_HEIGHT + NODE_MAP_LEVEL_GAP),
-      width: NODE_MAP_NODE_WIDTH,
-      height: NODE_MAP_NODE_HEIGHT,
+      x: centerX - size.width / 2,
+      y: depth * (NODE_MAP_NODE_MAX_HEIGHT + NODE_MAP_LEVEL_GAP),
+      width: size.width,
+      height: size.height,
       depth,
     });
     return centerX;
@@ -306,6 +338,53 @@ function buildNodeMapLayout(tree: Tree): NodeMapLayout {
   );
 
   return { nodes, edges, width, height };
+}
+
+function analyzeNodeMapMergeSelection(
+  tree: Tree,
+  selectedIds: string[],
+): NodeMapMergeAnalysis {
+  const uniqueIds = [...new Set(selectedIds)].filter((id) => tree.nodes[id]);
+  if (uniqueIds.length < 2) {
+    return { ok: false, reason: "Select at least two connected nodes." };
+  }
+
+  const selected = new Set(uniqueIds);
+  const upstreamIds = uniqueIds.filter((id) => {
+    const parentId = tree.nodes[id]?.parentId;
+    return parentId === null || !selected.has(parentId);
+  });
+
+  if (upstreamIds.length !== 1) {
+    return { ok: false, reason: "Selection must be one linear parent-child run." };
+  }
+
+  const upstream = tree.nodes[upstreamIds[0]];
+  if (!upstream || upstream.parentId === null) {
+    return { ok: false, reason: "Root cannot be merged." };
+  }
+
+  const orderedIds: string[] = [];
+  let current: TreeNode | undefined = upstream;
+  while (current && selected.has(current.id)) {
+    orderedIds.push(current.id);
+    const allChildren = sortedChildrenOf(tree, current.id);
+    const selectedChildren = allChildren.filter((child) => selected.has(child.id));
+    if (selectedChildren.length === 0) break;
+    if (selectedChildren.length > 1 || allChildren.length !== 1) {
+      return {
+        ok: false,
+        reason: "Cannot merge through a node with multiple children.",
+      };
+    }
+    current = selectedChildren[0];
+  }
+
+  if (orderedIds.length !== uniqueIds.length) {
+    return { ok: false, reason: "Selection must be one linear parent-child run." };
+  }
+
+  return { ok: true, orderedIds };
 }
 
 function collectSubtreeNodeIds(tree: Tree, nodeIdToCollect: string): string[] {
@@ -602,6 +681,9 @@ export default function App() {
   const [mapLocateRequest, setMapLocateRequest] = useState(0);
   const [mapFitRequest, setMapFitRequest] = useState(0);
   const [mapSelectedId, setMapSelectedId] = useState<string | null>(null);
+  const [mapSelectionIds, setMapSelectionIds] = useState<string[]>([]);
+  const [mapViewportSize, setMapViewportSize] = useState({ width: 0, height: 0 });
+  const [mapTooltip, setMapTooltip] = useState<MapTooltip | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
@@ -1160,9 +1242,43 @@ export default function App() {
 
   useEffect(() => {
     if (!tree || !currentId) return;
-    if (mapSelectedId && tree.nodes[mapSelectedId]) return;
-    setMapSelectedId(currentId);
-  }, [currentId, mapSelectedId, tree]);
+    const validSelection = mapSelectionIds.filter((id) => tree.nodes[id]);
+    const validSelectedId =
+      mapSelectedId && tree.nodes[mapSelectedId] ? mapSelectedId : null;
+    if (
+      validSelectedId &&
+      validSelection.length === mapSelectionIds.length &&
+      validSelection.includes(validSelectedId)
+    ) {
+      return;
+    }
+
+    const fallbackId = validSelectedId ?? currentId;
+    setMapSelectedId(fallbackId);
+    setMapSelectionIds([fallbackId]);
+  }, [currentId, mapSelectedId, mapSelectionIds, tree]);
+
+  useEffect(() => {
+    if (workspaceMode !== "map") return;
+    const viewport = mapViewportRef.current;
+    if (!viewport) return;
+    const observedViewport = viewport;
+
+    function updateViewportSize() {
+      const nextWidth = Math.round(observedViewport.clientWidth);
+      const nextHeight = Math.round(observedViewport.clientHeight);
+      setMapViewportSize((current) =>
+        current.width === nextWidth && current.height === nextHeight
+          ? current
+          : { width: nextWidth, height: nextHeight },
+      );
+    }
+
+    updateViewportSize();
+    const resizeObserver = new ResizeObserver(updateViewportSize);
+    resizeObserver.observe(observedViewport);
+    return () => resizeObserver.disconnect();
+  }, [workspaceMode]);
 
   useEffect(() => {
     if (workspaceMode !== "map" || !nodeMapLayout || mapFitRequest === 0) {
@@ -2216,6 +2332,7 @@ export default function App() {
       setTree(nextTree);
       setCurrentId(nextCurrentId);
       setMapSelectedId(nextSelectedId);
+      setMapSelectionIds([nextSelectedId]);
       setBuffer(nextBuffer);
       resetRecordedSelectionToEnd(nextBuffer);
       setMapFitRequest((value) => value + 1);
@@ -2285,6 +2402,44 @@ export default function App() {
     };
   }
 
+  function buildMergedSelectionTree(
+    baseTree: Tree,
+    orderedIds: string[],
+  ): Tree | null {
+    const analysis = analyzeNodeMapMergeSelection(baseTree, orderedIds);
+    if (!analysis.ok) return null;
+
+    const orderedNodes = analysis.orderedIds.map((id) => baseTree.nodes[id]);
+    const upstream = orderedNodes[0];
+    const downstream = orderedNodes[orderedNodes.length - 1];
+    if (!upstream || !downstream) return null;
+
+    const nextNodes = { ...baseTree.nodes };
+    const firstSource = upstream.source;
+    const sameSource = orderedNodes.every((node) => node.source === firstSource);
+    const merged: TreeNode = {
+      ...upstream,
+      text: orderedNodes.map((node) => node.text).join(""),
+      name: orderedNodes.find((node) => node.name?.trim())?.name ?? null,
+      source: sameSource ? firstSource : "composed",
+      starred: orderedNodes.some((node) => node.starred),
+      hidden: orderedNodes.every((node) => node.hidden),
+    };
+
+    for (const child of childrenOf(baseTree, downstream.id)) {
+      nextNodes[child.id] = { ...child, parentId: upstream.id };
+    }
+    nextNodes[upstream.id] = merged;
+    for (const node of orderedNodes.slice(1)) {
+      delete nextNodes[node.id];
+    }
+
+    return {
+      rootId: baseTree.rootId,
+      nodes: nextNodes,
+    };
+  }
+
   async function onMergeNodeIntoParent(nodeIdToMerge: string) {
     if (!tree || !currentId || saving || streaming) return;
 
@@ -2321,6 +2476,35 @@ export default function App() {
     const nextCurrentId =
       committed.currentId === child.id ? node.id : committed.currentId;
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, node.id);
+  }
+
+  async function onMergeMapSelection(selectedIdsToMerge: string[]) {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const committed = await commitBuffer();
+    if (!committed) return;
+
+    const analysis = analyzeNodeMapMergeSelection(
+      committed.tree,
+      selectedIdsToMerge,
+    );
+    if (!analysis.ok) {
+      setError(analysis.reason);
+      return;
+    }
+
+    const nextTree = buildMergedSelectionTree(committed.tree, analysis.orderedIds);
+    if (!nextTree) {
+      setError("Selection cannot be merged.");
+      return;
+    }
+
+    const upstreamId = analysis.orderedIds[0];
+    const deletedIds = new Set(analysis.orderedIds.slice(1));
+    const nextCurrentId = deletedIds.has(committed.currentId)
+      ? upstreamId
+      : committed.currentId;
+    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, upstreamId);
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2681,19 +2865,85 @@ export default function App() {
     });
   }
 
+  function showMapTooltip(text: string, event: ReactMouseEvent<Element>) {
+    const x = Math.min(window.innerWidth - 260, event.clientX + 14);
+    const y = Math.min(window.innerHeight - 72, event.clientY + 14);
+    setMapTooltip({
+      text,
+      x: Math.max(8, x),
+      y: Math.max(8, y),
+    });
+  }
+
+  function moveMapTooltip(event: ReactMouseEvent<Element>) {
+    setMapTooltip((current) => {
+      if (!current) return null;
+      const x = Math.min(window.innerWidth - 260, event.clientX + 14);
+      const y = Math.min(window.innerHeight - 72, event.clientY + 14);
+      return {
+        ...current,
+        x: Math.max(8, x),
+        y: Math.max(8, y),
+      };
+    });
+  }
+
+  function hideMapTooltip() {
+    setMapTooltip(null);
+  }
+
   async function onSelectMapNode(
     nodeIdToSelect: string,
-    options: { locate?: boolean } = {},
+    options: { locate?: boolean; extend?: boolean } = {},
   ) {
     setMapSelectedId(nodeIdToSelect);
+    setMapSelectionIds((current) => {
+      if (!options.extend) return [nodeIdToSelect];
+      const validCurrent = current.filter((id) => tree?.nodes[id]);
+      if (validCurrent.includes(nodeIdToSelect)) return validCurrent;
+      return [...validCurrent, nodeIdToSelect];
+    });
     if (options.locate) {
       setMapLocateRequest((value) => value + 1);
     }
   }
 
+  function onNodeMapMinimapPointerDown(event: ReactPointerEvent<SVGSVGElement>) {
+    if (!nodeMapLayout) return;
+    event.preventDefault();
+    event.stopPropagation();
+
+    const viewport = mapViewportRef.current;
+    if (!viewport) return;
+
+    const minimapScale = Math.min(
+      NODE_MAP_MINIMAP_MAX_WIDTH / nodeMapLayout.width,
+      NODE_MAP_MINIMAP_MAX_HEIGHT / nodeMapLayout.height,
+    );
+    const rect = event.currentTarget.getBoundingClientRect();
+    const canvasX = (event.clientX - rect.left) / minimapScale;
+    const canvasY = (event.clientY - rect.top) / minimapScale;
+
+    setMapPan(
+      clampNodeMapPan(
+        {
+          x: Math.round(viewport.clientWidth / 2 - canvasX * mapScale),
+          y: Math.round(viewport.clientHeight / 2 - canvasY * mapScale),
+        },
+        nodeMapLayout,
+        { width: viewport.clientWidth, height: viewport.clientHeight },
+        mapScale,
+      ),
+    );
+  }
+
   function renderNodeMap() {
     if (!tree || !currentId || !currentNode || !nodeMapLayout) return null;
 
+    const validMapSelectionIds = mapSelectionIds.filter((id) => tree.nodes[id]);
+    const resolvedSelectionIds =
+      validMapSelectionIds.length > 0 ? validMapSelectionIds : [currentId];
+    const selectionSet = new Set(resolvedSelectionIds);
     const selectedNode =
       mapSelectedId && tree.nodes[mapSelectedId]
         ? tree.nodes[mapSelectedId]
@@ -2716,10 +2966,42 @@ export default function App() {
       !actionDisabled;
     const canMergeDown =
       selectedNode.parentId !== null && childNodes.length === 1 && !actionDisabled;
+    const mergeSelectionAnalysis = analyzeNodeMapMergeSelection(
+      tree,
+      resolvedSelectionIds,
+    );
+    const canMergeSelection = mergeSelectionAnalysis.ok && !actionDisabled;
+    const mergeSelectionHint = mergeSelectionAnalysis.ok
+      ? "Merge selected nodes"
+      : mergeSelectionAnalysis.reason;
     const starredNodes = Object.values(tree.nodes)
       .filter((node) => node.starred)
       .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
     const mapScaleLabel = `${Math.round(mapScale * 100)}%`;
+    const minimapScale = Math.min(
+      NODE_MAP_MINIMAP_MAX_WIDTH / nodeMapLayout.width,
+      NODE_MAP_MINIMAP_MAX_HEIGHT / nodeMapLayout.height,
+    );
+    const minimapWidth = Math.max(1, Math.round(nodeMapLayout.width * minimapScale));
+    const minimapHeight = Math.max(1, Math.round(nodeMapLayout.height * minimapScale));
+    const liveViewportWidth =
+      mapViewportSize.width || mapViewportRef.current?.clientWidth || 1;
+    const liveViewportHeight =
+      mapViewportSize.height || mapViewportRef.current?.clientHeight || 1;
+    const viewportRect = {
+      x: clampNumber((-mapPan.x / mapScale) * minimapScale, 0, minimapWidth),
+      y: clampNumber((-mapPan.y / mapScale) * minimapScale, 0, minimapHeight),
+      width: clampNumber(
+        (liveViewportWidth / mapScale) * minimapScale,
+        1,
+        minimapWidth,
+      ),
+      height: clampNumber(
+        (liveViewportHeight / mapScale) * minimapScale,
+        1,
+        minimapHeight,
+      ),
+    };
 
     return (
       <section className="bw-node-map-shell" aria-label="Node map">
@@ -2736,6 +3018,11 @@ export default function App() {
               type="button"
               className="bw-button"
               title="Fit the whole tree (Cmd+0)"
+              onMouseEnter={(event) =>
+                showMapTooltip("Fit the entire node tree in the map.", event)
+              }
+              onMouseMove={moveMapTooltip}
+              onMouseLeave={hideMapTooltip}
               onClick={() => setMapFitRequest((value) => value + 1)}
             >
               Fit all
@@ -2744,6 +3031,9 @@ export default function App() {
               type="button"
               className="bw-button bw-node-map-zoom-button"
               title="Zoom out (Cmd+-)"
+              onMouseEnter={(event) => showMapTooltip("Zoom out.", event)}
+              onMouseMove={moveMapTooltip}
+              onMouseLeave={hideMapTooltip}
               onClick={() => zoomNodeMap(1 / 1.12)}
               aria-label="Zoom out"
             >
@@ -2753,6 +3043,9 @@ export default function App() {
               type="button"
               className="bw-button bw-node-map-zoom-button"
               title="Zoom in (Cmd++)"
+              onMouseEnter={(event) => showMapTooltip("Zoom in.", event)}
+              onMouseMove={moveMapTooltip}
+              onMouseLeave={hideMapTooltip}
               onClick={() => zoomNodeMap(1.12)}
               aria-label="Zoom in"
             >
@@ -2762,9 +3055,14 @@ export default function App() {
               type="button"
               className="bw-button"
               title="Center the selected node"
+              onMouseEnter={(event) =>
+                showMapTooltip("Center the selected node in the map.", event)
+              }
+              onMouseMove={moveMapTooltip}
+              onMouseLeave={hideMapTooltip}
               onClick={() => setMapLocateRequest((value) => value + 1)}
             >
-              Locate current
+              Locate selected
             </button>
           </div>
         </div>
@@ -2793,6 +3091,7 @@ export default function App() {
                 aria-hidden="true"
               >
                 {nodeMapLayout.edges.map((edge) => {
+                  const parent = tree.nodes[edge.parentId];
                   const child = tree.nodes[edge.childId];
                   const active =
                     currentPathIds.has(edge.parentId) &&
@@ -2806,6 +3105,14 @@ export default function App() {
                       data-path={active}
                       data-hidden={child?.hidden ?? false}
                       d={`M ${edge.fromX} ${edge.fromY} C ${edge.fromX} ${midY}, ${edge.toX} ${midY}, ${edge.toX} ${edge.toY}`}
+                      onMouseEnter={(event) =>
+                        showMapTooltip(
+                          `${parent ? nodeLabel(parent) : "missing parent"} -> ${child ? nodeLabel(child) : "missing child"}`,
+                          event,
+                        )
+                      }
+                      onMouseMove={moveMapTooltip}
+                      onMouseLeave={hideMapTooltip}
                     />
                   );
                 })}
@@ -2813,7 +3120,8 @@ export default function App() {
               {nodeMapLayout.nodes.map((item) => {
                 const node = item.node;
                 const isCurrent = node.id === currentId;
-                const isSelected = node.id === selectedNode.id;
+                const isSelected = selectionSet.has(node.id);
+                const isPrimarySelected = node.id === selectedNode.id;
                 const isOnPath = currentPathIds.has(node.id);
                 const nodeChildren = childrenOf(tree, node.id);
                 return (
@@ -2823,6 +3131,7 @@ export default function App() {
                     className="bw-node-map-node"
                     data-current={isCurrent}
                     data-selected={isSelected}
+                    data-primary={isPrimarySelected}
                     data-path={isOnPath}
                     data-hidden={node.hidden}
                     data-starred={node.starred}
@@ -2841,7 +3150,7 @@ export default function App() {
                         void onSelectNode(node.id);
                         return;
                       }
-                      void onSelectMapNode(node.id);
+                      void onSelectMapNode(node.id, { extend: event.shiftKey });
                     }}
                     onDoubleClick={(event) => {
                       event.preventDefault();
@@ -2854,6 +3163,14 @@ export default function App() {
                       event.stopPropagation();
                       openTreeMenu(node.id, event.clientX, event.clientY);
                     }}
+                    onMouseEnter={(event) =>
+                      showMapTooltip(
+                        `${nodeLabel(node)} · click to select, shift-click to add, double-click to open`,
+                        event,
+                      )
+                    }
+                    onMouseMove={moveMapTooltip}
+                    onMouseLeave={hideMapTooltip}
                     disabled={actionDisabled}
                     title={`Select ${nodeLabel(node)}. Double-click to open in Compose.`}
                   >
@@ -2874,6 +3191,15 @@ export default function App() {
                 );
               })}
             </div>
+            {mapTooltip && (
+              <div
+                className="bw-node-map-tooltip"
+                style={{ left: mapTooltip.x, top: mapTooltip.y }}
+                role="tooltip"
+              >
+                {mapTooltip.text}
+              </div>
+            )}
           </div>
           <aside className="bw-node-map-inspector" aria-label="Selected node">
             <div className="bw-node-map-inspector-head">
@@ -2883,6 +3209,9 @@ export default function App() {
                 {selectedNode.source.replace("_", " ")} ·{" "}
                 {childNodes.length} child{childNodes.length === 1 ? "" : "ren"}
                 {selectedNode.hidden ? " · hidden" : ""}
+                {resolvedSelectionIds.length > 1
+                  ? ` · ${resolvedSelectionIds.length} selected`
+                  : ""}
               </div>
             </div>
             <div className="bw-node-map-starred">
@@ -2902,6 +3231,11 @@ export default function App() {
                       onClick={() =>
                         void onSelectMapNode(node.id, { locate: true })
                       }
+                      onMouseEnter={(event) =>
+                        showMapTooltip(`Jump to ${nodeLabel(node)}.`, event)
+                      }
+                      onMouseMove={moveMapTooltip}
+                      onMouseLeave={hideMapTooltip}
                       disabled={actionDisabled || node.id === selectedNode.id}
                       title={`Jump to ${nodeLabel(node)}`}
                     >
@@ -2923,6 +3257,16 @@ export default function App() {
                 onClick={() =>
                   void onSetNodeStarred(selectedNode.id, !selectedNode.starred)
                 }
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    selectedNode.starred
+                      ? "Remove this node from the starred list."
+                      : "Add this node to the starred list.",
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
                 disabled={actionDisabled}
               >
                 {selectedNode.starred ? "Unstar" : "Star"}
@@ -2933,6 +3277,16 @@ export default function App() {
                 onClick={() =>
                   void onSetNodeHidden(selectedNode.id, !selectedNode.hidden)
                 }
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    selectedNode.hidden
+                      ? "Show this node in normal tree views."
+                      : "Hide this node from normal tree views.",
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
                 disabled={!canHide}
                 title={
                   selectedNode.id === currentId && !selectedNode.hidden
@@ -2950,6 +3304,11 @@ export default function App() {
                 type="button"
                 className="bw-button"
                 onClick={() => void onMergeNodeIntoParent(selectedNode.id)}
+                onMouseEnter={(event) =>
+                  showMapTooltip("Merge the selected node into its parent.", event)
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
                 disabled={!canMergeUp}
                 title={
                   canMergeUp
@@ -2963,6 +3322,11 @@ export default function App() {
                 type="button"
                 className="bw-button"
                 onClick={() => void onMergeNodeWithOnlyChild(selectedNode.id)}
+                onMouseEnter={(event) =>
+                  showMapTooltip("Merge the selected node with its only child.", event)
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
                 disabled={!canMergeDown}
                 title={
                   canMergeDown
@@ -2976,6 +3340,11 @@ export default function App() {
                 type="button"
                 className="bw-button bw-button-danger"
                 onClick={() => void onDeleteMapNode(selectedNode.id)}
+                onMouseEnter={(event) =>
+                  showMapTooltip("Delete the selected node and its descendants.", event)
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
                 disabled={!canDelete}
                 title={
                   canDelete
@@ -2985,9 +3354,77 @@ export default function App() {
               >
                 Delete
               </button>
+              <button
+                type="button"
+                className="bw-button bw-node-map-action-wide"
+                onClick={() => void onMergeMapSelection(resolvedSelectionIds)}
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    canMergeSelection
+                      ? "Merge the shift-selected linear run into one node."
+                      : mergeSelectionHint,
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
+                disabled={!canMergeSelection}
+                title={
+                  canMergeSelection
+                    ? "Merge selected nodes"
+                    : mergeSelectionHint
+                }
+              >
+                Merge selection
+              </button>
             </div>
             <div className="bw-node-map-merge-note">
-              Merge is blocked whenever the upstream node has more than one child.
+              Shift-click nodes to build a selection. Merge is blocked whenever
+              the upstream node has more than one child.
+            </div>
+            <div className="bw-node-map-minimap" aria-label="Node map minimap">
+              <div className="bw-node-map-section-title">
+                <span>Minimap</span>
+              </div>
+              <svg
+                width={minimapWidth}
+                height={minimapHeight}
+                viewBox={`0 0 ${minimapWidth} ${minimapHeight}`}
+                onPointerDown={onNodeMapMinimapPointerDown}
+                onMouseEnter={(event) =>
+                  showMapTooltip("Minimap. Click to jump the viewport.", event)
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
+              >
+                {nodeMapLayout.edges.map((edge) => (
+                  <line
+                    key={`${edge.parentId}-${edge.childId}-mini`}
+                    x1={edge.fromX * minimapScale}
+                    y1={edge.fromY * minimapScale}
+                    x2={edge.toX * minimapScale}
+                    y2={edge.toY * minimapScale}
+                  />
+                ))}
+                {nodeMapLayout.nodes.map((item) => (
+                  <rect
+                    key={`${item.node.id}-mini`}
+                    x={item.x * minimapScale}
+                    y={item.y * minimapScale}
+                    width={Math.max(2, item.width * minimapScale)}
+                    height={Math.max(2, item.height * minimapScale)}
+                    data-current={item.node.id === currentId}
+                    data-selected={selectionSet.has(item.node.id)}
+                  />
+                ))}
+                <rect
+                  className="bw-node-map-minimap-view"
+                  x={viewportRect.x}
+                  y={viewportRect.y}
+                  width={viewportRect.width}
+                  height={viewportRect.height}
+                />
+              </svg>
             </div>
           </aside>
         </div>

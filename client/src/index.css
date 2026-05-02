@@ -895,6 +895,7 @@ textarea:disabled {
 
 .bw-node-map-edge {
   fill: none;
+  pointer-events: stroke;
   stroke: rgba(143, 88, 126, 0.76);
   stroke-width: 2;
   opacity: 0.78;
@@ -942,6 +943,13 @@ textarea:disabled {
 }
 
 .bw-node-map-node[data-selected="true"] {
+  border-color: rgba(28, 25, 23, 0.66);
+  box-shadow:
+    0 0 0 2px rgba(28, 25, 23, 0.06),
+    0 15px 30px rgba(38, 31, 25, 0.1);
+}
+
+.bw-node-map-node[data-primary="true"] {
   border-color: var(--ink);
   box-shadow:
     0 0 0 2px rgba(28, 25, 23, 0.08),
@@ -977,6 +985,62 @@ textarea:disabled {
   line-height: 1.2;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.bw-node-map-minimap {
+  display: flex;
+  width: fit-content;
+  max-width: 100%;
+  flex-direction: column;
+  gap: 0.45rem;
+  border: 1px solid rgba(99, 84, 69, 0.25);
+  border-radius: 7px;
+  background: rgba(255, 253, 247, 0.86);
+  box-shadow: 0 10px 24px rgba(38, 31, 25, 0.08);
+  padding: 0.45rem;
+}
+
+.bw-node-map-minimap svg {
+  display: block;
+  cursor: crosshair;
+}
+
+.bw-node-map-minimap line {
+  stroke: rgba(143, 88, 126, 0.42);
+  stroke-width: 1;
+}
+
+.bw-node-map-minimap rect {
+  fill: rgba(99, 84, 69, 0.22);
+}
+
+.bw-node-map-minimap rect[data-selected="true"] {
+  fill: rgba(28, 25, 23, 0.62);
+}
+
+.bw-node-map-minimap rect[data-current="true"] {
+  fill: var(--state-edge);
+}
+
+.bw-node-map-minimap .bw-node-map-minimap-view {
+  fill: rgba(241, 194, 96, 0.13);
+  stroke: rgba(153, 107, 34, 0.86);
+  stroke-width: 1.5;
+}
+
+.bw-node-map-tooltip {
+  position: fixed;
+  z-index: 80;
+  max-width: 15rem;
+  border: 1px solid rgba(28, 25, 23, 0.16);
+  border-radius: 6px;
+  background: rgba(38, 31, 25, 0.94);
+  color: #fffdf7;
+  padding: 0.42rem 0.55rem;
+  box-shadow: 0 14px 34px rgba(38, 31, 25, 0.22);
+  font-size: 0.72rem;
+  line-height: 1.35;
+  pointer-events: none;
 }
 
 .bw-node-map-inspector {
@@ -1089,6 +1153,10 @@ textarea:disabled {
 
 .bw-node-map-actions .bw-button {
   justify-content: center;
+}
+
+.bw-node-map-actions .bw-node-map-action-wide {
+  grid-column: 1 / -1;
 }
 
 .bw-node-map-actions .bw-button:disabled {
