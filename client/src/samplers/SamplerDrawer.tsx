@@ -41,8 +41,7 @@ function FieldLabel({ field }: { field: SamplerField }) {
       <span>{field.label}</span>
       {field.info && (
         <span className="bw-info-dot" tabIndex={0} aria-label={field.info}>
-          ?
-          <span role="tooltip">{field.info}</span>
+          ?<span role="tooltip">{field.info}</span>
         </span>
       )}
     </span>
@@ -234,10 +233,7 @@ export default function SamplerDrawer({
                 </div>
               )}
             </div>
-            <button
-              onClick={onClose}
-              className="bw-button bw-button-quiet"
-            >
+            <button onClick={onClose} className="bw-button bw-button-quiet">
               Close
             </button>
           </div>
@@ -247,9 +243,7 @@ export default function SamplerDrawer({
               Preset
               <select
                 value={activePresetId ?? ""}
-                onChange={(event) =>
-                  onSelectPreset(event.target.value || null)
-                }
+                onChange={(event) => onSelectPreset(event.target.value || null)}
                 disabled={busy || !projectOpen}
                 className="bw-select flex-1 text-xs"
               >
@@ -288,9 +282,7 @@ export default function SamplerDrawer({
                 onClick={() => {
                   if (!activePreset) return;
                   if (
-                    confirm(
-                      `Delete preset "${activePreset.name}"? This is permanent.`,
-                    )
+                    confirm(`Delete preset "${activePreset.name}"? This is permanent.`)
                   ) {
                     onDeletePreset(activePreset.id);
                   }

@@ -63,12 +63,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
 
   it("test_edit_inside_ancestor: splits the ancestor when LCP falls strictly inside a node", () => {
     const root = makeNode("root", null, "");
-    const A = makeNode(
-      "A",
-      "root",
-      "The cat sat on the mat and purred.",
-      "generated",
-    );
+    const A = makeNode("A", "root", "The cat sat on the mat and purred.", "generated");
     const tree = makeTree([root, A]);
     const buffer = "The cat sat on the chair, then yawned.";
 
@@ -120,9 +115,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     expect(bSecond.text).toBe("bb");
     expect(bSecond.source).toBe("generated");
 
-    const cReparented = Object.values(out.tree.nodes).find(
-      (n) => n.text === "ccc",
-    );
+    const cReparented = Object.values(out.tree.nodes).find((n) => n.text === "ccc");
     expect(cReparented?.parentId).toBe(bSecond.id);
 
     // Original B is gone; its split replaces it
@@ -158,13 +151,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const out = reshape(tree, "B", buffer, { newId: nid, now });
 
     expect(out.currentId).toBe("H2");
-    expect(Object.keys(out.tree.nodes).sort()).toEqual([
-      "A",
-      "B",
-      "H1",
-      "H2",
-      "root",
-    ]);
+    expect(Object.keys(out.tree.nodes).sort()).toEqual(["A", "B", "H1", "H2", "root"]);
     expect(out.tree.nodes["H1"].hidden).toBe(false);
     expect(out.tree.nodes["H2"].hidden).toBe(false);
     expect(concatPathText(pathFromRoot(out.tree, out.currentId))).toBe(buffer);

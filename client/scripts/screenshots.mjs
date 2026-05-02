@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-/* eslint-disable no-console */
 // UI iteration screenshot harness.
 //
 // Assumes `just dev` is already running (FastAPI on :8000, Vite on :5173).
@@ -211,9 +210,14 @@ async function main() {
     await snap(page, "06-branch-picker-ready");
 
     console.log("branch kept");
-    const firstKeep = page.locator(".bw-branch-actions button", { hasText: "Keep" }).first();
+    const firstKeep = page
+      .locator(".bw-branch-actions button", { hasText: "Keep" })
+      .first();
     await firstKeep.click();
-    await page.locator(".bw-branch-actions button", { hasText: "Kept" }).first().waitFor();
+    await page
+      .locator(".bw-branch-actions button", { hasText: "Kept" })
+      .first()
+      .waitFor();
     await page.waitForTimeout(150);
     await snap(page, "07-branch-kept");
 
@@ -221,15 +225,12 @@ async function main() {
     const beforeUse = await editorText(page);
     await page.locator(".bw-branch-actions button", { hasText: "Use" }).first().click();
     await page.waitForSelector(".bw-branch-strip");
-    await page.waitForFunction(
-      (prior) => {
-        const text = [...document.querySelectorAll(".cm-line")]
-          .map((line) => line.textContent ?? "")
-          .join("\n");
-        return text.length > prior.length;
-      },
-      beforeUse,
-    );
+    await page.waitForFunction((prior) => {
+      const text = [...document.querySelectorAll(".cm-line")]
+        .map((line) => line.textContent ?? "")
+        .join("\n");
+      return text.length > prior.length;
+    }, beforeUse);
     await snap(page, "08-branch-used-strip");
 
     console.log("tree collapsed");

@@ -117,10 +117,7 @@ export function reshape(
           const priorText =
             parentOfOrig !== null
               ? concatPathText(
-                  pathFromRoot(
-                    { nodes: nodesCopy, rootId: tree.rootId },
-                    parentOfOrig,
-                  ),
+                  pathFromRoot({ nodes: nodesCopy, rootId: tree.rootId }, parentOfOrig),
                 )
               : "";
 
@@ -183,11 +180,7 @@ export function reshape(
   }
 
   // Reattach if an existing descendant path already has the divergent text.
-  const existingPath = findDescendantPathMatchingText(
-    nodesCopy,
-    anchorId,
-    divergent,
-  );
+  const existingPath = findDescendantPathMatchingText(nodesCopy, anchorId, divergent);
   if (existingPath) {
     for (const node of existingPath) {
       nodesCopy[node.id] = { ...node, hidden: false };

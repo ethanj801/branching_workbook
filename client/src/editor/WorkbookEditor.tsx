@@ -11,12 +11,7 @@ import {
   type KeyBinding,
   type ViewUpdate,
 } from "@codemirror/view";
-import {
-  forwardRef,
-  useEffect,
-  useImperativeHandle,
-  useRef,
-} from "react";
+import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 
 export type EditorSelection = {
   start: number;
@@ -219,9 +214,7 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
               disabled ? disabledTheme : [],
             ]),
             keymapCompartment.current.of(
-              keyBindings.length > 0
-                ? Prec.highest(keymap.of([...keyBindings]))
-                : [],
+              keyBindings.length > 0 ? Prec.highest(keymap.of([...keyBindings])) : [],
             ),
             ghostCompartment.current.of(ghostExtension(ghostText)),
             EditorView.domEventHandlers({
@@ -288,9 +281,7 @@ const WorkbookEditor = forwardRef<WorkbookEditorHandle, WorkbookEditorProps>(
     useEffect(() => {
       viewRef.current?.dispatch({
         effects: keymapCompartment.current.reconfigure(
-          keyBindings.length > 0
-            ? Prec.highest(keymap.of([...keyBindings]))
-            : [],
+          keyBindings.length > 0 ? Prec.highest(keymap.of([...keyBindings])) : [],
         ),
       });
     }, [keyBindings]);

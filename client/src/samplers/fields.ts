@@ -53,11 +53,7 @@ export type TextField = {
   info?: string;
 };
 
-export type SamplerField =
-  | SliderField
-  | NumberField
-  | CheckboxField
-  | TextField;
+export type SamplerField = SliderField | NumberField | CheckboxField | TextField;
 
 export type SamplerSection = {
   id: string;
@@ -366,13 +362,9 @@ export const SAMPLER_SECTIONS: SamplerSection[] = [
 ];
 
 /** Flat list of every field (for quick lookups by key). */
-export const SAMPLER_FIELDS: SamplerField[] = SAMPLER_SECTIONS.flatMap(
-  (s) => s.fields,
-);
+export const SAMPLER_FIELDS: SamplerField[] = SAMPLER_SECTIONS.flatMap((s) => s.fields);
 
-const KNOWN_KEYS: Set<keyof SamplerBody> = new Set(
-  SAMPLER_FIELDS.map((f) => f.key),
-);
+const KNOWN_KEYS: Set<keyof SamplerBody> = new Set(SAMPLER_FIELDS.map((f) => f.key));
 
 /** Neutral body — what "Neutralize Samplers" resets to. */
 export function neutralBody(): SamplerBody {

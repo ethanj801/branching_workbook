@@ -45,8 +45,10 @@ test-client:
 # Run both test suites
 test: test-server test-client
 
-# Run lint + tests + client build
+# Run lint + format checks + tests + client build
 check: lint test
+    cd client && npm run lint --silent
+    cd client && npm run format:check --silent
     cd client && npm run build --silent
 
 # Capture UI screenshots for visual iteration

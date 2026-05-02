@@ -116,18 +116,11 @@ export function buildNodeMapLayout(tree: Tree): NodeMapLayout {
       spanRight = nextX + size.width;
     } else {
       const childSpans = childNodes.map((child) => place(child.id, depth + 1));
-      centerX =
-        (childSpans[0].center + childSpans[childSpans.length - 1].center) / 2;
+      centerX = (childSpans[0].center + childSpans[childSpans.length - 1].center) / 2;
       const nodeLeft = centerX - size.width / 2;
       const nodeRight = centerX + size.width / 2;
-      spanLeft = Math.min(
-        nodeLeft,
-        ...childSpans.map((span) => span.left),
-      );
-      spanRight = Math.max(
-        nodeRight,
-        ...childSpans.map((span) => span.right),
-      );
+      spanLeft = Math.min(nodeLeft, ...childSpans.map((span) => span.left));
+      spanRight = Math.max(nodeRight, ...childSpans.map((span) => span.right));
 
       if (spanLeft < subtreeStart) {
         const shift = subtreeStart - spanLeft;

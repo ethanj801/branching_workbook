@@ -459,12 +459,10 @@ export default function App() {
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
   const [candidateSamplerSnapshot, setCandidateSamplerSnapshot] =
     useState<SamplerBody | null>(null);
-  const [savedCandidateIds, setSavedCandidateIds] = useState<
-    Record<number, string>
-  >({});
-  const [branchCountText, setBranchCountText] = useState(
-    String(DEFAULT_BRANCH_COUNT),
+  const [savedCandidateIds, setSavedCandidateIds] = useState<Record<number, string>>(
+    {},
   );
+  const [branchCountText, setBranchCountText] = useState(String(DEFAULT_BRANCH_COUNT));
   const [branchLimitHint, setBranchLimitHint] = useState(false);
   const [branchCountError, setBranchCountError] = useState<string | null>(null);
   const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
@@ -476,16 +474,12 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
-  const [currentTabbyModel, setCurrentTabbyModel] = useState<TabbyModel | null>(
-    null,
-  );
+  const [currentTabbyModel, setCurrentTabbyModel] = useState<TabbyModel | null>(null);
   const [availableModels, setAvailableModels] = useState<TabbyModel[]>([]);
   const [loadingModels, setLoadingModels] = useState(true);
   const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const [modelBusy, setModelBusy] = useState(false);
-  const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(
-    null,
-  );
+  const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(null);
   const [selectedModelName, setSelectedModelName] = useState("");
   const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(DEFAULT_LOAD_MAX_SEQ_LEN);
   const [loadCacheMode, setLoadCacheMode] = useState("Q6");
@@ -505,14 +499,9 @@ export default function App() {
   const [samplerBusy, setSamplerBusy] = useState(false);
   const [samplerOpen, setSamplerOpen] = useState(false);
   const [treeMenu, setTreeMenu] = useState<TreeContextMenu | null>(null);
-  const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>(
-    {},
-  );
-  const [expandedChains, setExpandedChains] = useState<Record<string, boolean>>(
-    {},
-  );
-  const [branchViewMode, setBranchViewMode] =
-    useState<BranchViewMode>("grid");
+  const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>({});
+  const [expandedChains, setExpandedChains] = useState<Record<string, boolean>>({});
+  const [branchViewMode, setBranchViewMode] = useState<BranchViewMode>("grid");
   const [visibleCandidateIndex, setVisibleCandidateIndex] = useState(0);
   const [composeDisplayMode, setComposeDisplayMode] =
     useState<ComposeDisplayMode>("cards");
@@ -520,17 +509,11 @@ export default function App() {
   const [autocompleteState, setAutocompleteState] = useState<AutocompleteState>({
     phase: "idle",
   });
-  const [autocompleteStatus, setAutocompleteStatus] = useState<string | null>(
-    null,
-  );
-  const [pickedCandidateIndex, setPickedCandidateIndex] = useState<number | null>(
-    null,
-  );
+  const [autocompleteStatus, setAutocompleteStatus] = useState<string | null>(null);
+  const [pickedCandidateIndex, setPickedCandidateIndex] = useState<number | null>(null);
   const [usedCandidateRange, setUsedCandidateRange] =
     useState<UsedCandidateRange | null>(null);
-  const [branchPaneRatio, setBranchPaneRatio] = useState(
-    SINGLE_ROW_BRANCH_PANE_RATIO,
-  );
+  const [branchPaneRatio, setBranchPaneRatio] = useState(SINGLE_ROW_BRANCH_PANE_RATIO);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
@@ -562,20 +545,16 @@ export default function App() {
       : `max ${maxBranches} with this model`;
   const autocompleteSuggestion =
     autocompleteState.phase === "showing"
-      ? autocompleteState.suggestions[autocompleteState.visibleIdx] ?? null
+      ? (autocompleteState.suggestions[autocompleteState.visibleIdx] ?? null)
       : null;
-  const contextPct =
-    tokenCount !== null && contextMax ? tokenCount / contextMax : null;
+  const contextPct = tokenCount !== null && contextMax ? tokenCount / contextMax : null;
   const contextWarn = contextPct !== null && contextPct >= 0.9;
   const modelStatusLabel = streaming
     ? "Model loaded; generation streaming"
     : currentTabbyModel
       ? "Model loaded and idle"
       : "No model loaded";
-  const nodeMapLayout = useMemo(
-    () => (tree ? buildNodeMapLayout(tree) : null),
-    [tree],
-  );
+  const nodeMapLayout = useMemo(() => (tree ? buildNodeMapLayout(tree) : null), [tree]);
   const tokenMeterLabel =
     tokenCount === null || contextMax === null
       ? "Current draft token count and loaded context length are unavailable"
@@ -653,15 +632,12 @@ export default function App() {
   }, []);
 
   const applyActivePreset = useCallback(
-    (
-      presetsList: SamplerPreset[],
-      nextActiveId: string | null,
-    ) => {
+    (presetsList: SamplerPreset[], nextActiveId: string | null) => {
       setActivePresetIdState(nextActiveId);
       const picked =
         nextActiveId === null
           ? null
-          : presetsList.find((p) => p.id === nextActiveId) ?? null;
+          : (presetsList.find((p) => p.id === nextActiveId) ?? null);
       setDraftBody(picked ? { ...picked.body } : neutralBody());
     },
     [],
@@ -670,10 +646,7 @@ export default function App() {
   const refreshModels = useCallback(async () => {
     setLoadingModels(true);
     try {
-      const [current, models] = await Promise.all([
-        currentModel(),
-        listModels(),
-      ]);
+      const [current, models] = await Promise.all([currentModel(), listModels()]);
       setCurrentTabbyModel(current);
       setAvailableModels(models.data);
       setSelectedModelName((existing) => {
@@ -732,14 +705,9 @@ export default function App() {
 
   const loadProject = useCallback(
     async (info: ProjectInfo) => {
-      const [nodes, settings] = await Promise.all([
-        listNodes(),
-        getProjectSettings(),
-      ]);
+      const [nodes, settings] = await Promise.all([listNodes(), getProjectSettings()]);
       const loaded = loadedTreeFromModels(nodes);
-      const loadedBuffer = concatPathText(
-        pathFromRoot(loaded.tree, loaded.currentId),
-      );
+      const loadedBuffer = concatPathText(pathFromRoot(loaded.tree, loaded.currentId));
       setProject(info);
       setTree(loaded.tree);
       setCurrentId(loaded.currentId);
@@ -855,10 +823,7 @@ export default function App() {
     }
 
     const tokensPerSuggestion = clampNumber(
-      parsePositiveInt(
-        tokensPerSuggestionText,
-        DEFAULT_TOKENS_PER_SUGGESTION,
-      ),
+      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
       1,
       8,
     );
@@ -871,14 +836,8 @@ export default function App() {
       setAutocompleteState({ phase: "thinking" });
       setAutocompleteStatus(null);
 
-      const partials = Array.from(
-        { length: AUTOCOMPLETE_POOL_TARGET },
-        () => "",
-      );
-      const slotsByIndex = Array.from(
-        { length: AUTOCOMPLETE_POOL_TARGET },
-        () => -1,
-      );
+      const partials = Array.from({ length: AUTOCOMPLETE_POOL_TARGET }, () => "");
+      const slotsByIndex = Array.from({ length: AUTOCOMPLETE_POOL_TARGET }, () => -1);
 
       void streamCompletion(
         {
@@ -988,11 +947,7 @@ export default function App() {
           now: nowEpoch,
           source,
         });
-        const batch = mutationBatchFromTrees(
-          tree,
-          reshaped.tree,
-          reshaped.currentId,
-        );
+        const batch = mutationBatchFromTrees(tree, reshaped.tree, reshaped.currentId);
 
         await mutateNodes(batch);
         setTree(reshaped.tree);
@@ -1075,16 +1030,16 @@ export default function App() {
     const viewport = mapViewportRef.current;
     const targetId =
       mapSelectedId && tree?.nodes[mapSelectedId] ? mapSelectedId : currentId;
-    const item = nodeMapLayout.nodes.find((candidate) => candidate.node.id === targetId);
+    const item = nodeMapLayout.nodes.find(
+      (candidate) => candidate.node.id === targetId,
+    );
     if (!viewport || !item) return;
     const scale = mapScale;
 
     setMapPan(
       clampNodeMapPan(
         {
-          x: Math.round(
-            viewport.clientWidth / 2 - (item.x + item.width / 2) * scale,
-          ),
+          x: Math.round(viewport.clientWidth / 2 - (item.x + item.width / 2) * scale),
           y: Math.round(
             Math.min(
               96,
@@ -1097,7 +1052,15 @@ export default function App() {
         scale,
       ),
     );
-  }, [currentId, mapLocateRequest, mapScale, mapSelectedId, nodeMapLayout, tree, workspaceMode]);
+  }, [
+    currentId,
+    mapLocateRequest,
+    mapScale,
+    mapSelectedId,
+    nodeMapLayout,
+    tree,
+    workspaceMode,
+  ]);
 
   useEffect(() => {
     if (!tree || !currentId) return;
@@ -1148,9 +1111,16 @@ export default function App() {
     if (!viewport) return;
 
     const availableWidth = Math.max(1, viewport.clientWidth - NODE_MAP_FIT_PADDING * 2);
-    const availableHeight = Math.max(1, viewport.clientHeight - NODE_MAP_FIT_PADDING * 2);
+    const availableHeight = Math.max(
+      1,
+      viewport.clientHeight - NODE_MAP_FIT_PADDING * 2,
+    );
     const scale = clampNodeMapScale(
-      Math.min(1, availableWidth / nodeMapLayout.width, availableHeight / nodeMapLayout.height),
+      Math.min(
+        1,
+        availableWidth / nodeMapLayout.width,
+        availableHeight / nodeMapLayout.height,
+      ),
     );
 
     setMapScale(scale);
@@ -1590,10 +1560,7 @@ export default function App() {
 
   function normalizeTokensPerSuggestion(): number {
     const normalized = clampNumber(
-      parsePositiveInt(
-        tokensPerSuggestionText,
-        DEFAULT_TOKENS_PER_SUGGESTION,
-      ),
+      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
       1,
       8,
     );
@@ -1875,8 +1842,7 @@ export default function App() {
     }
   }
 
-  const currentPath =
-    tree && currentId ? pathFromRoot(tree, currentId) : [];
+  const currentPath = tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
   const dirtyBuffer =
@@ -1936,7 +1902,7 @@ export default function App() {
     if (query.length === 0) return null;
     return new Set(
       Object.values(tree.nodes)
-      .filter((node) => nodeLabel(node).toLowerCase().includes(query))
+        .filter((node) => nodeLabel(node).toLowerCase().includes(query))
         .map((node) => node.id),
     );
   }, [tree, treeSearch]);
@@ -1975,19 +1941,16 @@ export default function App() {
   const activeHiddenByFilters =
     tree !== null &&
     currentId !== null &&
-    ((starredOnly &&
-      starredLineageIds !== null &&
-      !starredLineageIds.has(currentId)) ||
+    ((starredOnly && starredLineageIds !== null && !starredLineageIds.has(currentId)) ||
       (searchLineageIds !== null && !searchLineageIds.has(currentId)));
   const searchHasNoMatches = searchMatchCount === 0;
-  const treeFilterNote =
-    searchHasNoMatches
-      ? "No node names match this search. Showing your current path for context."
-      : starredOnly && !hasStarredNodes
-        ? "No starred nodes yet. Star a node to use this filter."
-        : activeHiddenByFilters
-          ? "Current path is pinned because filters would otherwise hide it."
-          : null;
+  const treeFilterNote = searchHasNoMatches
+    ? "No node names match this search. Showing your current path for context."
+    : starredOnly && !hasStarredNodes
+      ? "No starred nodes yet. Star a node to use this filter."
+      : activeHiddenByFilters
+        ? "Current path is pinned because filters would otherwise hide it."
+        : null;
   const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
   const showInlineCandidateControls =
     workspaceMode === "compose" &&
@@ -2016,10 +1979,7 @@ export default function App() {
       {
         key: "Escape",
         run: () => {
-          if (
-            workspaceMode === "autocomplete" &&
-            autocompleteState.phase !== "idle"
-          ) {
+          if (workspaceMode === "autocomplete" && autocompleteState.phase !== "idle") {
             clearAutocomplete();
             return true;
           }
@@ -2261,10 +2221,7 @@ export default function App() {
     };
   }
 
-  function buildMergedSelectionTree(
-    baseTree: Tree,
-    orderedIds: string[],
-  ): Tree | null {
+  function buildMergedSelectionTree(baseTree: Tree, orderedIds: string[]): Tree | null {
     const analysis = analyzeNodeMapMergeSelection(baseTree, orderedIds);
     if (!analysis.ok) return null;
 
@@ -2343,10 +2300,7 @@ export default function App() {
     const committed = await commitBuffer();
     if (!committed) return;
 
-    const analysis = analyzeNodeMapMergeSelection(
-      committed.tree,
-      selectedIdsToMerge,
-    );
+    const analysis = analyzeNodeMapMergeSelection(committed.tree, selectedIdsToMerge);
     if (!analysis.ok) {
       setError(analysis.reason);
       return;
@@ -2501,7 +2455,14 @@ export default function App() {
                   transition: "transform 120ms ease",
                 }}
               >
-                <path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                <path
+                  d="M2 3.5 L5 6.5 L8 3.5"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
               </svg>
             </button>
           ) : (
@@ -2588,7 +2549,14 @@ export default function App() {
                 transition: "transform 120ms ease",
               }}
             >
-              <path d="M2 3.5 L5 6.5 L8 3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+              <path
+                d="M2 3.5 L5 6.5 L8 3.5"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
             </svg>
           </button>
           <span className="bw-tree-star bw-tree-star-spacer" aria-hidden="true" />
@@ -2606,17 +2574,19 @@ export default function App() {
           </button>
         </div>
         {expanded
-          ? chain.nodes.map((node, index) =>
-              renderTreeNode(node.id, depth + index, {
-                key: `chain-${key}-${node.id}`,
-                renderChildren: false,
-                hideCaret: true,
-              }),
-            ).concat(
-              chain.successor
-                ? [renderTreeEntry(chain.successor.id, depth + chain.nodes.length)]
-                : [],
-            )
+          ? chain.nodes
+              .map((node, index) =>
+                renderTreeNode(node.id, depth + index, {
+                  key: `chain-${key}-${node.id}`,
+                  renderChildren: false,
+                  hideCaret: true,
+                }),
+              )
+              .concat(
+                chain.successor
+                  ? [renderTreeEntry(chain.successor.id, depth + chain.nodes.length)]
+                  : [],
+              )
           : chain.successor
             ? renderTreeEntry(chain.successor.id, depth)
             : null}
@@ -2680,10 +2650,7 @@ export default function App() {
     setMapDragging(false);
   }
 
-  function zoomNodeMap(
-    factor: number,
-    anchor?: { x: number; y: number },
-  ) {
+  function zoomNodeMap(factor: number, anchor?: { x: number; y: number }) {
     if (!nodeMapLayout) return;
     const viewport = mapViewportRef.current;
     if (!viewport) return;
@@ -3065,8 +3032,8 @@ export default function App() {
               <div className="bw-kicker">Selected</div>
               <div className="bw-node-map-current">{nodeLabel(selectedNode)}</div>
               <div className="bw-node-map-current-meta">
-                {selectedNode.source.replace("_", " ")} ·{" "}
-                {childNodes.length} child{childNodes.length === 1 ? "" : "ren"}
+                {selectedNode.source.replace("_", " ")} · {childNodes.length} child
+                {childNodes.length === 1 ? "" : "ren"}
                 {selectedNode.hidden ? " · hidden" : ""}
                 {resolvedSelectionIds.length > 1
                   ? ` · ${resolvedSelectionIds.length} selected`
@@ -3087,9 +3054,7 @@ export default function App() {
                       className="bw-node-map-starred-item"
                       data-current={node.id === selectedNode.id}
                       data-hidden={node.hidden}
-                      onClick={() =>
-                        void onSelectMapNode(node.id, { locate: true })
-                      }
+                      onClick={() => void onSelectMapNode(node.id, { locate: true })}
                       onMouseEnter={(event) =>
                         showMapTooltip(`Jump to ${nodeLabel(node)}.`, event)
                       }
@@ -3228,18 +3193,14 @@ export default function App() {
                 onMouseMove={moveMapTooltip}
                 onMouseLeave={hideMapTooltip}
                 disabled={!canMergeSelection}
-                title={
-                  canMergeSelection
-                    ? "Merge selected nodes"
-                    : mergeSelectionHint
-                }
+                title={canMergeSelection ? "Merge selected nodes" : mergeSelectionHint}
               >
                 Merge selection
               </button>
             </div>
             <div className="bw-node-map-merge-note">
-              Shift-click nodes to build a selection. Merge is blocked whenever
-              the upstream node has more than one child.
+              Shift-click nodes to build a selection. Merge is blocked whenever the
+              upstream node has more than one child.
             </div>
             <div className="bw-node-map-minimap" aria-label="Node map minimap">
               <div className="bw-node-map-section-title">
@@ -3329,7 +3290,9 @@ export default function App() {
                 {contextMax === null ? "unknown" : contextMax.toLocaleString()}
                 {" tokens"}
               </span>
-              <span className="bw-status-sep" aria-hidden="true">·</span>
+              <span className="bw-status-sep" aria-hidden="true">
+                ·
+              </span>
               <button
                 type="button"
                 className="bw-link-button"
@@ -3365,8 +3328,7 @@ export default function App() {
           >
             <div className="bw-confirm-title">Discard unsaved changes?</div>
             <p>
-              The current buffer has edits that have not been saved into the
-              workbook.
+              The current buffer has edits that have not been saved into the workbook.
             </p>
             <div className="bw-confirm-actions">
               <button
@@ -3439,8 +3401,7 @@ export default function App() {
               saving ||
               streaming ||
               tree.nodes[treeMenu.nodeId]?.parentId === null ||
-              (treeMenu.nodeId === currentId &&
-                !tree.nodes[treeMenu.nodeId]?.hidden)
+              (treeMenu.nodeId === currentId && !tree.nodes[treeMenu.nodeId]?.hidden)
             }
             title={
               treeMenu.nodeId === currentId && !tree.nodes[treeMenu.nodeId]?.hidden
@@ -3542,7 +3503,9 @@ export default function App() {
                           min={256}
                           step={256}
                           value={loadMaxSeqLen}
-                          onChange={(event) => setLoadMaxSeqLen(Number(event.target.value))}
+                          onChange={(event) =>
+                            setLoadMaxSeqLen(Number(event.target.value))
+                          }
                           disabled={modelBusy}
                           className="bw-input w-32"
                           title="max_seq_len"
@@ -3688,9 +3651,7 @@ export default function App() {
                     <input
                       type="checkbox"
                       checked={starredOnly}
-                      onChange={(event) =>
-                        setStarredOnly(event.target.checked)
-                      }
+                      onChange={(event) => setStarredOnly(event.target.checked)}
                     />
                     <span>Only starred paths</span>
                   </label>
@@ -3837,220 +3798,223 @@ export default function App() {
                 branchPickerOpen &&
                 branchViewMode === "grid" &&
                 composeDisplayMode === "cards" && (
-                <section
-                  className="bw-branch-comparison"
-                  style={{ flexBasis: `${branchPaneRatio * 100}%` }}
-                >
-                  <div className="bw-branch-comparison-head">
-                    <div>
-                      <div className="bw-kicker">Branches</div>
-                      <div className="bw-branch-context">
-                        {candidates.length} candidate
-                        {candidates.length === 1 ? "" : "s"}
-                        {streaming ? " generating" : " ready"}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={clearBranchPicker}
-                      disabled={streaming || saving}
-                      className="bw-button bw-branch-clear"
-                    >
-                      Clear
-                    </button>
-                  </div>
-                  <div
-                    className="bw-branch-grid"
-                    data-balanced={branchColumns !== null}
-                    style={
-                      branchColumns === null
-                        ? undefined
-                        : ({
-                            "--branch-grid-tracks": branchColumns * 2,
-                          } as CSSProperties)
-                    }
+                  <section
+                    className="bw-branch-comparison"
+                    style={{ flexBasis: `${branchPaneRatio * 100}%` }}
                   >
-                    {candidates.map((candidate, index) => {
-                      const hasText = candidate.text.length > 0;
-                      const isStreaming = streaming && !candidate.done;
-                      const kept = !!savedCandidateIds[index];
-                      const picked = pickedCandidateIndex === index;
-                      const centeredStart =
-                        firstCenteredBranchIndex === index && centeredBranchStart
-                          ? centeredBranchStart
-                          : null;
-                      return (
-                        <section
-                          key={index}
-                          className="bw-branch-card"
-                          data-empty={!hasText}
-                          data-streaming={isStreaming}
-                          data-picked={picked}
-                          style={
-                            centeredStart === null
-                              ? undefined
-                              : { gridColumn: `${centeredStart} / span 2` }
-                          }
-                        >
-                          <div className="bw-branch-card-head">
-                            <div className="bw-branch-card-title">
-                              <span>Branch {index + 1}</span>
-                              {picked && (
-                                <span className="bw-branch-used-badge">Used</span>
-                              )}
-                              {isStreaming && (
-                                <span className="bw-branch-pulse" aria-label="Streaming" />
+                    <div className="bw-branch-comparison-head">
+                      <div>
+                        <div className="bw-kicker">Branches</div>
+                        <div className="bw-branch-context">
+                          {candidates.length} candidate
+                          {candidates.length === 1 ? "" : "s"}
+                          {streaming ? " generating" : " ready"}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={clearBranchPicker}
+                        disabled={streaming || saving}
+                        className="bw-button bw-branch-clear"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                    <div
+                      className="bw-branch-grid"
+                      data-balanced={branchColumns !== null}
+                      style={
+                        branchColumns === null
+                          ? undefined
+                          : ({
+                              "--branch-grid-tracks": branchColumns * 2,
+                            } as CSSProperties)
+                      }
+                    >
+                      {candidates.map((candidate, index) => {
+                        const hasText = candidate.text.length > 0;
+                        const isStreaming = streaming && !candidate.done;
+                        const kept = !!savedCandidateIds[index];
+                        const picked = pickedCandidateIndex === index;
+                        const centeredStart =
+                          firstCenteredBranchIndex === index && centeredBranchStart
+                            ? centeredBranchStart
+                            : null;
+                        return (
+                          <section
+                            key={index}
+                            className="bw-branch-card"
+                            data-empty={!hasText}
+                            data-streaming={isStreaming}
+                            data-picked={picked}
+                            style={
+                              centeredStart === null
+                                ? undefined
+                                : { gridColumn: `${centeredStart} / span 2` }
+                            }
+                          >
+                            <div className="bw-branch-card-head">
+                              <div className="bw-branch-card-title">
+                                <span>Branch {index + 1}</span>
+                                {picked && (
+                                  <span className="bw-branch-used-badge">Used</span>
+                                )}
+                                {isStreaming && (
+                                  <span
+                                    className="bw-branch-pulse"
+                                    aria-label="Streaming"
+                                  />
+                                )}
+                              </div>
+                              {hasText && (
+                                <span className="bw-branch-token-count">
+                                  {approxTokenCount(candidate.text)} tok
+                                </span>
                               )}
                             </div>
-                            {hasText && (
-                              <span className="bw-branch-token-count">
-                                {approxTokenCount(candidate.text)} tok
-                              </span>
-                            )}
-                          </div>
-                          <div className="bw-branch-text">
-                            {hasText ? (
-                              displayBranchText(candidate.text)
-                            ) : (
-                              <span className="bw-empty">
-                                {streaming ? "Waiting for tokens..." : "No text."}
-                              </span>
-                            )}
-                          </div>
-                          <div className="bw-branch-actions">
-                            <button
-                              type="button"
-                              onClick={() => onUseCandidate(index)}
-                              disabled={!hasText || streaming || saving || picked}
-                              className={`bw-button ${
-                                picked ? "bw-button-used" : "bw-button-primary"
-                              }`}
-                            >
-                              {picked ? "Used" : "Use"}
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => void onKeepCandidate(index)}
-                              disabled={!hasText || streaming || saving || kept}
-                              className="bw-button"
-                            >
-                              {kept ? "Kept" : "Keep"}
-                            </button>
-                          </div>
-                        </section>
-                      );
-                    })}
-                  </div>
-                </section>
-              )}
+                            <div className="bw-branch-text">
+                              {hasText ? (
+                                displayBranchText(candidate.text)
+                              ) : (
+                                <span className="bw-empty">
+                                  {streaming ? "Waiting for tokens..." : "No text."}
+                                </span>
+                              )}
+                            </div>
+                            <div className="bw-branch-actions">
+                              <button
+                                type="button"
+                                onClick={() => onUseCandidate(index)}
+                                disabled={!hasText || streaming || saving || picked}
+                                className={`bw-button ${
+                                  picked ? "bw-button-used" : "bw-button-primary"
+                                }`}
+                              >
+                                {picked ? "Used" : "Use"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void onKeepCandidate(index)}
+                                disabled={!hasText || streaming || saving || kept}
+                                className="bw-button"
+                              >
+                                {kept ? "Kept" : "Keep"}
+                              </button>
+                            </div>
+                          </section>
+                        );
+                      })}
+                    </div>
+                  </section>
+                )}
 
               {workspaceMode === "compose" &&
                 branchPickerOpen &&
                 branchViewMode === "grid" &&
                 composeDisplayMode === "cards" && (
-                <div
-                  className="bw-row-splitter"
-                  role="separator"
-                  aria-orientation="horizontal"
-                  aria-label="Resize branch comparison"
-                  onMouseDown={startRowDrag}
-                />
-              )}
+                  <div
+                    className="bw-row-splitter"
+                    role="separator"
+                    aria-orientation="horizontal"
+                    aria-label="Resize branch comparison"
+                    onMouseDown={startRowDrag}
+                  />
+                )}
 
               {workspaceMode === "compose" &&
                 branchPickerOpen &&
                 branchViewMode === "strip" && (
-                <section className="bw-branch-strip">
-                  <div className="bw-branch-strip-label">
-                    <span className="bw-kicker">Last generation</span>
-                    <span>{candidates.length} candidates</span>
-                  </div>
-                  <div className="bw-branch-strip-cards">
-                    {candidates.map((candidate, index) => {
-                      const picked = pickedCandidateIndex === index;
-                      const kept = !!savedCandidateIds[index];
-                      const hasText = candidate.text.length > 0;
-                      return (
-                        <div
-                          key={index}
-                          className="bw-branch-mini"
-                          data-picked={picked}
-                        >
-                          <button
-                            type="button"
-                            className="bw-branch-mini-main"
-                            onClick={() => setBranchViewMode("grid")}
-                            title="Expand last generation"
+                  <section className="bw-branch-strip">
+                    <div className="bw-branch-strip-label">
+                      <span className="bw-kicker">Last generation</span>
+                      <span>{candidates.length} candidates</span>
+                    </div>
+                    <div className="bw-branch-strip-cards">
+                      {candidates.map((candidate, index) => {
+                        const picked = pickedCandidateIndex === index;
+                        const kept = !!savedCandidateIds[index];
+                        const hasText = candidate.text.length > 0;
+                        return (
+                          <div
+                            key={index}
+                            className="bw-branch-mini"
+                            data-picked={picked}
                           >
-                            <span className="bw-branch-mini-label">
-                              {picked ? "✓ " : ""}
-                              Branch {index + 1}
-                            </span>
-                            <span className="bw-branch-mini-preview">
-                              {hasText ? previewText(candidate.text) : "No text."}
-                            </span>
-                          </button>
-                          <div className="bw-branch-mini-actions">
                             <button
                               type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                void onKeepCandidate(index);
-                              }}
-                              disabled={!hasText || saving || kept}
-                              title={kept ? "Already kept" : "Keep branch"}
+                              className="bw-branch-mini-main"
+                              onClick={() => setBranchViewMode("grid")}
+                              title="Expand last generation"
                             >
-                              {kept ? "Kept" : "Keep"}
+                              <span className="bw-branch-mini-label">
+                                {picked ? "✓ " : ""}
+                                Branch {index + 1}
+                              </span>
+                              <span className="bw-branch-mini-preview">
+                                {hasText ? previewText(candidate.text) : "No text."}
+                              </span>
                             </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                onUseCandidate(index);
-                              }}
-                              disabled={!hasText || saving || picked}
-                              title={picked ? "Already used" : "Use instead"}
-                            >
-                              Use instead
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setBranchViewMode("grid");
-                              }}
-                              title="Expand branches"
-                            >
-                              Expand
-                            </button>
-                            <button
-                              type="button"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                dropCandidate(index);
-                              }}
-                              disabled={saving || streaming}
-                              aria-label={`Drop branch ${index + 1}`}
-                              title="Drop this branch from the strip"
-                            >
-                              Drop
-                            </button>
+                            <div className="bw-branch-mini-actions">
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void onKeepCandidate(index);
+                                }}
+                                disabled={!hasText || saving || kept}
+                                title={kept ? "Already kept" : "Keep branch"}
+                              >
+                                {kept ? "Kept" : "Keep"}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onUseCandidate(index);
+                                }}
+                                disabled={!hasText || saving || picked}
+                                title={picked ? "Already used" : "Use instead"}
+                              >
+                                Use instead
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setBranchViewMode("grid");
+                                }}
+                                title="Expand branches"
+                              >
+                                Expand
+                              </button>
+                              <button
+                                type="button"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  dropCandidate(index);
+                                }}
+                                disabled={saving || streaming}
+                                aria-label={`Drop branch ${index + 1}`}
+                                title="Drop this branch from the strip"
+                              >
+                                Drop
+                              </button>
+                            </div>
                           </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <button
-                    type="button"
-                    className="bw-branch-strip-close"
-                    onClick={clearBranchPicker}
-                    aria-label="Clear last generation"
-                    title="Clear last generation"
-                  >
-                    ×
-                  </button>
-                </section>
-              )}
+                        );
+                      })}
+                    </div>
+                    <button
+                      type="button"
+                      className="bw-branch-strip-close"
+                      onClick={clearBranchPicker}
+                      aria-label="Clear last generation"
+                      title="Clear last generation"
+                    >
+                      ×
+                    </button>
+                  </section>
+                )}
 
               {workspaceMode === "map" ? (
                 renderNodeMap()
@@ -4151,10 +4115,7 @@ export default function App() {
                       data-streaming={streaming && !visibleCandidate.done}
                     >
                       {candidates.length > 1 && (
-                        <div
-                          className="bw-inline-cycler"
-                          aria-label="Cycle branches"
-                        >
+                        <div className="bw-inline-cycler" aria-label="Cycle branches">
                           <button
                             type="button"
                             onClick={() => cycleVisibleCandidate(-1)}
@@ -4375,9 +4336,7 @@ export default function App() {
                     min={1}
                     max={8}
                     value={tokensPerSuggestionText}
-                    onChange={(event) =>
-                      setTokensPerSuggestionText(event.target.value)
-                    }
+                    onChange={(event) => setTokensPerSuggestionText(event.target.value)}
                     onBlur={() => {
                       normalizeTokensPerSuggestion();
                     }}
@@ -4394,7 +4353,9 @@ export default function App() {
                   disabled={saving || streaming || !dirtyBuffer}
                   data-dirty={dirtyBuffer}
                   className="bw-button"
-                  title={dirtyBuffer ? "Save unsaved buffer changes" : "Buffer is saved"}
+                  title={
+                    dirtyBuffer ? "Save unsaved buffer changes" : "Buffer is saved"
+                  }
                 >
                   {saving ? "Saving" : "Save"}
                 </button>
@@ -4404,28 +4365,27 @@ export default function App() {
                   </span>
                 )}
                 {workspaceMode === "compose" && streaming ? (
-                <button
-                  type="button"
-                  onClick={onCancel}
-                  className="bw-button bw-button-primary"
-                >
-                  Stop
-                </button>
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="bw-button bw-button-primary"
+                  >
+                    Stop
+                  </button>
                 ) : workspaceMode === "compose" ? (
-                <button
-                  type="button"
-                  onClick={() => void onGenerate()}
-                  disabled={saving || !currentTabbyModel}
-                  className="bw-button bw-button-primary"
-                  title="Generate branches (Cmd+Enter)"
-                >
-                  Generate
-                </button>
+                  <button
+                    type="button"
+                    onClick={() => void onGenerate()}
+                    disabled={saving || !currentTabbyModel}
+                    className="bw-button bw-button-primary"
+                    title="Generate branches (Cmd+Enter)"
+                  >
+                    Generate
+                  </button>
                 ) : null}
               </div>
             </footer>
           </main>
-
         </div>
       )}
     </div>

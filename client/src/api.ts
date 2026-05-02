@@ -169,10 +169,7 @@ export type TokenEncodeResponse = {
   length: number;
 };
 
-async function requestJson<T>(
-  path: string,
-  init?: RequestInit,
-): Promise<T> {
+async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, init);
   if (!response.ok) {
     let message = `${init?.method ?? "GET"} ${path} failed: ${response.status}`;
@@ -206,10 +203,7 @@ function streamErrorMessage(payload: unknown): string | null {
   return typeof message === "string" ? message : null;
 }
 
-export function createProject(
-  path: string,
-  title?: string,
-): Promise<ProjectInfo> {
+export function createProject(path: string, title?: string): Promise<ProjectInfo> {
   return requestJson<ProjectInfo>("/api/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -397,10 +391,7 @@ export function listPresets(): Promise<SamplerPreset[]> {
   return requestJson<SamplerPreset[]>("/api/samplers/presets");
 }
 
-export function createPreset(
-  name: string,
-  body: SamplerBody,
-): Promise<SamplerPreset> {
+export function createPreset(name: string, body: SamplerBody): Promise<SamplerPreset> {
   return requestJson<SamplerPreset>("/api/samplers/presets", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -420,10 +411,9 @@ export function updatePreset(
 }
 
 export function deletePreset(presetId: string): Promise<{ deleted: boolean }> {
-  return requestJson<{ deleted: boolean }>(
-    `/api/samplers/presets/${presetId}`,
-    { method: "DELETE" },
-  );
+  return requestJson<{ deleted: boolean }>(`/api/samplers/presets/${presetId}`, {
+    method: "DELETE",
+  });
 }
 
 export function getActivePreset(): Promise<ActivePreset> {

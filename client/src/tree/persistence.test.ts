@@ -1,9 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { NodeModel } from "../api";
-import {
-  loadedTreeFromModels,
-  mutationBatchFromTrees,
-} from "./persistence";
+import { loadedTreeFromModels, mutationBatchFromTrees } from "./persistence";
 import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "./types";
 
 function model(

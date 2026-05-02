@@ -14,9 +14,7 @@ describe("contextHash", () => {
 
   it("returns a 16-char lowercase hex string", () => {
     expect(contextHash("")).toMatch(/^[0-9a-f]{16}$/);
-    expect(contextHash("a longer piece of text with spaces")).toMatch(
-      /^[0-9a-f]{16}$/,
-    );
+    expect(contextHash("a longer piece of text with spaces")).toMatch(/^[0-9a-f]{16}$/);
   });
 
   it("is whitespace-sensitive (matters for prefix-hash equality)", () => {

@@ -39,17 +39,11 @@ describe("buildNodeMapLayout", () => {
     ]);
 
     const layout = buildNodeMapLayout(tree);
-    const leftParent = layout.nodes.find(
-      (item) => item.node.id === "left-parent",
-    );
-    const rightParent = layout.nodes.find(
-      (item) => item.node.id === "right-parent",
-    );
+    const leftParent = layout.nodes.find((item) => item.node.id === "left-parent");
+    const rightParent = layout.nodes.find((item) => item.node.id === "right-parent");
 
     expect(leftParent).toBeDefined();
     expect(rightParent).toBeDefined();
-    expect(leftParent!.x + leftParent!.width).toBeLessThanOrEqual(
-      rightParent!.x,
-    );
+    expect(leftParent!.x + leftParent!.width).toBeLessThanOrEqual(rightParent!.x);
   });
 });
