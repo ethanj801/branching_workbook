@@ -26,3 +26,6 @@ client/dist/
 
 # UI iteration screenshots — generated on demand, not source
 client/screenshots/
+*.log
+*.yml
+*.png

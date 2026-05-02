@@ -117,6 +117,12 @@ type NodeMapLayout = {
   height: number;
 };
 
+type NodeMapSubtreeSpan = {
+  left: number;
+  right: number;
+  center: number;
+};
+
 type NodeMapMergeAnalysis =
   | { ok: true; orderedIds: string[] }
   | { ok: false; reason: string };
@@ -269,24 +275,51 @@ function nodeMapNodeSize(node: TreeNode): { width: number; height: number } {
   };
 }
 
-function buildNodeMapLayout(tree: Tree): NodeMapLayout {
+export function buildNodeMapLayout(tree: Tree): NodeMapLayout {
   const rawItems: NodeMapItem[] = [];
   let nextX = 0;
 
-  function place(nodeIdToPlace: string, depth: number): number {
+  function place(nodeIdToPlace: string, depth: number): NodeMapSubtreeSpan {
     const node = tree.nodes[nodeIdToPlace];
-    if (!node) return nextX;
+    if (!node) return { left: nextX, right: nextX, center: nextX };
 
+    const subtreeStart = nextX;
+    const rawItemStart = rawItems.length;
     const size = nodeMapNodeSize(node);
     const childNodes = sortedChildrenOf(tree, node.id);
     let centerX: number;
+    let spanLeft: number;
+    let spanRight: number;
     if (childNodes.length === 0) {
       centerX = nextX + size.width / 2;
-      nextX += size.width + NODE_MAP_NODE_GAP;
+      spanLeft = nextX;
+      spanRight = nextX + size.width;
     } else {
-      const childCenters = childNodes.map((child) => place(child.id, depth + 1));
-      centerX = (childCenters[0] + childCenters[childCenters.length - 1]) / 2;
+      const childSpans = childNodes.map((child) => place(child.id, depth + 1));
+      centerX =
+        (childSpans[0].center + childSpans[childSpans.length - 1].center) / 2;
+      const nodeLeft = centerX - size.width / 2;
+      const nodeRight = centerX + size.width / 2;
+      spanLeft = Math.min(
+        nodeLeft,
+        ...childSpans.map((span) => span.left),
+      );
+      spanRight = Math.max(
+        nodeRight,
+        ...childSpans.map((span) => span.right),
+      );
+
+      if (spanLeft < subtreeStart) {
+        const shift = subtreeStart - spanLeft;
+        for (let index = rawItemStart; index < rawItems.length; index += 1) {
+          rawItems[index].x += shift;
+        }
+        centerX += shift;
+        spanLeft += shift;
+        spanRight += shift;
+      }
     }
+    nextX = spanRight + NODE_MAP_NODE_GAP;
 
     rawItems.push({
       node,
@@ -296,7 +329,7 @@ function buildNodeMapLayout(tree: Tree): NodeMapLayout {
       height: size.height,
       depth,
     });
-    return centerX;
+    return { left: spanLeft, right: spanRight, center: centerX };
   }
 
   place(tree.rootId, 0);
