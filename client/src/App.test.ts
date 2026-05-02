@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildNodeMapLayout } from "./App";
+import { buildNodeMapLayout } from "./nodeMapLayout";
 import type { Tree, TreeNode } from "./tree/types";
 
 function makeNode(
