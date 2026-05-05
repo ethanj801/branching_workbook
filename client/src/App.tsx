@@ -4332,13 +4332,13 @@ export default function App() {
                       <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
                         Context length
                         <input
-                          type="number"
-                          min={256}
-                          step={256}
-                          value={loadMaxSeqLen}
-                          onChange={(event) =>
-                            setLoadMaxSeqLen(Number(event.target.value))
-                          }
+                          type="text"
+                          inputMode="numeric"
+                          value={loadMaxSeqLen ? loadMaxSeqLen.toLocaleString() : ""}
+                          onChange={(event) => {
+                            const digits = event.target.value.replace(/[^\d]/g, "");
+                            setLoadMaxSeqLen(digits ? Number(digits) : 0);
+                          }}
                           disabled={modelBusy}
                           className="bw-input w-32"
                           title="max_seq_len"
