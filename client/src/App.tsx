@@ -1993,6 +1993,8 @@ export default function App() {
     !branchPickerOpen &&
     (chatTailNode?.role === "user" ||
       (chatTailNode?.role === "assistant" && !chatTailNode.endOfTurn));
+  const chatHasPendingUserDraft = chatCanComposeUser && chatUserDraft.trim().length > 0;
+  const chatCanSubmitOrGenerate = chatCanGenerateAssistant || chatHasPendingUserDraft;
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
   const dirtyBuffer =
     project !== null &&
@@ -5239,12 +5241,19 @@ export default function App() {
                 ) : isChatProject ? (
                   <button
                     type="button"
-                    onClick={() => void startChatAssistantGeneration()}
-                    disabled={saving || !currentTabbyModel || !chatCanGenerateAssistant}
+                    onClick={() => {
+                      if (chatHasPendingUserDraft) void onSubmitChatUser();
+                      else void startChatAssistantGeneration();
+                    }}
+                    disabled={saving || !currentTabbyModel || !chatCanSubmitOrGenerate}
                     className="bw-button bw-button-primary"
-                    title="Generate assistant branches"
+                    title={
+                      chatHasPendingUserDraft
+                        ? "Send message and generate reply"
+                        : "Generate assistant branches"
+                    }
                   >
-                    Generate
+                    {chatHasPendingUserDraft ? "Send" : "Generate"}
                   </button>
                 ) : workspaceMode === "compose" && streaming ? (
                   <button
