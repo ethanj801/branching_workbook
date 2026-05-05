@@ -80,12 +80,32 @@ class CompletionRequest(BaseModel):
     stop: list[str] = Field(default_factory=list)
 
 
+class ChatMessage(BaseModel):
+    role: str
+    content: str | None = None
+
+
+class ChatCompletionRequest(BaseModel):
+    messages: list[ChatMessage]
+    response_prefix: str | None = None
+    add_generation_prompt: bool = True
+    n: int = 1
+    stream: bool = True
+    max_tokens: int = 128
+    temperature: float = 1.0
+    top_p: float = 1.0
+
+
 class ModelLoadRequest(BaseModel):
     model_name: str
     max_seq_len: int | None = None
     cache_size: int | None = None
     cache_mode: str | None = None
     tensor_parallel: bool | None = None
+    tensor_parallel_backend: str | None = None
+    gpu_split_auto: bool | None = None
+    autosplit_reserve: list[float] | None = None
+    gpu_split: list[float] | None = None
 
 
 class DownloadRequest(BaseModel):
@@ -158,9 +178,78 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
     yield "[DONE]"
 
 
+async def _stream_mock_chat_completion(request: Request, data: ChatCompletionRequest):
+    request_id = uuid4().hex
+    chunk_delay = 0.03
+    branch_count = max(1, data.n)
+    char_budget = data.max_tokens * 4
+    prefix = data.response_prefix or ""
+
+    texts = [
+        f"{prefix}{SAMPLE_CONTINUATIONS[index % len(SAMPLE_CONTINUATIONS)]}"
+        for index in range(branch_count)
+    ]
+    offsets = [len(prefix) for _ in range(branch_count)]
+    emitted = [0 for _ in range(branch_count)]
+    finished = [False for _ in range(branch_count)]
+
+    while not all(finished):
+        for index, text in enumerate(texts):
+            if finished[index]:
+                continue
+            if await request.is_disconnected():
+                return
+
+            if offsets[index] >= len(text) or emitted[index] >= char_budget:
+                finished[index] = True
+                finish = "stop" if offsets[index] >= len(text) else "length"
+                yield json.dumps(
+                    {
+                        "id": f"chatcmpl-{request_id}",
+                        "choices": [
+                            {
+                                "index": index,
+                                "delta": {},
+                                "finish_reason": finish,
+                            }
+                        ],
+                        "model_name": MOCK_MODEL_ID,
+                    },
+                    ensure_ascii=False,
+                )
+                continue
+
+            n_chars = random.randint(3, 8)
+            delta = text[offsets[index] : offsets[index] + n_chars]
+            offsets[index] += n_chars
+            emitted[index] += len(delta)
+            yield json.dumps(
+                {
+                    "id": f"chatcmpl-{request_id}",
+                    "choices": [
+                        {
+                            "index": index,
+                            "delta": {"content": delta},
+                            "finish_reason": None,
+                        }
+                    ],
+                    "model_name": MOCK_MODEL_ID,
+                },
+                ensure_ascii=False,
+            )
+            await asyncio.sleep(chunk_delay)
+
+    yield "[DONE]"
+
+
 @router.post("/api/completions")
 async def completions(request: Request, data: CompletionRequest):
     return EventSourceResponse(_stream_mock_completion(request, data))
+
+
+@router.post("/api/chat/completions")
+async def chat_completions(request: Request, data: ChatCompletionRequest):
+    return EventSourceResponse(_stream_mock_chat_completion(request, data))
 
 
 @router.get("/api/tabby/model")
@@ -197,6 +286,11 @@ async def _stream_mock_model_load(data: ModelLoadRequest):
             "max_seq_len": data.max_seq_len or 4096,
             "cache_size": data.cache_size or data.max_seq_len or 4096,
             "cache_mode": data.cache_mode or "Q6",
+            "tensor_parallel": data.tensor_parallel,
+            "tensor_parallel_backend": data.tensor_parallel_backend,
+            "gpu_split_auto": data.gpu_split_auto,
+            "autosplit_reserve": data.autosplit_reserve,
+            "gpu_split": data.gpu_split,
             "rope_scale": 1.0,
             "rope_alpha": 1.0,
             "max_batch_size": 256,

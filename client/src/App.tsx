@@ -29,13 +29,17 @@ import {
   mutateNodes,
   openProject,
   setActivePreset,
+  streamChatCompletion,
   streamCompletion,
   streamModelLoad,
   unloadModel,
   updateProjectSettings,
   updatePreset,
+  type ChatCompletionMessage,
+  type ChatRole,
   type ComposeDisplayMode,
   type ModelLoadEvent,
+  type ModelLoadRequest,
   type ProjectInfo,
   type ProjectSettingsPatch,
   type SamplerBody,
@@ -90,7 +94,10 @@ type TreeContextMenu = {
 type Candidate = {
   text: string;
   done: boolean;
+  finishReason: string | null;
 };
+
+type CandidateContext = "prose" | "chat";
 
 type BranchViewMode = "grid" | "strip";
 
@@ -130,8 +137,38 @@ type AutocompleteState =
   | { phase: "thinking" }
   | { phase: "showing"; suggestions: string[]; visibleIdx: number };
 
+type ChatTurn = {
+  role: ChatRole;
+  nodes: TreeNode[];
+  text: string;
+  endOfTurn: boolean;
+};
+
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
+}
+
+function parseGpuSplitInput(input: string): number[] {
+  const trimmed = input.trim();
+  if (!trimmed) return [];
+
+  const values = trimmed.split(",").map((raw) => {
+    const part = raw.trim();
+    if (!part) {
+      throw new Error("GPU split must be a comma-separated list of GB values.");
+    }
+    const value = Number(part);
+    if (!Number.isFinite(value) || value < 0) {
+      throw new Error("GPU split values must be non-negative numbers.");
+    }
+    return value;
+  });
+
+  if (!values.some((value) => value > 0)) {
+    throw new Error("GPU split must reserve VRAM on at least one GPU.");
+  }
+
+  return values;
 }
 
 function nodeId(): string {
@@ -154,6 +191,8 @@ function branchNode(
   priorText: string,
   modelId?: string,
   samplerSnapshot?: SamplerBody,
+  role: ChatRole = "user",
+  endOfTurn = false,
 ): TreeNode {
   return {
     id: nodeId(),
@@ -161,6 +200,8 @@ function branchNode(
     text,
     name: null,
     source,
+    role,
+    endOfTurn,
     hidden,
     starred: false,
     createdAt: nowEpoch(),
@@ -454,6 +495,7 @@ export default function App() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [buffer, setBuffer] = useState("");
   const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [candidateContext, setCandidateContext] = useState<CandidateContext>("prose");
   const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
   const [candidateBaseId, setCandidateBaseId] = useState<string | null>(null);
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
@@ -483,6 +525,11 @@ export default function App() {
   const [selectedModelName, setSelectedModelName] = useState("");
   const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(DEFAULT_LOAD_MAX_SEQ_LEN);
   const [loadCacheMode, setLoadCacheMode] = useState("Q6");
+  const [loadTensorParallel, setLoadTensorParallel] = useState(false);
+  const [loadTensorParallelBackend, setLoadTensorParallelBackend] = useState<
+    "native" | "nccl"
+  >("native");
+  const [loadGpuSplit, setLoadGpuSplit] = useState("");
   const [downloadRepoId, setDownloadRepoId] = useState(
     "lucyknada/google_gemma-3-270m-exl3",
   );
@@ -516,6 +563,10 @@ export default function App() {
   const [branchPaneRatio, setBranchPaneRatio] = useState(SINGLE_ROW_BRANCH_PANE_RATIO);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [treeVisible, setTreeVisible] = useState(true);
+  const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
+  const [chatSystemDraft, setChatSystemDraft] = useState("");
+  const [chatUserDraft, setChatUserDraft] = useState("");
+  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, string>>({});
   const [treeWidth, setTreeWidth] = useState(288);
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
   const [mapScale, setMapScale] = useState(1);
@@ -558,7 +609,7 @@ export default function App() {
   const tokenMeterLabel =
     tokenCount === null || contextMax === null
       ? "Current draft token count and loaded context length are unavailable"
-      : `${tokenCount.toLocaleString()} current draft tokens out of ${contextMax.toLocaleString()} loaded context tokens`;
+      : `${project?.kind === "chat" ? "Approximately " : ""}${tokenCount.toLocaleString()} current draft tokens out of ${contextMax.toLocaleString()} loaded context tokens`;
 
   const activePreset = useMemo(
     () => presets.find((preset) => preset.id === activePresetId) ?? null,
@@ -575,6 +626,7 @@ export default function App() {
 
   const clearBranchPicker = useCallback(() => {
     setCandidates([]);
+    setCandidateContext("prose");
     setCandidatePrompt(null);
     setCandidateBaseId(null);
     setCandidateModelId(null);
@@ -714,6 +766,15 @@ export default function App() {
       setBuffer(loadedBuffer);
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
+      setWorkspaceMode(info.kind === "chat" ? "compose" : "compose");
+      setChatUserDraft("");
+      setChatTurnDrafts({});
+      setChatSystemExpanded(false);
+      setChatSystemDraft(
+        pathFromRoot(loaded.tree, loaded.currentId).find(
+          (node) => node.role === "system",
+        )?.text ?? "",
+      );
       applyProjectSettings(settings);
       clearBranchPicker();
 
@@ -937,6 +998,9 @@ export default function App() {
         setError("Create or open a project before saving.");
         return null;
       }
+      if (project.kind === "chat") {
+        return { tree, currentId, buffer };
+      }
       if (streaming || saving) return null;
 
       setSaving(true);
@@ -978,7 +1042,8 @@ export default function App() {
       if (
         (event.metaKey || event.ctrlKey) &&
         event.key === "Enter" &&
-        workspaceMode === "compose"
+        workspaceMode === "compose" &&
+        project?.kind !== "chat"
       ) {
         event.preventDefault();
         void onGenerate();
@@ -1003,6 +1068,7 @@ export default function App() {
     commitBuffer,
     modelPanelOpen,
     onGenerate,
+    project?.kind,
     samplerOpen,
     treeMenu,
     workspaceMode,
@@ -1254,7 +1320,7 @@ export default function App() {
     return base.replace(/\.bwbk$/i, "") || "Branching Workbook";
   }
 
-  async function onCreateProject() {
+  async function onCreateProject(kind: "prose" | "chat" = "prose") {
     setError(null);
     let chosen: string | null;
     try {
@@ -1268,7 +1334,7 @@ export default function App() {
 
     setLoadingProject(true);
     try {
-      const info = await createProject(chosen, titleFromPath(chosen));
+      const info = await createProject(chosen, titleFromPath(chosen), kind);
       await loadProject(info);
     } catch (err) {
       setError(formatError(err));
@@ -1313,6 +1379,10 @@ export default function App() {
       setBuffer("");
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
+      setChatUserDraft("");
+      setChatTurnDrafts({});
+      setChatSystemDraft("");
+      setChatSystemExpanded(false);
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
       // subsequent project open doesn't briefly show the wrong "active" name.
@@ -1326,6 +1396,7 @@ export default function App() {
 
   function hasDirtyBuffer(): boolean {
     if (!project || !tree || !currentId) return false;
+    if (project.kind === "chat") return false;
     return buffer !== concatPathText(pathFromRoot(tree, currentId));
   }
 
@@ -1431,17 +1502,27 @@ export default function App() {
     setModelLoadEvent(null);
     setError(null);
     try {
-      await streamModelLoad(
-        {
-          model_name: trimmedModelName,
-          max_seq_len: Math.max(
-            256,
-            Math.trunc(loadMaxSeqLen) || DEFAULT_LOAD_MAX_SEQ_LEN,
-          ),
-          cache_mode: loadCacheMode,
-        },
-        setModelLoadEvent,
-      );
+      const gpuSplit = parseGpuSplitInput(loadGpuSplit);
+      const loadRequest: ModelLoadRequest = {
+        model_name: trimmedModelName,
+        max_seq_len: Math.max(
+          256,
+          Math.trunc(loadMaxSeqLen) || DEFAULT_LOAD_MAX_SEQ_LEN,
+        ),
+        cache_mode: loadCacheMode,
+      };
+
+      if (loadTensorParallel) {
+        loadRequest.tensor_parallel = true;
+        loadRequest.tensor_parallel_backend = loadTensorParallelBackend;
+      }
+
+      if (gpuSplit.length > 0) {
+        loadRequest.gpu_split = gpuSplit;
+        loadRequest.gpu_split_auto = false;
+      }
+
+      await streamModelLoad(loadRequest, setModelLoadEvent);
       await refreshModels();
     } catch (err) {
       setError(formatError(err));
@@ -1494,11 +1575,18 @@ export default function App() {
   async function onSelectNode(nodeIdToSelect: string) {
     if (!tree || !currentId || streaming || saving) return;
 
-    const committed = await commitBuffer();
+    const committed =
+      project?.kind === "chat" ? { tree, currentId, buffer } : await commitBuffer();
     if (!committed) return;
 
-    const targetId = committed.tree.nodes[nodeIdToSelect]
-      ? nodeIdToSelect
+    const selectedId =
+      project?.kind === "chat" && nodeIdToSelect === committed.tree.rootId
+        ? (childrenOf(committed.tree, committed.tree.rootId).find(
+            (node) => node.role === "system",
+          )?.id ?? nodeIdToSelect)
+        : nodeIdToSelect;
+    const targetId = committed.tree.nodes[selectedId]
+      ? selectedId
       : committed.currentId;
     const path = pathFromRoot(committed.tree, targetId);
     const nextBuffer = concatPathText(path);
@@ -1587,7 +1675,14 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    setCandidates(Array.from({ length: n }, () => ({ text: "", done: false })));
+    setCandidates(
+      Array.from({ length: n }, () => ({
+        text: "",
+        done: false,
+        finishReason: null,
+      })),
+    );
+    setCandidateContext("prose");
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(committed.currentId);
     setCandidateModelId(currentTabbyModel.id);
@@ -1624,12 +1719,22 @@ export default function App() {
                   ? [...current]
                   : Array.from(
                       { length: n },
-                      (_, index) => current[index] ?? { text: "", done: false },
+                      (_, index) =>
+                        current[index] ?? {
+                          text: "",
+                          done: false,
+                          finishReason: null,
+                        },
                     );
-              const existing = next[choice.index] ?? { text: "", done: false };
+              const existing = next[choice.index] ?? {
+                text: "",
+                done: false,
+                finishReason: null,
+              };
               next[choice.index] = {
                 text: existing.text + choice.text,
                 done: existing.done || choice.finish_reason !== null,
+                finishReason: choice.finish_reason ?? existing.finishReason,
               };
               return next;
             });
@@ -1748,6 +1853,11 @@ export default function App() {
   }
 
   function onUseCandidate(index: number) {
+    if (candidateContext === "chat") {
+      void onUseChatCandidate(index);
+      return;
+    }
+
     const text = candidates[index]?.text ?? "";
     if (!text) {
       setError("Select a branch with text before using it.");
@@ -1791,6 +1901,11 @@ export default function App() {
   }
 
   async function onKeepCandidate(index: number) {
+    if (candidateContext === "chat") {
+      await onKeepChatCandidate(index);
+      return;
+    }
+
     if (
       !tree ||
       !currentId ||
@@ -1844,14 +1959,447 @@ export default function App() {
 
   const currentPath = tree && currentId ? pathFromRoot(tree, currentId) : [];
   const currentPathIds = new Set(currentPath.map((node) => node.id));
+  const chatPathNodes = currentPath.filter((node) => node.parentId !== null);
+  const chatTurns = useMemo<ChatTurn[]>(() => {
+    const turns: ChatTurn[] = [];
+    for (const node of chatPathNodes) {
+      const previous = turns[turns.length - 1];
+      if (!previous || previous.role !== node.role || previous.endOfTurn) {
+        turns.push({
+          role: node.role,
+          nodes: [node],
+          text: node.text,
+          endOfTurn: node.endOfTurn,
+        });
+      } else {
+        previous.nodes.push(node);
+        previous.text += node.text;
+        previous.endOfTurn = node.endOfTurn;
+      }
+    }
+    return turns;
+  }, [chatPathNodes]);
+  const chatSystemNode = chatPathNodes.find((node) => node.role === "system") ?? null;
+  const chatTailNode = chatPathNodes[chatPathNodes.length - 1] ?? null;
+  const chatTailTurn = chatTurns[chatTurns.length - 1] ?? null;
+  const chatCanComposeUser =
+    project?.kind === "chat" &&
+    !branchPickerOpen &&
+    (chatTailNode === null ||
+      chatTailNode.role === "system" ||
+      (chatTailNode.role === "assistant" && chatTailNode.endOfTurn));
+  const chatCanGenerateAssistant =
+    project?.kind === "chat" &&
+    !branchPickerOpen &&
+    (chatTailNode?.role === "user" ||
+      (chatTailNode?.role === "assistant" && !chatTailNode.endOfTurn));
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
   const dirtyBuffer =
     project !== null &&
+    project.kind !== "chat" &&
     tree !== null &&
     currentId !== null &&
     buffer !== concatPathText(currentPath);
   const emptyDraftStartsFromRoot =
     project !== null && currentPath.length > 1 && buffer.trim().length === 0;
+
+  useEffect(() => {
+    if (project?.kind !== "chat") return;
+    setChatSystemDraft(chatSystemNode?.text ?? "");
+  }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind]);
+
+  function buildChatPayload(path: TreeNode[]): {
+    messages: ChatCompletionMessage[];
+    responsePrefix: string | undefined;
+  } {
+    const turns: ChatTurn[] = [];
+    for (const node of path.filter((item) => item.parentId !== null)) {
+      const previous = turns[turns.length - 1];
+      if (!previous || previous.role !== node.role || previous.endOfTurn) {
+        turns.push({
+          role: node.role,
+          nodes: [node],
+          text: node.text,
+          endOfTurn: node.endOfTurn,
+        });
+      } else {
+        previous.nodes.push(node);
+        previous.text += node.text;
+        previous.endOfTurn = node.endOfTurn;
+      }
+    }
+
+    const lastTurn = turns[turns.length - 1] ?? null;
+    const continuingAssistant =
+      lastTurn?.role === "assistant" && lastTurn.endOfTurn === false;
+    const messageTurns = continuingAssistant ? turns.slice(0, -1) : turns;
+    return {
+      messages: messageTurns.map((turn) => ({
+        role: turn.role,
+        content: turn.text,
+      })),
+      responsePrefix: continuingAssistant ? lastTurn.text : undefined,
+    };
+  }
+
+  async function persistChatTree(
+    beforeTree: Tree,
+    nextTree: Tree,
+    nextCurrentId: string,
+  ) {
+    const nextBuffer = concatPathText(pathFromRoot(nextTree, nextCurrentId));
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
+      setTree(nextTree);
+      setCurrentId(nextCurrentId);
+      setBuffer(nextBuffer);
+      resetRecordedSelectionToEnd(nextBuffer);
+      return true;
+    } catch (err) {
+      setError(formatError(err));
+      return false;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSaveChatSystem() {
+    if (!tree || !currentId || !chatSystemNode || saving || streaming) return;
+    if (chatSystemDraft === chatSystemNode.text) return;
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [chatSystemNode.id]: {
+          ...chatSystemNode,
+          text: chatSystemDraft,
+          endOfTurn: true,
+        },
+      },
+    };
+    await persistChatTree(tree, nextTree, currentId);
+  }
+
+  async function startChatAssistantGeneration(baseTree = tree, baseId = currentId) {
+    if (!baseTree || !baseId || streaming) return;
+    if (!currentTabbyModel) {
+      setError("Load a model before generating.");
+      return;
+    }
+
+    const basePath = pathFromRoot(baseTree, baseId);
+    const tail = basePath[basePath.length - 1] ?? null;
+    if (
+      !tail ||
+      (tail.role !== "user" && !(tail.role === "assistant" && !tail.endOfTurn))
+    ) {
+      setError("Submit a user turn before generating an assistant response.");
+      return;
+    }
+
+    const n = normalizeBranchCount();
+    if (n === null) return;
+    const resolvedMaxTokens = normalizeMaxTokens();
+    const samplerSnapshot = mergePreset(draftBody);
+    const promptSnapshot = concatPathText(basePath);
+    const { messages, responsePrefix } = buildChatPayload(basePath);
+
+    setCandidates(
+      Array.from({ length: n }, () => ({
+        text: "",
+        done: false,
+        finishReason: null,
+      })),
+    );
+    setCandidateContext("chat");
+    setCandidatePrompt(promptSnapshot);
+    setCandidateBaseId(baseId);
+    setCandidateModelId(currentTabbyModel.id);
+    setCandidateSamplerSnapshot(samplerSnapshot);
+    setSavedCandidateIds({});
+    setPickedCandidateIndex(null);
+    setUsedCandidateRange(null);
+    setVisibleCandidateIndex(0);
+    setBranchViewMode("grid");
+    setError(null);
+    setStreaming(true);
+    abortRef.current = new AbortController();
+    let firstVisibleChosen = false;
+
+    try {
+      await streamChatCompletion(
+        {
+          messages,
+          response_prefix: responsePrefix,
+          add_generation_prompt: true,
+          n,
+          max_tokens: resolvedMaxTokens,
+          ...samplerSnapshot,
+        },
+        (chunk) => {
+          for (const choice of chunk.choices) {
+            if (choice.index < 0 || choice.index >= n) continue;
+            const text = choice.delta.content ?? "";
+            if (!firstVisibleChosen && text) {
+              firstVisibleChosen = true;
+              setVisibleCandidateIndex(choice.index);
+            }
+            setCandidates((current) => {
+              const next =
+                current.length === n
+                  ? [...current]
+                  : Array.from(
+                      { length: n },
+                      (_, index) =>
+                        current[index] ?? {
+                          text: "",
+                          done: false,
+                          finishReason: null,
+                        },
+                    );
+              const existing = next[choice.index] ?? {
+                text: "",
+                done: false,
+                finishReason: null,
+              };
+              next[choice.index] = {
+                text: existing.text + text,
+                done: existing.done || choice.finish_reason !== null,
+                finishReason: choice.finish_reason ?? existing.finishReason,
+              };
+              return next;
+            });
+          }
+        },
+        abortRef.current.signal,
+      );
+    } catch (err) {
+      const e = err as Error;
+      if (e.name !== "AbortError") setError(e.message);
+    } finally {
+      setCandidates((current) =>
+        current.map((candidate) => ({ ...candidate, done: true })),
+      );
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }
+
+  async function onSubmitChatUser() {
+    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
+    const text = chatUserDraft;
+    if (!text.trim()) return;
+    if (!tree.nodes[currentId]) return;
+
+    const priorText = concatPathText(pathFromRoot(tree, currentId));
+    const node: TreeNode = {
+      id: nodeId(),
+      parentId: currentId,
+      text,
+      name: null,
+      source: "user_written",
+      role: "user",
+      endOfTurn: true,
+      hidden: false,
+      starred: false,
+      createdAt: nowEpoch(),
+      priorContextHash: contextHash(priorText),
+    };
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [node.id]: node,
+      },
+    };
+    const saved = await persistChatTree(tree, nextTree, node.id);
+    if (!saved) return;
+    setChatUserDraft("");
+    void startChatAssistantGeneration(nextTree, node.id);
+  }
+
+  async function onSaveChatTurn(turn: ChatTurn, nextText: string) {
+    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
+    const text = nextText;
+    if (text === turn.text) return;
+    if (!text.trim()) {
+      setError("Chat turns cannot be empty.");
+      setChatTurnDrafts((current) => {
+        const next = { ...current };
+        const key = turn.nodes[0]?.id;
+        if (key) next[key] = turn.text;
+        return next;
+      });
+      return;
+    }
+
+    const firstNode = turn.nodes[0];
+    if (!firstNode || firstNode.parentId === null) return;
+
+    const canUpdateInPlace =
+      turn.nodes.length === 1 && childrenOf(tree, firstNode.id).length === 0;
+
+    if (canUpdateInPlace) {
+      const nextTree: Tree = {
+        rootId: tree.rootId,
+        nodes: {
+          ...tree.nodes,
+          [firstNode.id]: {
+            ...firstNode,
+            text,
+            endOfTurn: turn.role === "user" ? true : firstNode.endOfTurn,
+          },
+        },
+      };
+      await persistChatTree(tree, nextTree, currentId);
+      setChatTurnDrafts((current) => {
+        const next = { ...current };
+        delete next[firstNode.id];
+        return next;
+      });
+      return;
+    }
+
+    const priorText = concatPathText(pathFromRoot(tree, firstNode.parentId));
+    const fork: TreeNode = {
+      id: nodeId(),
+      parentId: firstNode.parentId,
+      text,
+      name: null,
+      source: turn.role === "assistant" ? "composed" : "user_written",
+      role: turn.role,
+      endOfTurn: turn.role === "user",
+      hidden: false,
+      starred: false,
+      createdAt: nowEpoch(),
+      priorContextHash: contextHash(priorText),
+    };
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [fork.id]: fork,
+      },
+    };
+    const saved = await persistChatTree(tree, nextTree, fork.id);
+    if (saved) {
+      setChatTurnDrafts({});
+      clearBranchPicker();
+    }
+  }
+
+  async function onUseChatCandidate(index: number) {
+    if (
+      !tree ||
+      !currentId ||
+      candidateBaseId === null ||
+      candidatePrompt === null ||
+      saving ||
+      streaming
+    ) {
+      return;
+    }
+    const text = candidates[index]?.text ?? "";
+    if (!text) {
+      setError("Select a branch with text before using it.");
+      return;
+    }
+    const base = tree.nodes[candidateBaseId];
+    if (!base) {
+      setError("The generation base no longer exists.");
+      return;
+    }
+    const endOfTurn = candidates[index]?.finishReason === "stop";
+    const node = branchNode(
+      candidateBaseId,
+      text,
+      "composed",
+      false,
+      candidatePrompt,
+      candidateModelId ?? undefined,
+      candidateSamplerSnapshot ?? undefined,
+      "assistant",
+      endOfTurn,
+    );
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [node.id]: node,
+      },
+    };
+    const saved = await persistChatTree(tree, nextTree, node.id);
+    if (saved) clearBranchPicker();
+  }
+
+  async function onKeepChatCandidate(index: number) {
+    if (
+      !tree ||
+      !currentId ||
+      candidateBaseId === null ||
+      candidatePrompt === null ||
+      saving ||
+      savedCandidateIds[index]
+    ) {
+      return;
+    }
+    const text = candidates[index]?.text ?? "";
+    if (!text) {
+      setError("Select a branch with text before keeping it.");
+      return;
+    }
+    if (!tree.nodes[candidateBaseId]) {
+      setError("The generation base no longer exists.");
+      return;
+    }
+    const node = branchNode(
+      candidateBaseId,
+      text,
+      "generated",
+      true,
+      candidatePrompt,
+      candidateModelId ?? undefined,
+      candidateSamplerSnapshot ?? undefined,
+      "assistant",
+      candidates[index]?.finishReason === "stop",
+    );
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [node.id]: node,
+      },
+    };
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      setTree(nextTree);
+      setSavedCandidateIds((current) => ({ ...current, [index]: node.id }));
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onEndChatAssistantTurn() {
+    if (!tree || !currentId || !chatTailNode || saving || streaming) return;
+    if (chatTailNode.role !== "assistant" || chatTailNode.endOfTurn) return;
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [chatTailNode.id]: {
+          ...chatTailNode,
+          endOfTurn: true,
+        },
+      },
+    };
+    await persistChatTree(tree, nextTree, currentId);
+  }
 
   // Starred lineage: nodes worth showing when "Only starred paths" is on.
   // A node is on the starred lineage if it is starred, an ancestor of a
@@ -1951,9 +2499,12 @@ export default function App() {
       : activeHiddenByFilters
         ? "Current path is pinned because filters would otherwise hide it."
         : null;
+  const isChatProject = project?.kind === "chat";
   const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
   const showInlineCandidateControls =
+    !isChatProject &&
     workspaceMode === "compose" &&
+    candidateContext === "prose" &&
     composeDisplayMode === "inline" &&
     branchPickerOpen &&
     branchViewMode === "grid" &&
@@ -2041,7 +2592,7 @@ export default function App() {
       ? project.title
       : null;
   const workspaceColumns =
-    workspaceMode !== "compose"
+    !isChatProject && workspaceMode !== "compose"
       ? "minmax(18rem, 1fr)"
       : [
           treeVisible ? `${treeWidth}px` : `${COLLAPSED_RAIL_WIDTH}px`,
@@ -3252,6 +3803,250 @@ export default function App() {
     );
   }
 
+  function renderChatCandidateCards() {
+    if (!branchPickerOpen || candidateContext !== "chat") return null;
+    return (
+      <div className="bw-chat-candidate-area">
+        <div className="bw-chat-candidate-head">
+          <div>
+            <div className="bw-kicker">Next chunk</div>
+            <div className="bw-branch-context">
+              {candidates.length} candidate{candidates.length === 1 ? "" : "s"}
+              {streaming ? " generating" : " ready"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={clearBranchPicker}
+            disabled={streaming || saving}
+            className="bw-button bw-branch-clear"
+          >
+            Clear
+          </button>
+        </div>
+        <div className="bw-chat-candidate-grid">
+          {candidates.map((candidate, index) => {
+            const hasText = candidate.text.length > 0;
+            const isStreaming = streaming && !candidate.done;
+            const kept = !!savedCandidateIds[index];
+            const picked = pickedCandidateIndex === index;
+            return (
+              <section
+                key={index}
+                className="bw-branch-card bw-chat-branch-card"
+                data-empty={!hasText}
+                data-streaming={isStreaming}
+                data-picked={picked}
+              >
+                <div className="bw-branch-card-head">
+                  <div className="bw-branch-card-title">
+                    <span>Branch {index + 1}</span>
+                    {picked && <span className="bw-branch-used-badge">Used</span>}
+                    {isStreaming && (
+                      <span className="bw-branch-pulse" aria-label="Streaming" />
+                    )}
+                  </div>
+                  {hasText && (
+                    <span className="bw-branch-token-count">
+                      {approxTokenCount(candidate.text)} tok
+                    </span>
+                  )}
+                </div>
+                <div className="bw-branch-text">
+                  {hasText ? (
+                    displayBranchText(candidate.text)
+                  ) : (
+                    <span className="bw-empty">
+                      {streaming ? "Waiting for tokens..." : "No text."}
+                    </span>
+                  )}
+                </div>
+                <div className="bw-branch-actions">
+                  <button
+                    type="button"
+                    onClick={() => onUseCandidate(index)}
+                    disabled={!hasText || streaming || saving || picked}
+                    className={`bw-button ${
+                      picked ? "bw-button-used" : "bw-button-primary"
+                    }`}
+                  >
+                    {picked ? "Used" : "Use"}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void onKeepCandidate(index)}
+                    disabled={!hasText || saving || kept}
+                    className="bw-button"
+                  >
+                    {kept ? "Kept" : "Keep"}
+                  </button>
+                </div>
+              </section>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
+
+  function renderChatSurface() {
+    return (
+      <div className="bw-chat-scroll">
+        <section className="bw-chat-transcript" aria-label="Chat transcript">
+          <section className="bw-chat-system" data-expanded={chatSystemExpanded}>
+            <button
+              type="button"
+              className="bw-chat-system-toggle"
+              onClick={() => setChatSystemExpanded((value) => !value)}
+              aria-expanded={chatSystemExpanded}
+            >
+              <span aria-hidden="true">{chatSystemExpanded ? "⌄" : "›"}</span>
+              <span>SYSTEM</span>
+              {!chatSystemExpanded && (
+                <span className="bw-chat-system-preview">
+                  {chatSystemNode?.text.trim() || "No system prompt"}
+                </span>
+              )}
+            </button>
+            {chatSystemExpanded && (
+              <div className="bw-chat-system-editor">
+                <textarea
+                  value={chatSystemDraft}
+                  onChange={(event) => setChatSystemDraft(event.target.value)}
+                  onBlur={() => void onSaveChatSystem()}
+                  disabled={saving || streaming}
+                  placeholder="System prompt"
+                />
+                <button
+                  type="button"
+                  className="bw-button"
+                  onClick={() => void onSaveChatSystem()}
+                  disabled={
+                    saving || streaming || chatSystemDraft === chatSystemNode?.text
+                  }
+                >
+                  Save
+                </button>
+              </div>
+            )}
+          </section>
+
+          {chatTurns
+            .filter((turn) => turn.role !== "system")
+            .map((turn, index) => {
+              const isActiveAssistant =
+                turn.role === "assistant" && chatTailTurn === turn && !turn.endOfTurn;
+              return (
+                <section
+                  key={`${turn.nodes[0]?.id ?? index}-${index}`}
+                  className="bw-chat-turn"
+                  data-role={turn.role}
+                  data-active={isActiveAssistant}
+                >
+                  <div className="bw-chat-turn-head">
+                    <span>{turn.role === "user" ? "YOU" : "ASSISTANT"}</span>
+                    {isActiveAssistant && (
+                      <span>
+                        in progress · {approxTokenCount(turn.text).toLocaleString()} tok
+                      </span>
+                    )}
+                  </div>
+                  {turn.role === "user" || turn.role === "assistant" ? (
+                    <textarea
+                      className="bw-chat-turn-editor"
+                      value={chatTurnDrafts[turn.nodes[0]?.id ?? ""] ?? turn.text}
+                      onChange={(event) => {
+                        const key = turn.nodes[0]?.id;
+                        if (!key) return;
+                        setChatTurnDrafts((current) => ({
+                          ...current,
+                          [key]: event.target.value,
+                        }));
+                      }}
+                      onBlur={(event) => void onSaveChatTurn(turn, event.target.value)}
+                      onKeyDown={(event) => {
+                        if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                          event.preventDefault();
+                          event.currentTarget.blur();
+                        }
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          const key = turn.nodes[0]?.id;
+                          if (key) {
+                            setChatTurnDrafts((current) => {
+                              const next = { ...current };
+                              delete next[key];
+                              return next;
+                            });
+                          }
+                          event.currentTarget.blur();
+                        }
+                      }}
+                      disabled={saving || streaming}
+                      aria-label={`Edit ${turn.role} turn`}
+                    />
+                  ) : (
+                    <div className="bw-chat-turn-text">
+                      {displayBranchText(turn.text)}
+                    </div>
+                  )}
+                  {isActiveAssistant && renderChatCandidateCards()}
+                  {isActiveAssistant && !branchPickerOpen && (
+                    <div className="bw-chat-turn-actions">
+                      <button
+                        type="button"
+                        className="bw-button"
+                        onClick={() => void onEndChatAssistantTurn()}
+                        disabled={saving || streaming}
+                      >
+                        End turn
+                      </button>
+                    </div>
+                  )}
+                </section>
+              );
+            })}
+
+          {branchPickerOpen &&
+            candidateContext === "chat" &&
+            chatTailNode?.role !== "assistant" && (
+              <section
+                className="bw-chat-turn"
+                data-role="assistant"
+                data-active="true"
+              >
+                <div className="bw-chat-turn-head">
+                  <span>ASSISTANT</span>
+                  <span>in progress</span>
+                </div>
+                {renderChatCandidateCards()}
+              </section>
+            )}
+
+          {chatCanComposeUser && (
+            <section className="bw-chat-turn bw-chat-input" data-role="user">
+              <div className="bw-chat-turn-head">
+                <span>YOU</span>
+              </div>
+              <textarea
+                value={chatUserDraft}
+                onChange={(event) => setChatUserDraft(event.target.value)}
+                onKeyDown={(event) => {
+                  if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
+                    event.preventDefault();
+                    void onSubmitChatUser();
+                  }
+                }}
+                disabled={saving || streaming}
+                placeholder="Write the next message..."
+              />
+            </section>
+          )}
+        </section>
+      </div>
+    );
+  }
+
   return (
     <div className="bw-app">
       <header className="bw-topbar">
@@ -3284,7 +4079,9 @@ export default function App() {
                 title={tokenMeterLabel}
               >
                 <strong>
-                  {tokenCount === null ? "unknown" : tokenCount.toLocaleString()}
+                  {tokenCount === null
+                    ? "unknown"
+                    : `${project.kind === "chat" ? "~" : ""}${tokenCount.toLocaleString()}`}
                 </strong>
                 {" / "}
                 {contextMax === null ? "unknown" : contextMax.toLocaleString()}
@@ -3526,6 +4323,17 @@ export default function App() {
                           <option value="FP16">FP16</option>
                         </select>
                       </label>
+                      <label className="bw-hidden-toggle">
+                        <input
+                          type="checkbox"
+                          checked={loadTensorParallel}
+                          onChange={(event) =>
+                            setLoadTensorParallel(event.target.checked)
+                          }
+                          disabled={modelBusy}
+                        />
+                        <span>Tensor parallel</span>
+                      </label>
                       <button
                         type="button"
                         onClick={() => void onLoadModel()}
@@ -3539,6 +4347,39 @@ export default function App() {
                     </div>
                     <div className="text-xs text-[color:var(--ink-muted)]">
                       {COMMON_CONTEXT_SIZES}
+                    </div>
+                    <div className="grid gap-2 border-t border-[color:var(--line)] pt-3">
+                      <div className="bw-kicker">Advanced</div>
+                      <div className="flex flex-wrap items-end gap-2">
+                        <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
+                          TP backend
+                          <select
+                            value={loadTensorParallelBackend}
+                            onChange={(event) =>
+                              setLoadTensorParallelBackend(
+                                event.target.value as "native" | "nccl",
+                              )
+                            }
+                            disabled={modelBusy || !loadTensorParallel}
+                            className="bw-select w-28"
+                            title="tensor_parallel_backend"
+                          >
+                            <option value="native">native</option>
+                            <option value="nccl">nccl</option>
+                          </select>
+                        </label>
+                        <label className="flex min-w-52 flex-1 flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
+                          GPU split
+                          <input
+                            value={loadGpuSplit}
+                            onChange={(event) => setLoadGpuSplit(event.target.value)}
+                            disabled={modelBusy}
+                            placeholder="20, 25"
+                            className="bw-input w-full"
+                            title="gpu_split in GB per GPU"
+                          />
+                        </label>
+                      </div>
                     </div>
                   </div>
                 </section>
@@ -3604,11 +4445,19 @@ export default function App() {
               <div className="bw-welcome-actions">
                 <button
                   type="button"
-                  onClick={() => void onCreateProject()}
+                  onClick={() => void onCreateProject("prose")}
                   disabled={loadingProject}
                   className="bw-button bw-button-primary"
                 >
-                  New workbook…
+                  New prose workbook…
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void onCreateProject("chat")}
+                  disabled={loadingProject}
+                  className="bw-button"
+                >
+                  New chat workbook…
                 </button>
                 <button
                   type="button"
@@ -3632,7 +4481,7 @@ export default function App() {
           data-mode={workspaceMode}
           style={{ gridTemplateColumns: workspaceColumns }}
         >
-          {workspaceMode === "compose" && treeVisible ? (
+          {(isChatProject || workspaceMode === "compose") && treeVisible ? (
             <aside className="bw-tree">
               <div className="bw-rail-head">
                 <div>
@@ -3695,7 +4544,7 @@ export default function App() {
                 {Object.keys(tree.nodes).length.toLocaleString()} total
               </div>
             </aside>
-          ) : workspaceMode === "compose" ? (
+          ) : isChatProject || workspaceMode === "compose" ? (
             <div className="bw-collapsed-rail bw-collapsed-rail-left">
               <button
                 type="button"
@@ -3709,7 +4558,7 @@ export default function App() {
             </div>
           ) : null}
 
-          {workspaceMode === "compose" && treeVisible && (
+          {(isChatProject || workspaceMode === "compose") && treeVisible && (
             <div
               className="bw-splitter bw-tree-splitter"
               role="separator"
@@ -3733,59 +4582,64 @@ export default function App() {
           )}
 
           <main className="bw-editor">
-            <nav className="bw-mode-tabs" aria-label="Writing mode">
-              <button
-                type="button"
-                data-active={workspaceMode === "compose"}
-                onClick={() => {
-                  if (workspaceMode !== "compose") {
-                    void commitBuffer();
-                  }
-                  setWorkspaceMode("compose");
-                  clearAutocomplete();
-                }}
-                disabled={saving}
-              >
-                Compose
-              </button>
-              <button
-                type="button"
-                data-active={workspaceMode === "autocomplete"}
-                onClick={() => {
-                  if (streaming) return;
-                  setWorkspaceMode("autocomplete");
-                  bufferSelectionRef.current = {
-                    start: buffer.length,
-                    end: buffer.length,
-                  };
-                  window.requestAnimationFrame(() => {
-                    editorRef.current?.focus();
-                    editorRef.current?.setSelectionRange(buffer.length, buffer.length);
-                  });
-                }}
-                disabled={streaming}
-              >
-                Autocomplete
-              </button>
-              <button
-                type="button"
-                data-active={workspaceMode === "map"}
-                onClick={() => {
-                  if (streaming) return;
-                  clearAutocomplete();
-                  setWorkspaceMode("map");
-                  setMapFitRequest((value) => value + 1);
-                  if (dirtyBuffer) {
-                    void commitBuffer().finally(() =>
-                      setMapFitRequest((value) => value + 1),
-                    );
-                  }
-                }}
-                disabled={streaming || saving}
-              >
-                Node Map
-              </button>
-            </nav>
+            {!isChatProject && (
+              <nav className="bw-mode-tabs" aria-label="Writing mode">
+                <button
+                  type="button"
+                  data-active={workspaceMode === "compose"}
+                  onClick={() => {
+                    if (workspaceMode !== "compose") {
+                      void commitBuffer();
+                    }
+                    setWorkspaceMode("compose");
+                    clearAutocomplete();
+                  }}
+                  disabled={saving}
+                >
+                  Compose
+                </button>
+                <button
+                  type="button"
+                  data-active={workspaceMode === "autocomplete"}
+                  onClick={() => {
+                    if (streaming) return;
+                    setWorkspaceMode("autocomplete");
+                    bufferSelectionRef.current = {
+                      start: buffer.length,
+                      end: buffer.length,
+                    };
+                    window.requestAnimationFrame(() => {
+                      editorRef.current?.focus();
+                      editorRef.current?.setSelectionRange(
+                        buffer.length,
+                        buffer.length,
+                      );
+                    });
+                  }}
+                  disabled={streaming}
+                >
+                  Autocomplete
+                </button>
+                <button
+                  type="button"
+                  data-active={workspaceMode === "map"}
+                  onClick={() => {
+                    if (streaming) return;
+                    clearAutocomplete();
+                    setWorkspaceMode("map");
+                    setMapFitRequest((value) => value + 1);
+                    if (dirtyBuffer) {
+                      void commitBuffer().finally(() =>
+                        setMapFitRequest((value) => value + 1),
+                      );
+                    }
+                  }}
+                  disabled={streaming || saving}
+                >
+                  Node Map
+                </button>
+              </nav>
+            )}
             <div
               className="bw-editor-main"
               data-branch-view={
@@ -3794,7 +4648,9 @@ export default function App() {
                   : "none"
               }
             >
-              {workspaceMode === "compose" &&
+              {!isChatProject &&
+                workspaceMode === "compose" &&
+                candidateContext === "prose" &&
                 branchPickerOpen &&
                 branchViewMode === "grid" &&
                 composeDisplayMode === "cards" && (
@@ -3908,7 +4764,9 @@ export default function App() {
                   </section>
                 )}
 
-              {workspaceMode === "compose" &&
+              {!isChatProject &&
+                workspaceMode === "compose" &&
+                candidateContext === "prose" &&
                 branchPickerOpen &&
                 branchViewMode === "grid" &&
                 composeDisplayMode === "cards" && (
@@ -3921,7 +4779,9 @@ export default function App() {
                   />
                 )}
 
-              {workspaceMode === "compose" &&
+              {!isChatProject &&
+                workspaceMode === "compose" &&
+                candidateContext === "prose" &&
                 branchPickerOpen &&
                 branchViewMode === "strip" && (
                   <section className="bw-branch-strip">
@@ -4016,7 +4876,9 @@ export default function App() {
                   </section>
                 )}
 
-              {workspaceMode === "map" ? (
+              {isChatProject ? (
+                renderChatSurface()
+              ) : workspaceMode === "map" ? (
                 renderNodeMap()
               ) : (
                 <>
@@ -4304,29 +5166,31 @@ export default function App() {
                       </span>
                     )}
                   </label>
-                  <div className="bw-display-toggle" aria-label="Display mode">
-                    <span>Display</span>
-                    <button
-                      type="button"
-                      data-active={composeDisplayMode === "cards"}
-                      onClick={() => {
-                        setComposeDisplayMode("cards");
-                        saveProjectSettings({ display_mode: "cards" });
-                      }}
-                    >
-                      cards
-                    </button>
-                    <button
-                      type="button"
-                      data-active={composeDisplayMode === "inline"}
-                      onClick={() => {
-                        setComposeDisplayMode("inline");
-                        saveProjectSettings({ display_mode: "inline" });
-                      }}
-                    >
-                      inline
-                    </button>
-                  </div>
+                  {!isChatProject && (
+                    <div className="bw-display-toggle" aria-label="Display mode">
+                      <span>Display</span>
+                      <button
+                        type="button"
+                        data-active={composeDisplayMode === "cards"}
+                        onClick={() => {
+                          setComposeDisplayMode("cards");
+                          saveProjectSettings({ display_mode: "cards" });
+                        }}
+                      >
+                        cards
+                      </button>
+                      <button
+                        type="button"
+                        data-active={composeDisplayMode === "inline"}
+                        onClick={() => {
+                          setComposeDisplayMode("inline");
+                          saveProjectSettings({ display_mode: "inline" });
+                        }}
+                      >
+                        inline
+                      </button>
+                    </div>
+                  )}
                 </>
               ) : workspaceMode === "autocomplete" ? (
                 <label className="bw-field">
@@ -4364,7 +5228,25 @@ export default function App() {
                     {dirtyBuffer ? "Unsaved changes" : "Saved"}
                   </span>
                 )}
-                {workspaceMode === "compose" && streaming ? (
+                {isChatProject && streaming ? (
+                  <button
+                    type="button"
+                    onClick={onCancel}
+                    className="bw-button bw-button-primary"
+                  >
+                    Stop
+                  </button>
+                ) : isChatProject ? (
+                  <button
+                    type="button"
+                    onClick={() => void startChatAssistantGeneration()}
+                    disabled={saving || !currentTabbyModel || !chatCanGenerateAssistant}
+                    className="bw-button bw-button-primary"
+                    title="Generate assistant branches"
+                  >
+                    Generate
+                  </button>
+                ) : workspaceMode === "compose" && streaming ? (
                   <button
                     type="button"
                     onClick={onCancel}

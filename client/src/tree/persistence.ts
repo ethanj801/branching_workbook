@@ -13,6 +13,8 @@ function nodeFromModel(node: NodeModel): TreeNode {
     text: node.text,
     name: node.name ?? null,
     source: node.source,
+    role: node.role,
+    endOfTurn: node.end_of_turn,
     hidden: node.hidden,
     starred: node.starred ?? false,
     createdAt: node.created_at,
@@ -30,6 +32,8 @@ function modelFromNode(node: TreeNode, isMainPath: boolean): NodeModel {
     text: node.text,
     name: node.name ?? null,
     source: node.source,
+    role: node.role,
+    end_of_turn: node.endOfTurn,
     hidden: node.hidden,
     is_main_path: isMainPath,
     starred: node.starred,
@@ -47,6 +51,8 @@ function sameNode(a: TreeNode, b: TreeNode): boolean {
     a.text === b.text &&
     (a.name ?? null) === (b.name ?? null) &&
     a.source === b.source &&
+    a.role === b.role &&
+    a.endOfTurn === b.endOfTurn &&
     a.hidden === b.hidden &&
     a.starred === b.starred &&
     a.createdAt === b.createdAt &&

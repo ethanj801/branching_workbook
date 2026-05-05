@@ -131,6 +131,37 @@ async def test_completions_emits_terminal_finish_reason(client: AsyncClient):
     assert final["text"] == ""
 
 
+async def test_chat_completions_streams_chat_delta_chunks(client: AsyncClient):
+    async with client.stream(
+        "POST",
+        "/api/chat/completions",
+        json={
+            "messages": [
+                {"role": "system", "content": ""},
+                {"role": "user", "content": "hello"},
+            ],
+            "n": 1,
+            "max_tokens": 40,
+        },
+    ) as r:
+        assert r.status_code == 200
+        assert r.headers["content-type"].startswith("text/event-stream")
+        body = ""
+        async for chunk in r.aiter_text():
+            body += chunk
+
+    events, done = _parse_sse(body)
+
+    assert done
+    assert len(events) >= 2
+    for ev in events:
+        assert set(ev) >= {"id", "choices"}
+        assert ev["id"].startswith("chatcmpl-")
+        choice = ev["choices"][0]
+        assert set(choice) >= {"index", "delta", "finish_reason"}
+        assert choice["index"] == 0
+
+
 async def test_completions_assembles_into_continuous_text(client: AsyncClient):
     """Concatenating all choices[0].text across chunks must reconstruct a valid
     continuation — this is the invariant the client relies on when streaming

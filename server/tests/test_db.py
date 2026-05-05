@@ -79,6 +79,7 @@ async def test_create_project_initializes_schema_and_root(
     assert info["path"].endswith("test.bwbk")
     assert info["title"] == "Test"
     assert info["version"] == "1"
+    assert info["kind"] == "prose"
     assert info["created_at"] is not None
     assert project_path.exists()
 
@@ -88,6 +89,29 @@ async def test_create_project_initializes_schema_and_root(
     assert root["id"] == "root"
     assert root["parent_id"] is None
     assert root["is_main_path"] is True
+    assert root["role"] == "user"
+    assert root["end_of_turn"] is False
+
+
+async def test_create_chat_project_initializes_system_node(
+    client: AsyncClient, project_path: Path
+):
+    r = await client.post(
+        "/api/projects",
+        json={"path": str(project_path), "title": "Chat", "kind": "chat"},
+    )
+    assert r.status_code == 200
+    assert r.json()["kind"] == "chat"
+
+    nodes = {node["id"]: node for node in (await client.get("/api/nodes")).json()}
+    assert set(nodes) == {"root", "system"}
+    assert nodes["root"]["parent_id"] is None
+    assert nodes["root"]["is_main_path"] is True
+    assert nodes["root"]["role"] == "user"
+    assert nodes["system"]["parent_id"] == "root"
+    assert nodes["system"]["role"] == "system"
+    assert nodes["system"]["end_of_turn"] is True
+    assert nodes["system"]["is_main_path"] is True
 
 
 async def test_create_refuses_existing_path(
@@ -227,6 +251,20 @@ async def test_node_starred_roundtrip(client: AsyncClient, project_path: Path):
         node for node in (await client.get("/api/nodes")).json() if node["id"] == "A"
     )
     assert fetched["starred"] is False
+
+
+async def test_node_chat_fields_roundtrip(client: AsyncClient, project_path: Path):
+    await client.post("/api/projects", json={"path": str(project_path)})
+    a = _mk("A", "root", "hello", role="assistant", end_of_turn=True)
+
+    r = await client.post("/api/nodes/batch", json={"creates": [a]})
+    assert r.status_code == 200
+
+    fetched = next(
+        node for node in (await client.get("/api/nodes")).json() if node["id"] == "A"
+    )
+    assert fetched["role"] == "assistant"
+    assert fetched["end_of_turn"] is True
 
 
 async def test_batch_main_path_flag_is_exclusive(

@@ -126,6 +126,10 @@ Use the model panel to:
 - load the model
 - generate
 
+For models that need multiple GPUs, enable `Tensor parallel` in the model
+panel before loading. Leave `GPU split` blank to let TabbyAPI choose its split,
+or enter comma-separated GB values such as `20, 25` for a manual split.
+
 ## Gotchas
 
 ### Branches stream one-at-a-time
@@ -167,3 +171,14 @@ Practical guidance:
 
 `deploy/runpod/` is only for the optional image/template helper. The normal
 user-facing connection instructions now live here at the repo root.
+
+## Example common run 
+Port 5000 is occupied by airdrop
+
+Modify with real ssh login
+`ssh -N -L 5001:127.0.0.1:5000 root@157.254.50.85 -p 12012 -i ~/.ssh/id_ed25519`
+
+`PATH=/opt/homebrew/bin:$PATH \
+  BWBK_BACKEND=tabby \
+  BWBK_TABBY_COMPLETIONS_URL=http://127.0.0.1:5001/v1/completions \
+  just dev`

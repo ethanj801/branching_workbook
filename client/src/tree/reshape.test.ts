@@ -28,6 +28,8 @@ function makeNode(
     parentId,
     text,
     source,
+    role: "user",
+    endOfTurn: false,
     hidden,
     starred: false,
     createdAt: 0,

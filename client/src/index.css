@@ -826,6 +826,180 @@ textarea:disabled {
   font-size: 0.74rem;
 }
 
+.bw-chat-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.bw-chat-transcript {
+  width: min(58rem, calc(100% - clamp(1.5rem, 6vw, 7rem)));
+  min-height: 100%;
+  margin: clamp(1rem, 3vh, 2.5rem) auto 3rem;
+  padding: 0 clamp(0.75rem, 2vw, 2rem);
+}
+
+.bw-chat-system,
+.bw-chat-turn {
+  border: 0.5px solid var(--line);
+  border-radius: 6px;
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.bw-chat-system {
+  margin-bottom: 0.85rem;
+  background: #f1efe8;
+}
+
+.bw-chat-system-toggle {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.55rem;
+  border: 0;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 0;
+  text-align: left;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+}
+
+.bw-chat-system-toggle > span:first-child {
+  display: inline-flex;
+  width: 1rem;
+  justify-content: center;
+  color: var(--ink);
+  font-size: 0.9rem;
+  letter-spacing: 0;
+}
+
+.bw-chat-system-preview {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--ink-muted);
+  font-weight: 500;
+  letter-spacing: 0;
+  text-overflow: ellipsis;
+  text-transform: none;
+  white-space: nowrap;
+}
+
+.bw-chat-system-editor {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 0.85rem;
+}
+
+.bw-chat-system-editor textarea,
+.bw-chat-input textarea,
+.bw-chat-turn-editor {
+  width: 100%;
+  min-height: 7rem;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: rgba(255, 254, 249, 0.78);
+  color: var(--ink);
+  padding: 0.75rem;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 1rem;
+  line-height: 1.55;
+}
+
+.bw-chat-system-editor textarea:focus,
+.bw-chat-input textarea:focus,
+.bw-chat-turn-editor:focus {
+  outline: none;
+  border-color: var(--state);
+  box-shadow: 0 0 0 2px var(--state-soft);
+}
+
+.bw-chat-turn {
+  margin-top: 0.75rem;
+  background: transparent;
+}
+
+.bw-chat-turn[data-role="assistant"] {
+  background: #fafaf7;
+}
+
+.bw-chat-turn-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  color: var(--ink-muted);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.bw-chat-turn-head span + span {
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.bw-chat-turn-text {
+  margin-top: 0.6rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  font-size: 1.05rem;
+  line-height: 1.62;
+}
+
+.bw-chat-turn-editor {
+  margin-top: 0.6rem;
+  min-height: 5.5rem;
+  resize: vertical;
+  background: rgba(255, 254, 249, 0.52);
+}
+
+.bw-chat-turn[data-role="assistant"] .bw-chat-turn-editor {
+  background: rgba(255, 254, 249, 0.68);
+}
+
+.bw-chat-candidate-area {
+  margin-top: 1rem;
+  border-top: 1px solid var(--line);
+  padding-top: 0.85rem;
+}
+
+.bw-chat-candidate-head,
+.bw-chat-turn-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.bw-chat-candidate-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  gap: 0.75rem;
+  margin-top: 0.75rem;
+}
+
+.bw-chat-branch-card {
+  min-height: 13rem;
+}
+
+.bw-chat-turn-actions {
+  justify-content: flex-start;
+  margin-top: 0.9rem;
+}
+
+.bw-chat-input textarea {
+  margin-top: 0.6rem;
+  min-height: 8.5rem;
+}
+
 .bw-root-start-warning {
   margin-top: 1rem;
   border-left: 2px solid var(--warn);

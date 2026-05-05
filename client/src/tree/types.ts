@@ -1,4 +1,5 @@
 export type NodeSource = "generated" | "user_written" | "composed";
+export type ChatRole = "system" | "user" | "assistant";
 
 export type TreeNode = {
   id: string;
@@ -6,6 +7,8 @@ export type TreeNode = {
   text: string;
   name?: string | null;
   source: NodeSource;
+  role: ChatRole;
+  endOfTurn: boolean;
   hidden: boolean;
   starred: boolean;
   createdAt: number;

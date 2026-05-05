@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from typing import Any
@@ -174,12 +175,16 @@ async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
         stream_upstream(),
         media_type=upstream.headers.get("content-type", "text/event-stream"),
     )
-
-
 @router.post("/api/completions")
 async def completions(request: Request, body: dict[str, Any]):
     payload = {**body, "stream": True}
     return await _stream_tabby_post(_tabby_completions_url(), request, payload)
+
+
+@router.post("/api/chat/completions")
+async def chat_completions(request: Request, body: dict[str, Any]):
+    payload = {**body, "stream": True}
+    return await _stream_tabby_post("/v1/chat/completions", request, payload)
 
 
 @router.get("/api/tabby/model")
@@ -197,10 +202,37 @@ async def load_model(request: Request, body: dict[str, Any]):
     return await _stream_tabby_post("/v1/model/load", request, body)
 
 
+async def _model_is_unloaded() -> bool:
+    try:
+        current = await _request_json("GET", "/v1/model", missing_as_null=True)
+    except HTTPException:
+        return False
+    return not current
+
+
 @router.post("/api/tabby/model/unload")
 async def unload_model():
-    await _request_json("POST", "/v1/model/unload")
-    return JSONResponse({"unloaded": True})
+    # TabbyAPI's /v1/model/unload races with exllamav3's AsyncGenerator: when an
+    # unload lands just as a job reaches EOS, exllamav3 has already removed the
+    # job from its internal `jobs` dict but TabbyAPI's `active_job_ids` still
+    # holds it, so wait_for_jobs(skip_wait=True) calls cancel() and trips an
+    # `assert job.job in self.jobs` in async_generator.py. The unload bubbles
+    # up as 500/502 even though most of the teardown has already happened.
+    # Recover by checking state and retrying once before surfacing the error.
+    try:
+        await _request_json("POST", "/v1/model/unload")
+        return JSONResponse({"unloaded": True})
+    except HTTPException as initial_error:
+        if await _model_is_unloaded():
+            return JSONResponse({"unloaded": True})
+        await asyncio.sleep(0.1)
+        try:
+            await _request_json("POST", "/v1/model/unload")
+            return JSONResponse({"unloaded": True})
+        except HTTPException:
+            if await _model_is_unloaded():
+                return JSONResponse({"unloaded": True})
+            raise initial_error from None
 
 
 @router.post("/api/tabby/download")

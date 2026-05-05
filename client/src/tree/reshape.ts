@@ -3,6 +3,7 @@ import {
   concatPathText,
   pathFromRoot,
   type NodeSource,
+  type ChatRole,
   type Tree,
   type TreeNode,
 } from "./types";
@@ -51,6 +52,8 @@ export type ReshapeOptions = {
   newId: () => string;
   now: () => number;
   source?: NodeSource;
+  role?: ChatRole;
+  endOfTurn?: boolean;
 };
 
 export type ReshapeResult = {
@@ -127,6 +130,8 @@ export function reshape(
             text: node.text.slice(0, localOffset),
             name: node.name ?? null,
             source: "user_written",
+            role: node.role,
+            endOfTurn: false,
             hidden: false,
             starred: node.starred,
             createdAt: opts.now(),
@@ -138,6 +143,8 @@ export function reshape(
             text: node.text.slice(localOffset),
             name: null,
             source: node.source,
+            role: node.role,
+            endOfTurn: node.endOfTurn,
             hidden: node.hidden,
             starred: false,
             createdAt: opts.now(),
@@ -202,6 +209,8 @@ export function reshape(
     text: divergent,
     name: null,
     source,
+    role: opts.role ?? "user",
+    endOfTurn: opts.endOfTurn ?? false,
     hidden: false,
     starred: false,
     createdAt: opts.now(),

@@ -15,6 +15,30 @@ export type CompletionChunk = {
   choices: CompletionChoice[];
 };
 
+export type ChatRole = "system" | "user" | "assistant";
+
+export type ChatCompletionMessage = {
+  role: ChatRole;
+  content: string;
+};
+
+export type ChatCompletionDelta = {
+  content?: string;
+  reasoning_content?: string;
+};
+
+export type ChatCompletionChoice = {
+  index: number;
+  delta: ChatCompletionDelta;
+  finish_reason: string | null;
+};
+
+export type ChatCompletionChunk = {
+  id: string;
+  model_name?: string;
+  choices: ChatCompletionChoice[];
+};
+
 // Superset of the TabbyAPI fields we'll ever send in one request.
 // The client builds this by merging `{ prompt, n }` with the active sampler
 // preset (filtered to known-supported keys by `sanitizeSamplerBody`).
@@ -57,6 +81,13 @@ export type CompletionRequestBody = {
 
 export type SamplerBody = Omit<CompletionRequestBody, "prompt" | "n">;
 
+export type ChatCompletionRequestBody = SamplerBody & {
+  messages: ChatCompletionMessage[];
+  response_prefix?: string;
+  add_generation_prompt?: boolean;
+  n?: number;
+};
+
 export type SamplerPreset = {
   id: string;
   name: string;
@@ -75,6 +106,7 @@ export type ProjectInfo = {
   title: string | null;
   created_at: string | null;
   version: string;
+  kind: "prose" | "chat";
 };
 
 export type ComposeDisplayMode = "cards" | "inline";
@@ -94,6 +126,8 @@ export type NodeModel = {
   text: string;
   name?: string | null;
   source: NodeSource;
+  role: ChatRole;
+  end_of_turn: boolean;
   hidden: boolean;
   is_main_path: boolean;
   starred?: boolean;
@@ -115,6 +149,11 @@ export type TabbyModelParameters = {
   max_seq_len?: number | null;
   cache_size?: number | null;
   cache_mode?: string | null;
+  tensor_parallel?: boolean | null;
+  tensor_parallel_backend?: string | null;
+  gpu_split_auto?: boolean | null;
+  autosplit_reserve?: number[] | null;
+  gpu_split?: number[] | null;
   rope_scale?: number | null;
   rope_alpha?: number | null;
   max_batch_size?: number | null;
@@ -145,6 +184,10 @@ export type ModelLoadRequest = {
   cache_size?: number;
   cache_mode?: string;
   tensor_parallel?: boolean;
+  tensor_parallel_backend?: "native" | "nccl";
+  gpu_split_auto?: boolean;
+  autosplit_reserve?: number[];
+  gpu_split?: number[];
 };
 
 export type ModelLoadEvent = {
@@ -203,11 +246,15 @@ function streamErrorMessage(payload: unknown): string | null {
   return typeof message === "string" ? message : null;
 }
 
-export function createProject(path: string, title?: string): Promise<ProjectInfo> {
+export function createProject(
+  path: string,
+  title?: string,
+  kind: "prose" | "chat" = "prose",
+): Promise<ProjectInfo> {
   return requestJson<ProjectInfo>("/api/projects", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ path, title: title || null }),
+    body: JSON.stringify({ path, title: title || null, kind }),
   });
 }
 
@@ -331,6 +378,21 @@ export async function streamCompletion(
   signal?: AbortSignal,
 ): Promise<void> {
   const response = await fetch("/api/completions", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...body, stream: true }),
+    signal,
+  });
+
+  await streamJsonEvents(response, onChunk);
+}
+
+export async function streamChatCompletion(
+  body: ChatCompletionRequestBody,
+  onChunk: (chunk: ChatCompletionChunk) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch("/api/chat/completions", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...body, stream: true }),

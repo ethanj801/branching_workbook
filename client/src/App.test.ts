@@ -14,6 +14,8 @@ function makeNode(
     text,
     name,
     source: "user_written",
+    role: "user",
+    endOfTurn: false,
     hidden: false,
     starred: false,
     createdAt: 0,

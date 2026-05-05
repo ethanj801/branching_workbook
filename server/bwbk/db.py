@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS nodes (
     text                 TEXT NOT NULL,
     name                 TEXT,
     source               TEXT NOT NULL,
+    role                 TEXT NOT NULL DEFAULT 'user',
+    end_of_turn          INTEGER NOT NULL DEFAULT 0,
     hidden               INTEGER NOT NULL DEFAULT 0,
     is_main_path         INTEGER NOT NULL DEFAULT 0,
     starred              INTEGER NOT NULL DEFAULT 0,
@@ -77,6 +79,12 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE nodes ADD COLUMN starred INTEGER NOT NULL DEFAULT 0"
             )
+        if "role" not in columns:
+            conn.execute("ALTER TABLE nodes ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+        if "end_of_turn" not in columns:
+            conn.execute(
+                "ALTER TABLE nodes ADD COLUMN end_of_turn INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 class NodeModel(BaseModel):
@@ -85,6 +93,8 @@ class NodeModel(BaseModel):
     text: str
     name: str | None = None
     source: Literal["generated", "user_written", "composed"]
+    role: Literal["system", "user", "assistant"] = "user"
+    end_of_turn: bool = False
     hidden: bool = False
     is_main_path: bool = False
     starred: bool = False
@@ -98,6 +108,7 @@ class NodeModel(BaseModel):
 class CreateProjectRequest(BaseModel):
     path: str
     title: str | None = None
+    kind: Literal["prose", "chat"] = "prose"
 
 
 class OpenProjectRequest(BaseModel):
@@ -109,6 +120,7 @@ class ProjectInfo(BaseModel):
     title: str | None = None
     created_at: str | None = None
     version: str = "1"
+    kind: Literal["prose", "chat"] = "prose"
 
 
 class MutationBatch(BaseModel):
@@ -136,6 +148,7 @@ def _project_info(conn: sqlite3.Connection, path: str) -> ProjectInfo:
         title=meta.get("title"),
         created_at=meta.get("created_at"),
         version=meta.get("version", "1"),
+        kind=meta.get("kind") if meta.get("kind") in {"prose", "chat"} else "prose",
     )
 
 
@@ -187,6 +200,8 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         text=r["text"],
         name=r["name"],
         source=r["source"],
+        role=r["role"] if r["role"] in {"system", "user", "assistant"} else "user",
+        end_of_turn=bool(r["end_of_turn"]) if "end_of_turn" in columns else False,
         hidden=bool(r["hidden"]),
         is_main_path=bool(r["is_main_path"]),
         starred=bool(r["starred"]) if "starred" in columns else False,
@@ -204,9 +219,9 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         INSERT INTO nodes (
-            id, parent_id, text, name, source, hidden, is_main_path, starred,
+            id, parent_id, text, name, source, role, end_of_turn, hidden, is_main_path, starred,
             created_at, sampler_snapshot, seed, model_identifier, prior_context_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             n.id,
@@ -214,6 +229,8 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.text,
             n.name,
             n.source,
+            n.role,
+            int(n.end_of_turn),
             int(n.hidden),
             int(n.is_main_path),
             int(n.starred),
@@ -230,7 +247,8 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         UPDATE nodes
-        SET parent_id = ?, text = ?, name = ?, source = ?, hidden = ?, is_main_path = ?,
+        SET parent_id = ?, text = ?, name = ?, source = ?, role = ?, end_of_turn = ?,
+            hidden = ?, is_main_path = ?,
             starred = ?, sampler_snapshot = ?, seed = ?, model_identifier = ?,
             prior_context_hash = ?
         WHERE id = ?
@@ -240,6 +258,8 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.text,
             n.name,
             n.source,
+            n.role,
+            int(n.end_of_turn),
             int(n.hidden),
             int(n.is_main_path),
             int(n.starred),
@@ -275,14 +295,33 @@ def create_project(data: CreateProjectRequest, request: Request) -> ProjectInfo:
                 ("title", data.title),
             )
         conn.execute(
+            "INSERT INTO project_meta (key, value) VALUES (?, ?)",
+            ("kind", data.kind),
+        )
+        if data.kind == "chat":
+            conn.execute(
+                "INSERT INTO project_meta (key, value) VALUES (?, ?)",
+                ("max_tokens", "128"),
+            )
+        conn.execute(
             """
             INSERT INTO nodes (
-                id, parent_id, text, name, source, hidden, is_main_path, created_at,
-                prior_context_hash
-            ) VALUES ('root', NULL, '', NULL, 'user_written', 0, 1, ?, ?)
+                id, parent_id, text, name, source, role, end_of_turn, hidden,
+                is_main_path, created_at, prior_context_hash
+            ) VALUES ('root', NULL, '', NULL, 'user_written', 'user', 0, 0, ?, ?, ?)
             """,
-            (_now_epoch(), "0" * 16),
+            (1, _now_epoch(), "0" * 16),
         )
+        if data.kind == "chat":
+            conn.execute(
+                """
+                INSERT INTO nodes (
+                    id, parent_id, text, name, source, role, end_of_turn, hidden,
+                    is_main_path, created_at, prior_context_hash
+                ) VALUES ('system', 'root', '', NULL, 'user_written', 'system', 1, 0, 1, ?, ?)
+                """,
+                (_now_epoch(), "0" * 16),
+            )
     request.app.state.conn = conn
     request.app.state.project_path = str(path)
     return _project_info(conn, str(path))
