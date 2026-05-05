@@ -2292,6 +2292,27 @@ export default function App() {
     }
   }
 
+  async function onDeleteChatTurn(turn: ChatTurn) {
+    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
+    const firstNode = turn.nodes[0];
+    if (!firstNode || firstNode.parentId === null) return;
+    const turnStart = chatPathNodes.findIndex((node) => node.id === firstNode.id);
+    if (turnStart < 0) return;
+    const toHide = chatPathNodes.slice(turnStart);
+    if (toHide.length === 0) return;
+    const nextNodes: Record<string, TreeNode> = { ...tree.nodes };
+    for (const node of toHide) {
+      nextNodes[node.id] = { ...node, hidden: true };
+    }
+    const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
+    setChatTurnDrafts((current) => {
+      const next = { ...current };
+      for (const node of toHide) delete next[node.id];
+      return next;
+    });
+    await persistChatTree(tree, nextTree, firstNode.parentId);
+  }
+
   async function onUseChatCandidate(index: number) {
     if (
       !tree ||
@@ -4002,6 +4023,19 @@ export default function App() {
                         disabled={saving || streaming}
                       >
                         End turn
+                      </button>
+                    </div>
+                  )}
+                  {!isActiveAssistant && (
+                    <div className="bw-chat-turn-actions">
+                      <button
+                        type="button"
+                        className="bw-button"
+                        onClick={() => void onDeleteChatTurn(turn)}
+                        disabled={saving || streaming}
+                        title="Hide this turn and any later turns on the active path"
+                      >
+                        Delete
                       </button>
                     </div>
                   )}
