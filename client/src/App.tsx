@@ -583,6 +583,8 @@ export default function App() {
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
   const mapDragRef = useRef<NodeMapDrag | null>(null);
   const mapSuppressClickRef = useRef(false);
+  const lastHandledFitRequestRef = useRef(0);
+  const lastHandledLocateRequestRef = useRef(0);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
@@ -1125,6 +1127,10 @@ export default function App() {
     ) {
       return;
     }
+    if (lastHandledLocateRequestRef.current === mapLocateRequest) {
+      return;
+    }
+    lastHandledLocateRequestRef.current = mapLocateRequest;
 
     const viewport = mapViewportRef.current;
     const targetId =
@@ -1205,6 +1211,10 @@ export default function App() {
     if (workspaceMode !== "map" || !nodeMapLayout || mapFitRequest === 0) {
       return;
     }
+    if (lastHandledFitRequestRef.current === mapFitRequest) {
+      return;
+    }
+    lastHandledFitRequestRef.current = mapFitRequest;
 
     const viewport = mapViewportRef.current;
     if (!viewport) return;
@@ -2789,7 +2799,7 @@ export default function App() {
       setMapSelectionIds([nextSelectedId]);
       setBuffer(nextBuffer);
       resetRecordedSelectionToEnd(nextBuffer);
-      setMapFitRequest((value) => value + 1);
+      setMapLocateRequest((value) => value + 1);
     } catch (err) {
       setError(formatError(err));
     } finally {
