@@ -1887,6 +1887,12 @@ export default function App() {
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
+    // Anchor the editor's top to its current viewport position so the upcoming
+    // candidate-cards collapse (grid -> strip) doesn't slide the buffer up to
+    // the top of the document.
+    const editorEl = document.querySelector(".bw-buffer") as HTMLElement | null;
+    const editorTopBefore = editorEl?.getBoundingClientRect().top ?? null;
+
     preserveUsedRangeForBufferRef.current = nextBuffer;
     setBuffer(nextBuffer);
     bufferSelectionArmedRef.current = true;
@@ -1895,6 +1901,15 @@ export default function App() {
     setPickedCandidateIndex(index);
     setBranchViewMode("strip");
     window.requestAnimationFrame(() => {
+      if (editorTopBefore !== null) {
+        const after = (document.querySelector(".bw-buffer") as HTMLElement | null)
+          ?.getBoundingClientRect()
+          .top;
+        if (after !== undefined) {
+          const delta = after - editorTopBefore;
+          if (delta !== 0) window.scrollBy(0, delta);
+        }
+      }
       editorRef.current?.focus();
       editorRef.current?.setSelectionRange(nextCursor, nextCursor);
     });
