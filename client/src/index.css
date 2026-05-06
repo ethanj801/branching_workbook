@@ -1520,12 +1520,16 @@ textarea:disabled {
 .bw-display-toggle {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
   color: var(--ink-muted);
   font-size: 0.78rem;
 }
 
+.bw-display-toggle > span {
+  margin-right: 0.35rem;
+}
+
 .bw-display-toggle button {
+  position: relative;
   min-height: 1.65rem;
   border: 1px solid var(--line-dark);
   background: transparent;
@@ -1539,7 +1543,7 @@ textarea:disabled {
 }
 
 .bw-display-toggle button:last-of-type {
-  border-left: 0;
+  margin-left: -1px;
   border-radius: 0 999px 999px 0;
 }
 
@@ -1547,6 +1551,7 @@ textarea:disabled {
   border-color: var(--accent);
   background: var(--accent);
   color: #fff9ed;
+  z-index: 1;
 }
 
 .bw-input,

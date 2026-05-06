@@ -36,6 +36,7 @@ Read `branching-workbook.md` end-to-end before making design decisions, but thes
 - **Streaming.** Client uses the EventSource API against TabbyAPI's SSE; route by `choices[i].index`.
 - **Tokenization.** Local JS tokenizer loaded from the model's `tokenizer.json` (preferred over round-tripping TabbyAPI's tokenize endpoint).
 - **Endpoints the client uses (§6.3):** `POST /v1/completions`, `POST /v1/model/load`, `POST /v1/model/unload`, `GET /v1/model`, `GET /v1/models`, `POST /v1/download`. All are TabbyAPI-native; no custom endpoints.
+- **Manuscript scroll container.** In prose mode the buffer scrolls inside `.bw-manuscript-scroll` (`overflow:auto`), **not** the window or CodeMirror's `.cm-scroller` (which is intentionally `overflow:visible` so the parent can scroll). Any code that needs to preserve reading position across a layout shift should target `.bw-manuscript-scroll` and prefer the `pinManuscriptScroll()` helper in `App.tsx` (distance-from-bottom anchor across two `requestAnimationFrame` ticks). Plain `setBuffer` while the editor is unfocused will yank the container to the top via contenteditable caret-into-view — that's the failure mode the helper exists to absorb.
 
 ## Tooling conventions
 

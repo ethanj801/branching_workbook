@@ -624,6 +624,39 @@ export default function App() {
     [activePreset, draftBody, presetBaseline],
   );
 
+  // Anchor on distance-from-bottom across a layout shift that resizes the
+  // manuscript pane. The candidate panel opening (strip → grid, or closed →
+  // grid via Generate) shrinks the pane, and an unfocused contenteditable's
+  // caret-into-view can yank the scroll container to the top. Snapshot before
+  // the state mutation, restore across two animation frames.
+  function pinManuscriptScroll(): () => void {
+    const scrollContainer = document.querySelector(
+      ".bw-manuscript-scroll",
+    ) as HTMLElement | null;
+    if (!scrollContainer) return () => {};
+    const distanceFromBottom =
+      scrollContainer.scrollHeight -
+      scrollContainer.clientHeight -
+      scrollContainer.scrollTop;
+    return () => {
+      const restore = () => {
+        const target = Math.max(
+          0,
+          scrollContainer.scrollHeight -
+            scrollContainer.clientHeight -
+            distanceFromBottom,
+        );
+        if (Math.abs(scrollContainer.scrollTop - target) > 0.5) {
+          scrollContainer.scrollTop = target;
+        }
+      };
+      window.requestAnimationFrame(() => {
+        restore();
+        window.requestAnimationFrame(restore);
+      });
+    };
+  }
+
   const clearBranchPicker = useCallback(() => {
     setCandidates([]);
     setCandidateContext("prose");
@@ -1675,20 +1708,7 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    // Snapshot manuscript scroll position. Opening the grid candidate panel
-    // shrinks the manuscript pane, and an unfocused contenteditable's
-    // caret-into-view can yank the scroll container to the top. Anchor on
-    // distance-from-bottom so a user reading near the cursor stays near the
-    // cursor (and at-bottom stays at-bottom) across the layout shift.
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
-    const distanceFromBottomBefore =
-      scrollContainer === null
-        ? null
-        : scrollContainer.scrollHeight -
-          scrollContainer.clientHeight -
-          scrollContainer.scrollTop;
+    const restoreManuscriptScroll = pinManuscriptScroll();
     setCandidates(
       Array.from({ length: n }, () => ({
         text: "",
@@ -1709,23 +1729,7 @@ export default function App() {
     setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
-    if (scrollContainer && distanceFromBottomBefore !== null) {
-      const restoreFromBottom = () => {
-        const target = Math.max(
-          0,
-          scrollContainer.scrollHeight -
-            scrollContainer.clientHeight -
-            distanceFromBottomBefore,
-        );
-        if (Math.abs(scrollContainer.scrollTop - target) > 0.5) {
-          scrollContainer.scrollTop = target;
-        }
-      };
-      window.requestAnimationFrame(() => {
-        restoreFromBottom();
-        window.requestAnimationFrame(restoreFromBottom);
-      });
-    }
+    restoreManuscriptScroll();
     abortRef.current = new AbortController();
     let firstVisibleChosen = false;
 
@@ -4896,7 +4900,11 @@ export default function App() {
                             <button
                               type="button"
                               className="bw-branch-mini-main"
-                              onClick={() => setBranchViewMode("grid")}
+                              onClick={() => {
+                                const restore = pinManuscriptScroll();
+                                setBranchViewMode("grid");
+                                restore();
+                              }}
                               title="Expand last generation"
                             >
                               <span className="bw-branch-mini-label">
@@ -4934,7 +4942,9 @@ export default function App() {
                                 type="button"
                                 onClick={(event) => {
                                   event.stopPropagation();
+                                  const restore = pinManuscriptScroll();
                                   setBranchViewMode("grid");
+                                  restore();
                                 }}
                                 title="Expand branches"
                               >
