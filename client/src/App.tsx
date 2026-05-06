@@ -1887,11 +1887,17 @@ export default function App() {
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
-    // Anchor the editor's top to its current viewport position so the upcoming
-    // candidate-cards collapse (grid -> strip) doesn't slide the buffer up to
-    // the top of the document.
-    const editorEl = document.querySelector(".bw-buffer") as HTMLElement | null;
-    const editorTopBefore = editorEl?.getBoundingClientRect().top ?? null;
+    // The buffer lives inside .bw-manuscript-scroll (overflow:auto), not the
+    // window. When setBuffer triggers CodeMirror's wholesale doc replace the
+    // editor's caret is dispatched at the prior selection head — typically
+    // offset 0 if the user clicked "Use" without first focusing the editor —
+    // and the contenteditable's caret-into-view behavior yanks the scroll
+    // container to the top. Snapshot scrollTop here and restore it after the
+    // dispatch settles.
+    const scrollContainer = document.querySelector(
+      ".bw-manuscript-scroll",
+    ) as HTMLElement | null;
+    const scrollTopBefore = scrollContainer?.scrollTop ?? null;
 
     preserveUsedRangeForBufferRef.current = nextBuffer;
     setBuffer(nextBuffer);
@@ -1901,17 +1907,22 @@ export default function App() {
     setPickedCandidateIndex(index);
     setBranchViewMode("strip");
     window.requestAnimationFrame(() => {
-      if (editorTopBefore !== null) {
-        const after = (document.querySelector(".bw-buffer") as HTMLElement | null)
-          ?.getBoundingClientRect()
-          .top;
-        if (after !== undefined) {
-          const delta = after - editorTopBefore;
-          if (delta !== 0) window.scrollBy(0, delta);
-        }
+      if (scrollContainer && scrollTopBefore !== null) {
+        scrollContainer.scrollTop = scrollTopBefore;
       }
       editorRef.current?.focus();
       editorRef.current?.setSelectionRange(nextCursor, nextCursor);
+      if (scrollContainer && scrollTopBefore !== null) {
+        // setSelectionRange dispatches scrollIntoView on the cm-scroller,
+        // which has overflow:visible and so cannot scroll itself — but the
+        // browser may still nudge .bw-manuscript-scroll. Pin it again on the
+        // following frame so the user's reading position survives.
+        window.requestAnimationFrame(() => {
+          if (scrollContainer.scrollTop !== scrollTopBefore) {
+            scrollContainer.scrollTop = scrollTopBefore;
+          }
+        });
+      }
     });
   }
 
