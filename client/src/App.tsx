@@ -1675,6 +1675,15 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
+    // Snapshot manuscript scroll position. Switching to the grid candidate
+    // panel and toggling the editor's disabled state cause CodeMirror to
+    // re-layout; if the editor wasn't focused (caret at offset 0), the
+    // contenteditable's caret-into-view yanks .bw-manuscript-scroll to the
+    // top. Pin the scroll position across the layout shift.
+    const scrollContainer = document.querySelector(
+      ".bw-manuscript-scroll",
+    ) as HTMLElement | null;
+    const scrollTopBefore = scrollContainer?.scrollTop ?? null;
     setCandidates(
       Array.from({ length: n }, () => ({
         text: "",
@@ -1695,6 +1704,18 @@ export default function App() {
     setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
+    if (scrollContainer && scrollTopBefore !== null) {
+      window.requestAnimationFrame(() => {
+        if (scrollContainer.scrollTop !== scrollTopBefore) {
+          scrollContainer.scrollTop = scrollTopBefore;
+        }
+        window.requestAnimationFrame(() => {
+          if (scrollContainer.scrollTop !== scrollTopBefore) {
+            scrollContainer.scrollTop = scrollTopBefore;
+          }
+        });
+      });
+    }
     abortRef.current = new AbortController();
     let firstVisibleChosen = false;
 
