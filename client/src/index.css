@@ -1045,6 +1045,29 @@ textarea:disabled {
   gap: 0.5rem;
 }
 
+.bw-node-map-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.32rem;
+  margin-left: 0.4rem;
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.bw-node-map-toggle input {
+  margin: 0;
+}
+
+.bw-node-map-marquee {
+  position: absolute;
+  border: 1px solid var(--accent);
+  background: rgba(214, 122, 56, 0.12);
+  pointer-events: none;
+  border-radius: 2px;
+}
+
 .bw-node-map-zoom-button {
   width: 2rem;
   padding: 0;

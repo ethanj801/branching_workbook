@@ -126,6 +126,13 @@ type NodeMapDrag = {
   moved: boolean;
 };
 
+type NodeMapMarquee = {
+  pointerId: number;
+  startCanvas: { x: number; y: number };
+  currentCanvas: { x: number; y: number };
+  baseSelection: string[];
+};
+
 type MapTooltip = {
   text: string;
   x: number;
@@ -577,11 +584,14 @@ export default function App() {
   const [mapSelectionIds, setMapSelectionIds] = useState<string[]>([]);
   const [mapViewportSize, setMapViewportSize] = useState({ width: 0, height: 0 });
   const [mapTooltip, setMapTooltip] = useState<MapTooltip | null>(null);
+  const [mapShowHidden, setMapShowHidden] = useState(false);
+  const [mapMarquee, setMapMarquee] = useState<NodeMapMarquee | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
   const mapViewportRef = useRef<HTMLDivElement | null>(null);
   const mapDragRef = useRef<NodeMapDrag | null>(null);
+  const mapMarqueeRef = useRef<NodeMapMarquee | null>(null);
   const mapSuppressClickRef = useRef(false);
   const lastHandledFitRequestRef = useRef(0);
   const lastHandledLocateRequestRef = useRef(0);
@@ -607,7 +617,38 @@ export default function App() {
     : currentTabbyModel
       ? "Model loaded and idle"
       : "No model loaded";
-  const nodeMapLayout = useMemo(() => (tree ? buildNodeMapLayout(tree) : null), [tree]);
+  const currentPath = useMemo(
+    () => (tree && currentId ? pathFromRoot(tree, currentId) : []),
+    [tree, currentId],
+  );
+  const currentPathIds = useMemo(
+    () => new Set(currentPath.map((node) => node.id)),
+    [currentPath],
+  );
+  const nodeMapVisibleTree = useMemo(() => {
+    if (!tree) return null;
+    if (mapShowHidden) return tree;
+    const keep = new Set<string>();
+    const stack = [tree.rootId];
+    while (stack.length > 0) {
+      const id = stack.pop()!;
+      const node = tree.nodes[id];
+      if (!node) continue;
+      if (node.hidden && !currentPathIds.has(id)) continue;
+      keep.add(id);
+      for (const child of childrenOf(tree, id)) stack.push(child.id);
+    }
+    const nextNodes: typeof tree.nodes = {};
+    for (const id of keep) {
+      const node = tree.nodes[id];
+      if (node) nextNodes[id] = node;
+    }
+    return { rootId: tree.rootId, nodes: nextNodes };
+  }, [tree, mapShowHidden, currentPathIds]);
+  const nodeMapLayout = useMemo(
+    () => (nodeMapVisibleTree ? buildNodeMapLayout(nodeMapVisibleTree) : null),
+    [nodeMapVisibleTree],
+  );
   const tokenMeterLabel =
     tokenCount === null || contextMax === null
       ? "Current draft token count and loaded context length are unavailable"
@@ -2028,8 +2069,6 @@ export default function App() {
     }
   }
 
-  const currentPath = tree && currentId ? pathFromRoot(tree, currentId) : [];
-  const currentPathIds = new Set(currentPath.map((node) => node.id));
   const chatPathNodes = currentPath.filter((node) => node.parentId !== null);
   const chatTurns = useMemo<ChatTurn[]>(() => {
     const turns: ChatTurn[] = [];
@@ -2965,6 +3004,71 @@ export default function App() {
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, upstreamId);
   }
 
+  async function onDeleteMapSelection(selectedIdsToDelete: string[]) {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const committed = await commitBuffer();
+    if (!committed) return;
+
+    const eligible = selectedIdsToDelete.filter(
+      (id) => committed.tree.nodes[id] && committed.tree.nodes[id].parentId !== null,
+    );
+    if (eligible.length === 0) return;
+
+    const idsToDelete = new Set<string>();
+    for (const id of eligible) {
+      for (const subId of collectSubtreeNodeIds(committed.tree, id)) {
+        idsToDelete.add(subId);
+      }
+    }
+
+    const nextNodes = { ...committed.tree.nodes };
+    for (const id of idsToDelete) {
+      delete nextNodes[id];
+    }
+
+    let fallbackId = committed.tree.rootId;
+    const firstEligibleParent = committed.tree.nodes[eligible[0]]?.parentId;
+    if (firstEligibleParent && nextNodes[firstEligibleParent]) {
+      fallbackId = firstEligibleParent;
+    }
+    const nextCurrentId = idsToDelete.has(committed.currentId)
+      ? fallbackId
+      : committed.currentId;
+    const nextTree: Tree = { rootId: committed.tree.rootId, nodes: nextNodes };
+
+    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId);
+  }
+
+  async function onHideMapSelection(selectedIdsToHide: string[]) {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const eligible = selectedIdsToHide.filter((id) => {
+      const node = tree.nodes[id];
+      return node && node.parentId !== null && id !== currentId && !node.hidden;
+    });
+    if (eligible.length === 0) return;
+
+    const nextNodes = { ...tree.nodes };
+    for (const id of eligible) {
+      const node = nextNodes[id];
+      if (!node) continue;
+      nextNodes[id] = { ...node, hidden: true };
+    }
+    const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      setTree(nextTree);
+    } catch (err) {
+      setError(formatError(err));
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function onSetMainThread(nodeIdToPromote: string) {
     setTreeMenu(null);
     await onSelectNode(nodeIdToPromote);
@@ -3239,10 +3343,35 @@ export default function App() {
     );
   }
 
+  function viewportToCanvas(clientX: number, clientY: number) {
+    const viewport = mapViewportRef.current;
+    if (!viewport) return { x: 0, y: 0 };
+    const rect = viewport.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - mapPan.x) / mapScale,
+      y: (clientY - rect.top - mapPan.y) / mapScale,
+    };
+  }
+
   function onNodeMapPointerDown(event: ReactPointerEvent<HTMLDivElement>) {
     if (event.button !== 0) return;
     const target = event.target as HTMLElement;
     if (target.closest("button")) return;
+
+    if (event.shiftKey) {
+      event.preventDefault();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      const canvasPoint = viewportToCanvas(event.clientX, event.clientY);
+      const next: NodeMapMarquee = {
+        pointerId: event.pointerId,
+        startCanvas: canvasPoint,
+        currentCanvas: canvasPoint,
+        baseSelection: mapSelectionIds.filter((id) => tree?.nodes[id]),
+      };
+      mapMarqueeRef.current = next;
+      setMapMarquee(next);
+      return;
+    }
 
     event.currentTarget.setPointerCapture(event.pointerId);
     mapDragRef.current = {
@@ -3257,6 +3386,15 @@ export default function App() {
   }
 
   function onNodeMapPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const liveMarquee = mapMarqueeRef.current;
+    if (liveMarquee && liveMarquee.pointerId === event.pointerId) {
+      const canvasPoint = viewportToCanvas(event.clientX, event.clientY);
+      const next = { ...liveMarquee, currentCanvas: canvasPoint };
+      mapMarqueeRef.current = next;
+      setMapMarquee(next);
+      return;
+    }
+
     const drag = mapDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId || !nodeMapLayout) return;
     const viewport = mapViewportRef.current;
@@ -3280,6 +3418,37 @@ export default function App() {
   }
 
   function finishNodeMapDrag(event: ReactPointerEvent<HTMLDivElement>) {
+    const liveMarquee = mapMarqueeRef.current;
+    if (liveMarquee && liveMarquee.pointerId === event.pointerId) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      const intersected = nodesInMarquee(liveMarquee);
+      if (intersected.length > 0 || marqueeMoved(liveMarquee)) {
+        mapSuppressClickRef.current = true;
+        window.setTimeout(() => {
+          mapSuppressClickRef.current = false;
+        }, 0);
+      }
+      const merged = [...liveMarquee.baseSelection];
+      const seen = new Set(merged);
+      for (const id of intersected) {
+        if (!seen.has(id)) {
+          merged.push(id);
+          seen.add(id);
+        }
+      }
+      if (merged.length > 0) {
+        setMapSelectionIds(merged);
+        if (!seen.has(mapSelectedId ?? "")) {
+          setMapSelectedId(merged[merged.length - 1]);
+        }
+      }
+      mapMarqueeRef.current = null;
+      setMapMarquee(null);
+      return;
+    }
+
     const drag = mapDragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
@@ -3293,6 +3462,36 @@ export default function App() {
     }
     mapDragRef.current = null;
     setMapDragging(false);
+  }
+
+  function marqueeRect(marquee: NodeMapMarquee) {
+    const x = Math.min(marquee.startCanvas.x, marquee.currentCanvas.x);
+    const y = Math.min(marquee.startCanvas.y, marquee.currentCanvas.y);
+    const width = Math.abs(marquee.startCanvas.x - marquee.currentCanvas.x);
+    const height = Math.abs(marquee.startCanvas.y - marquee.currentCanvas.y);
+    return { x, y, width, height };
+  }
+
+  function marqueeMoved(marquee: NodeMapMarquee) {
+    const rect = marqueeRect(marquee);
+    return rect.width > 2 || rect.height > 2;
+  }
+
+  function nodesInMarquee(marquee: NodeMapMarquee): string[] {
+    if (!nodeMapLayout || !marqueeMoved(marquee)) return [];
+    const rect = marqueeRect(marquee);
+    const hit: string[] = [];
+    for (const item of nodeMapLayout.nodes) {
+      if (
+        rect.x < item.x + item.width &&
+        rect.x + rect.width > item.x &&
+        rect.y < item.y + item.height &&
+        rect.y + rect.height > item.y
+      ) {
+        hit.push(item.node.id);
+      }
+    }
+    return hit;
   }
 
   function zoomNodeMap(factor: number, anchor?: { x: number; y: number }) {
@@ -3414,7 +3613,27 @@ export default function App() {
     const validMapSelectionIds = mapSelectionIds.filter((id) => tree.nodes[id]);
     const resolvedSelectionIds =
       validMapSelectionIds.length > 0 ? validMapSelectionIds : [currentId];
-    const selectionSet = new Set(resolvedSelectionIds);
+    const marqueePreviewIds = mapMarquee ? nodesInMarquee(mapMarquee) : [];
+    const previewSelectionIds = mapMarquee
+      ? Array.from(new Set([...mapMarquee.baseSelection, ...marqueePreviewIds]))
+      : resolvedSelectionIds;
+    const selectionSet = new Set(previewSelectionIds);
+    const multiSelectionEligibleIds = validMapSelectionIds.filter(
+      (id) => tree.nodes[id]?.parentId !== null,
+    );
+    const multiSelectionDeleteIds = multiSelectionEligibleIds;
+    const multiSelectionHideIds = multiSelectionEligibleIds.filter((id) => {
+      const node = tree.nodes[id];
+      return node && (node.hidden || id !== currentId);
+    });
+    const canMultiDelete =
+      validMapSelectionIds.length >= 2 &&
+      multiSelectionDeleteIds.length === validMapSelectionIds.length &&
+      !(saving || streaming);
+    const canMultiHide =
+      validMapSelectionIds.length >= 2 &&
+      multiSelectionHideIds.length === validMapSelectionIds.length &&
+      !(saving || streaming);
     const selectedNode =
       mapSelectedId && tree.nodes[mapSelectedId]
         ? tree.nodes[mapSelectedId]
@@ -3480,8 +3699,9 @@ export default function App() {
           <div>
             <div className="bw-kicker">Node Map</div>
             <div className="bw-node-map-summary">
-              All {nodeMapLayout.nodes.length.toLocaleString()} nodes shown ·{" "}
-              {mapScaleLabel} · drag canvas to pan
+              {nodeMapLayout.nodes.length.toLocaleString()} of{" "}
+              {Object.keys(tree.nodes).length.toLocaleString()} nodes shown ·{" "}
+              {mapScaleLabel} · drag to pan, shift-drag to box-select
             </div>
           </div>
           <div className="bw-node-map-controls" aria-label="Map view controls">
@@ -3535,6 +3755,17 @@ export default function App() {
             >
               Locate selected
             </button>
+            <label className="bw-node-map-toggle">
+              <input
+                type="checkbox"
+                checked={mapShowHidden}
+                onChange={(event) => {
+                  setMapShowHidden(event.target.checked);
+                  setMapFitRequest((value) => value + 1);
+                }}
+              />
+              Show hidden
+            </label>
           </div>
         </div>
         <div className="bw-node-map-body">
@@ -3661,6 +3892,21 @@ export default function App() {
                   </button>
                 );
               })}
+              {mapMarquee && (() => {
+                const rect = marqueeRect(mapMarquee);
+                return (
+                  <div
+                    className="bw-node-map-marquee"
+                    style={{
+                      left: rect.x,
+                      top: rect.y,
+                      width: rect.width,
+                      height: rect.height,
+                    }}
+                    aria-hidden="true"
+                  />
+                );
+              })()}
             </div>
             {mapTooltip && (
               <div
@@ -3842,10 +4088,57 @@ export default function App() {
               >
                 Merge selection
               </button>
+              <button
+                type="button"
+                className="bw-button bw-node-map-action-wide"
+                onClick={() => void onHideMapSelection(multiSelectionHideIds)}
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    canMultiHide
+                      ? "Hide every node in the current selection."
+                      : "Select two or more non-root, non-active nodes to hide together.",
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
+                disabled={!canMultiHide}
+                title={
+                  canMultiHide
+                    ? "Hide every node in the selection"
+                    : "Select two or more non-root, non-active nodes"
+                }
+              >
+                Hide selection
+              </button>
+              <button
+                type="button"
+                className="bw-button bw-node-map-action-wide bw-button-danger"
+                onClick={() => void onDeleteMapSelection(multiSelectionDeleteIds)}
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    canMultiDelete
+                      ? "Delete every node in the current selection (and their descendants)."
+                      : "Select two or more non-root nodes to delete together.",
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
+                disabled={!canMultiDelete}
+                title={
+                  canMultiDelete
+                    ? "Delete every node in the selection"
+                    : "Select two or more non-root nodes"
+                }
+              >
+                Delete selection
+              </button>
             </div>
             <div className="bw-node-map-merge-note">
-              Shift-click nodes to build a selection. Merge is blocked whenever the
-              upstream node has more than one child.
+              Shift-click a node to add it to the selection, or shift-drag a box
+              across the canvas to select everything inside it. Merge is blocked
+              whenever the upstream node has more than one child.
             </div>
             <div className="bw-node-map-minimap" aria-label="Node map minimap">
               <div className="bw-node-map-section-title">
