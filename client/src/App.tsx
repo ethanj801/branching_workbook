@@ -294,6 +294,20 @@ function analyzeNodeMapMergeSelection(
   return { ok: true, orderedIds };
 }
 
+function collectLinearChainDownward(tree: Tree, startId: string): string[] {
+  const chain: string[] = [];
+  let cursor: string | null = startId;
+  while (cursor) {
+    const node = tree.nodes[cursor];
+    if (!node) break;
+    chain.push(cursor);
+    const children = childrenOf(tree, cursor);
+    if (children.length !== 1) break;
+    cursor = children[0].id;
+  }
+  return chain;
+}
+
 function collectSubtreeNodeIds(tree: Tree, nodeIdToCollect: string): string[] {
   const collected: string[] = [];
   const stack = [nodeIdToCollect];
@@ -2978,6 +2992,13 @@ export default function App() {
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, node.id);
   }
 
+  async function onMergeLinearChainDown(startId: string) {
+    if (!tree || !currentId || saving || streaming) return;
+    const chain = collectLinearChainDownward(tree, startId);
+    if (chain.length < 2) return;
+    await onMergeMapSelection(chain);
+  }
+
   async function onMergeMapSelection(selectedIdsToMerge: string[]) {
     if (!tree || !currentId || saving || streaming) return;
 
@@ -3656,6 +3677,11 @@ export default function App() {
       !actionDisabled;
     const canMergeDown =
       selectedNode.parentId !== null && childNodes.length === 1 && !actionDisabled;
+    const linearChainDownIds = collectLinearChainDownward(tree, selectedNode.id);
+    const canMergeChainDown =
+      selectedNode.parentId !== null &&
+      linearChainDownIds.length >= 2 &&
+      !actionDisabled;
     const mergeSelectionAnalysis = analyzeNodeMapMergeSelection(
       tree,
       resolvedSelectionIds,
@@ -4050,6 +4076,29 @@ export default function App() {
                 }
               >
                 Merge down
+              </button>
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() => void onMergeLinearChainDown(selectedNode.id)}
+                onMouseEnter={(event) =>
+                  showMapTooltip(
+                    canMergeChainDown
+                      ? `Collapse this node and the next ${linearChainDownIds.length - 1} single-child descendant${linearChainDownIds.length === 2 ? "" : "s"} into one.`
+                      : "Available when at least one consecutive single-child descendant exists.",
+                    event,
+                  )
+                }
+                onMouseMove={moveMapTooltip}
+                onMouseLeave={hideMapTooltip}
+                disabled={!canMergeChainDown}
+                title={
+                  canMergeChainDown
+                    ? `Merge ${linearChainDownIds.length} linear nodes into one`
+                    : "Available when this node starts a single-child chain"
+                }
+              >
+                Merge chain
               </button>
               <button
                 type="button"
