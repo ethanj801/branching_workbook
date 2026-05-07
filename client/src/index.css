@@ -1365,7 +1365,12 @@ textarea:disabled {
   gap: 0.55rem;
 }
 
-.bw-node-map-actions .bw-button {
+.bw-node-map-action-cell {
+  display: block;
+}
+
+.bw-node-map-action-cell .bw-button {
+  width: 100%;
   justify-content: center;
 }
 

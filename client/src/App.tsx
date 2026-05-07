@@ -3992,197 +3992,159 @@ export default function App() {
               )}
             </div>
             <div className="bw-node-map-actions">
-              <button
-                type="button"
-                className="bw-button"
-                onClick={() =>
-                  void onSetNodeStarred(selectedNode.id, !selectedNode.starred)
-                }
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    selectedNode.starred
-                      ? "Remove this node from the starred list."
-                      : "Add this node to the starred list.",
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={actionDisabled}
-              >
-                {selectedNode.starred ? "Unstar" : "Star"}
-              </button>
-              <button
-                type="button"
-                className="bw-button"
-                onClick={() =>
-                  void onSetNodeHidden(selectedNode.id, !selectedNode.hidden)
-                }
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    selectedNode.hidden
-                      ? "Show this node in normal tree views."
-                      : "Hide this node from normal tree views.",
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canHide}
-                title={
-                  selectedNode.id === currentId && !selectedNode.hidden
+              {(() => {
+                const renderActionButton = (props: {
+                  label: string;
+                  onClick: () => void;
+                  disabled: boolean;
+                  tooltip: string;
+                  wide?: boolean;
+                  danger?: boolean;
+                }) => (
+                  <span
+                    className={`bw-node-map-action-cell${
+                      props.wide ? " bw-node-map-action-wide" : ""
+                    }`}
+                    onMouseEnter={(event) => showMapTooltip(props.tooltip, event)}
+                    onMouseMove={moveMapTooltip}
+                    onMouseLeave={hideMapTooltip}
+                  >
+                    <button
+                      type="button"
+                      className={`bw-button${props.danger ? " bw-button-danger" : ""}`}
+                      onClick={props.onClick}
+                      disabled={props.disabled}
+                      title={props.tooltip}
+                    >
+                      {props.label}
+                    </button>
+                  </span>
+                );
+
+                const hideTooltip = selectedNode.parentId === null
+                  ? "Root cannot be hidden."
+                  : selectedNode.id === currentId && !selectedNode.hidden
                     ? "Select another node before hiding this active node."
-                    : selectedNode.parentId === null
-                      ? "Root cannot be hidden."
-                      : selectedNode.hidden
-                        ? "Show this node."
-                        : "Hide this node."
-                }
-              >
-                {selectedNode.hidden ? "Unhide" : "Hide"}
-              </button>
-              <button
-                type="button"
-                className="bw-button"
-                onClick={() => void onMergeNodeIntoParent(selectedNode.id)}
-                onMouseEnter={(event) =>
-                  showMapTooltip("Merge the selected node into its parent.", event)
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMergeUp}
-                title={
-                  canMergeUp
-                    ? "Merge this node into its parent"
-                    : "Available when the parent is not root and has exactly one child"
-                }
-              >
-                Merge up
-              </button>
-              <button
-                type="button"
-                className="bw-button"
-                onClick={() => void onMergeNodeWithOnlyChild(selectedNode.id)}
-                onMouseEnter={(event) =>
-                  showMapTooltip("Merge the selected node with its only child.", event)
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMergeDown}
-                title={
-                  canMergeDown
-                    ? "Merge this node with its only child"
-                    : "Available when this node has exactly one child"
-                }
-              >
-                Merge down
-              </button>
-              <button
-                type="button"
-                className="bw-button"
-                onClick={() => void onMergeLinearChainDown(selectedNode.id)}
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    canMergeChainDown
-                      ? `Collapse this node and the next ${linearChainDownIds.length - 1} single-child descendant${linearChainDownIds.length === 2 ? "" : "s"} into one.`
-                      : "Available when at least one consecutive single-child descendant exists.",
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMergeChainDown}
-                title={
-                  canMergeChainDown
-                    ? `Merge ${linearChainDownIds.length} linear nodes into one`
-                    : "Available when this node starts a single-child chain"
-                }
-              >
-                Merge chain
-              </button>
-              <button
-                type="button"
-                className="bw-button bw-button-danger"
-                onClick={() => void onDeleteMapNode(selectedNode.id)}
-                onMouseEnter={(event) =>
-                  showMapTooltip("Delete the selected node and its descendants.", event)
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canDelete}
-                title={
-                  canDelete
-                    ? "Delete this node and its descendants"
-                    : "Root cannot be deleted"
-                }
-              >
-                Delete
-              </button>
-              <button
-                type="button"
-                className="bw-button bw-node-map-action-wide"
-                onClick={() => void onMergeMapSelection(resolvedSelectionIds)}
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    canMergeSelection
-                      ? "Merge the shift-selected linear run into one node."
-                      : mergeSelectionHint,
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMergeSelection}
-                title={canMergeSelection ? "Merge selected nodes" : mergeSelectionHint}
-              >
-                Merge selection
-              </button>
-              <button
-                type="button"
-                className="bw-button bw-node-map-action-wide"
-                onClick={() => void onHideMapSelection(multiSelectionHideIds)}
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    canMultiHide
-                      ? "Hide every node in the current selection."
-                      : "Select two or more non-root, non-active nodes to hide together.",
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMultiHide}
-                title={
-                  canMultiHide
-                    ? "Hide every node in the selection"
-                    : "Select two or more non-root, non-active nodes"
-                }
-              >
-                Hide selection
-              </button>
-              <button
-                type="button"
-                className="bw-button bw-node-map-action-wide bw-button-danger"
-                onClick={() => void onDeleteMapSelection(multiSelectionDeleteIds)}
-                onMouseEnter={(event) =>
-                  showMapTooltip(
-                    canMultiDelete
-                      ? "Delete every node in the current selection (and their descendants)."
-                      : "Select two or more non-root nodes to delete together.",
-                    event,
-                  )
-                }
-                onMouseMove={moveMapTooltip}
-                onMouseLeave={hideMapTooltip}
-                disabled={!canMultiDelete}
-                title={
-                  canMultiDelete
-                    ? "Delete every node in the selection"
-                    : "Select two or more non-root nodes"
-                }
-              >
-                Delete selection
-              </button>
+                    : selectedNode.hidden
+                      ? "Unhide this node so it shows up in normal tree views again."
+                      : "Hide this node from normal tree views (it stays in the file as a sibling branch).";
+
+                const mergeUpTooltip = canMergeUp
+                  ? "Fold the selected node up into its parent. The parent absorbs this node's text; this node disappears."
+                  : selectedNode.parentId === null
+                    ? "Root has no parent to merge into."
+                    : parentNode?.parentId === null
+                      ? "The parent is root, which can't be folded into."
+                      : parentChildCount !== 1
+                        ? "The parent has more than one child, so merging would lose the sibling branches."
+                        : "Cannot merge up right now.";
+
+                const mergeDownTooltip = canMergeDown
+                  ? "Fold the selected node's only child into this node. This node absorbs the child's text; the child disappears."
+                  : selectedNode.parentId === null
+                    ? "Root cannot be merged."
+                    : childNodes.length === 0
+                      ? "This node has no child to merge with."
+                      : "This node has more than one child — pick a single-child node, or use Merge selection to pick a chain manually.";
+
+                const mergeChainTooltip = canMergeChainDown
+                  ? `Walk down through ${linearChainDownIds.length - 1} consecutive single-child descendant${linearChainDownIds.length === 2 ? "" : "s"} and collapse the whole run (${linearChainDownIds.length} nodes) into this one.`
+                  : selectedNode.parentId === null
+                    ? "Root cannot be merged."
+                    : childNodes.length === 0
+                      ? "This node has no descendants to fold in."
+                      : childNodes.length > 1
+                        ? "This node already branches — there's no single-child chain to collapse."
+                        : "No single-child chain to collapse.";
+
+                const deleteTooltip = canDelete
+                  ? "Delete this node and every descendant beneath it. This cannot be undone from the UI."
+                  : "Root cannot be deleted.";
+
+                const mergeSelectionTooltip = canMergeSelection
+                  ? `Combine the ${resolvedSelectionIds.length} shift-selected nodes (a parent → child run) into a single node.`
+                  : mergeSelectionHint;
+
+                const hideSelectionTooltip = canMultiHide
+                  ? `Hide all ${multiSelectionHideIds.length} selected nodes from normal tree views.`
+                  : validMapSelectionIds.length < 2
+                    ? "Shift-click or shift-drag to select at least two nodes."
+                    : "Selection includes the root or the active node, which can't be hidden. Drop those from the selection first.";
+
+                const deleteSelectionTooltip = canMultiDelete
+                  ? `Delete all ${multiSelectionDeleteIds.length} selected nodes and their descendants. This cannot be undone from the UI.`
+                  : validMapSelectionIds.length < 2
+                    ? "Shift-click or shift-drag to select at least two nodes."
+                    : "Selection includes the root, which can't be deleted. Drop the root from the selection first.";
+
+                return (
+                  <>
+                    {renderActionButton({
+                      label: selectedNode.starred ? "Unstar" : "Star",
+                      onClick: () =>
+                        void onSetNodeStarred(selectedNode.id, !selectedNode.starred),
+                      disabled: actionDisabled,
+                      tooltip: selectedNode.starred
+                        ? "Remove this node from the starred shortcut list."
+                        : "Pin this node to the starred shortcut list for quick navigation.",
+                    })}
+                    {renderActionButton({
+                      label: selectedNode.hidden ? "Unhide" : "Hide",
+                      onClick: () =>
+                        void onSetNodeHidden(selectedNode.id, !selectedNode.hidden),
+                      disabled: !canHide,
+                      tooltip: hideTooltip,
+                    })}
+                    {renderActionButton({
+                      label: "Merge up",
+                      onClick: () => void onMergeNodeIntoParent(selectedNode.id),
+                      disabled: !canMergeUp,
+                      tooltip: mergeUpTooltip,
+                    })}
+                    {renderActionButton({
+                      label: "Merge down",
+                      onClick: () => void onMergeNodeWithOnlyChild(selectedNode.id),
+                      disabled: !canMergeDown,
+                      tooltip: mergeDownTooltip,
+                    })}
+                    {renderActionButton({
+                      label: "Merge chain",
+                      onClick: () => void onMergeLinearChainDown(selectedNode.id),
+                      disabled: !canMergeChainDown,
+                      tooltip: mergeChainTooltip,
+                    })}
+                    {renderActionButton({
+                      label: "Delete",
+                      onClick: () => void onDeleteMapNode(selectedNode.id),
+                      disabled: !canDelete,
+                      tooltip: deleteTooltip,
+                      danger: true,
+                    })}
+                    {renderActionButton({
+                      label: "Merge selection",
+                      onClick: () => void onMergeMapSelection(resolvedSelectionIds),
+                      disabled: !canMergeSelection,
+                      tooltip: mergeSelectionTooltip,
+                      wide: true,
+                    })}
+                    {renderActionButton({
+                      label: "Hide selection",
+                      onClick: () => void onHideMapSelection(multiSelectionHideIds),
+                      disabled: !canMultiHide,
+                      tooltip: hideSelectionTooltip,
+                      wide: true,
+                    })}
+                    {renderActionButton({
+                      label: "Delete selection",
+                      onClick: () => void onDeleteMapSelection(multiSelectionDeleteIds),
+                      disabled: !canMultiDelete,
+                      tooltip: deleteSelectionTooltip,
+                      wide: true,
+                      danger: true,
+                    })}
+                  </>
+                );
+              })()}
             </div>
             <div className="bw-node-map-merge-note">
               Shift-click a node to add it to the selection, or shift-drag a box
