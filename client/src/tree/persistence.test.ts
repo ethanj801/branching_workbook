@@ -37,6 +37,7 @@ function node(
     role: "user",
     endOfTurn: false,
     hidden,
+    deleted: false,
     starred: false,
     createdAt: 1000,
     priorContextHash: "0".repeat(16),

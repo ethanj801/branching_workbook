@@ -17,6 +17,7 @@ function makeNode(
     role: "user",
     endOfTurn: false,
     hidden: false,
+    deleted: false,
     starred: false,
     createdAt: 0,
     priorContextHash: "0".repeat(16),

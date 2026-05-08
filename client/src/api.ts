@@ -129,6 +129,7 @@ export type NodeModel = {
   role: ChatRole;
   end_of_turn: boolean;
   hidden: boolean;
+  deleted?: boolean;
   is_main_path: boolean;
   starred?: boolean;
   created_at: number;

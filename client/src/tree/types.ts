@@ -10,6 +10,7 @@ export type TreeNode = {
   role: ChatRole;
   endOfTurn: boolean;
   hidden: boolean;
+  deleted: boolean;
   starred: boolean;
   createdAt: number;
   priorContextHash: string;

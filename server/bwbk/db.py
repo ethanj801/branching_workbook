@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS nodes (
     role                 TEXT NOT NULL DEFAULT 'user',
     end_of_turn          INTEGER NOT NULL DEFAULT 0,
     hidden               INTEGER NOT NULL DEFAULT 0,
+    deleted              INTEGER NOT NULL DEFAULT 0,
     is_main_path         INTEGER NOT NULL DEFAULT 0,
     starred              INTEGER NOT NULL DEFAULT 0,
     created_at           INTEGER NOT NULL,
@@ -85,6 +86,10 @@ def init_schema(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "ALTER TABLE nodes ADD COLUMN end_of_turn INTEGER NOT NULL DEFAULT 0"
             )
+        if "deleted" not in columns:
+            conn.execute(
+                "ALTER TABLE nodes ADD COLUMN deleted INTEGER NOT NULL DEFAULT 0"
+            )
 
 
 class NodeModel(BaseModel):
@@ -96,6 +101,7 @@ class NodeModel(BaseModel):
     role: Literal["system", "user", "assistant"] = "user"
     end_of_turn: bool = False
     hidden: bool = False
+    deleted: bool = False
     is_main_path: bool = False
     starred: bool = False
     created_at: int
@@ -203,6 +209,7 @@ def _row_to_node(r: sqlite3.Row) -> NodeModel:
         role=r["role"] if r["role"] in {"system", "user", "assistant"} else "user",
         end_of_turn=bool(r["end_of_turn"]) if "end_of_turn" in columns else False,
         hidden=bool(r["hidden"]),
+        deleted=bool(r["deleted"]) if "deleted" in columns else False,
         is_main_path=bool(r["is_main_path"]),
         starred=bool(r["starred"]) if "starred" in columns else False,
         created_at=r["created_at"],
@@ -219,9 +226,10 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
     conn.execute(
         """
         INSERT INTO nodes (
-            id, parent_id, text, name, source, role, end_of_turn, hidden, is_main_path, starred,
+            id, parent_id, text, name, source, role, end_of_turn, hidden, deleted,
+            is_main_path, starred,
             created_at, sampler_snapshot, seed, model_identifier, prior_context_hash
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             n.id,
@@ -232,6 +240,7 @@ def _insert_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.role,
             int(n.end_of_turn),
             int(n.hidden),
+            int(n.deleted),
             int(n.is_main_path),
             int(n.starred),
             n.created_at,
@@ -248,7 +257,7 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
         """
         UPDATE nodes
         SET parent_id = ?, text = ?, name = ?, source = ?, role = ?, end_of_turn = ?,
-            hidden = ?, is_main_path = ?,
+            hidden = ?, deleted = ?, is_main_path = ?,
             starred = ?, sampler_snapshot = ?, seed = ?, model_identifier = ?,
             prior_context_hash = ?
         WHERE id = ?
@@ -261,6 +270,7 @@ def _update_node(conn: sqlite3.Connection, n: NodeModel) -> None:
             n.role,
             int(n.end_of_turn),
             int(n.hidden),
+            int(n.deleted),
             int(n.is_main_path),
             int(n.starred),
             json.dumps(n.sampler_snapshot) if n.sampler_snapshot is not None else None,

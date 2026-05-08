@@ -16,6 +16,7 @@ function nodeFromModel(node: NodeModel): TreeNode {
     role: node.role,
     endOfTurn: node.end_of_turn,
     hidden: node.hidden,
+    deleted: node.deleted ?? false,
     starred: node.starred ?? false,
     createdAt: node.created_at,
     priorContextHash: node.prior_context_hash,
@@ -35,6 +36,7 @@ function modelFromNode(node: TreeNode, isMainPath: boolean): NodeModel {
     role: node.role,
     end_of_turn: node.endOfTurn,
     hidden: node.hidden,
+    deleted: node.deleted,
     is_main_path: isMainPath,
     starred: node.starred,
     created_at: node.createdAt,
@@ -54,6 +56,7 @@ function sameNode(a: TreeNode, b: TreeNode): boolean {
     a.role === b.role &&
     a.endOfTurn === b.endOfTurn &&
     a.hidden === b.hidden &&
+    a.deleted === b.deleted &&
     a.starred === b.starred &&
     a.createdAt === b.createdAt &&
     a.priorContextHash === b.priorContextHash &&

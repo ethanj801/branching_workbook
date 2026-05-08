@@ -210,6 +210,7 @@ function branchNode(
     role,
     endOfTurn,
     hidden,
+    deleted: false,
     starred: false,
     createdAt: nowEpoch(),
     priorContextHash: contextHash(priorText),
@@ -612,6 +613,14 @@ export default function App() {
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
+  // Single-slot undo for the most recent Delete action. Cleared when any
+  // other tree mutation persists, so cmd+Z always restores the last delete
+  // and nothing earlier.
+  const pendingDeleteUndoRef = useRef<{
+    deletedIds: string[];
+    prevCurrentId: string;
+    prevSelectedId: string;
+  } | null>(null);
 
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
@@ -641,14 +650,14 @@ export default function App() {
   );
   const nodeMapVisibleTree = useMemo(() => {
     if (!tree) return null;
-    if (mapShowHidden) return tree;
     const keep = new Set<string>();
     const stack = [tree.rootId];
     while (stack.length > 0) {
       const id = stack.pop()!;
       const node = tree.nodes[id];
       if (!node) continue;
-      if (node.hidden && !currentPathIds.has(id)) continue;
+      if (node.deleted) continue;
+      if (!mapShowHidden && node.hidden && !currentPathIds.has(id)) continue;
       keep.add(id);
       for (const child of childrenOf(tree, id)) stack.push(child.id);
     }
@@ -1107,6 +1116,10 @@ export default function App() {
         setTree(reshaped.tree);
         setCurrentId(reshaped.currentId);
         setBuffer(nextBuffer);
+        // commitBuffer fires on any non-trivial buffer reshape; if there
+        // were edits to flush, the previous delete-undo is no longer the
+        // last thing the user did.
+        if (reshaped.tree !== tree) pendingDeleteUndoRef.current = null;
 
         return {
           tree: reshaped.tree,
@@ -1335,6 +1348,22 @@ export default function App() {
 
     window.addEventListener("keydown", onMapKeyDown);
     return () => window.removeEventListener("keydown", onMapKeyDown);
+  });
+
+  // cmd/ctrl+Z restores the most recent map-delete. Scoped to the node-map
+  // workspace so it doesn't fight CodeMirror's own undo stack in the editor.
+  useEffect(() => {
+    function onUndoKeyDown(event: KeyboardEvent) {
+      if (workspaceMode !== "map") return;
+      if (!(event.metaKey || event.ctrlKey)) return;
+      if (event.shiftKey || event.altKey) return;
+      if (event.key !== "z" && event.key !== "Z") return;
+      if (!pendingDeleteUndoRef.current) return;
+      event.preventDefault();
+      void onUndoLastDelete();
+    }
+    window.addEventListener("keydown", onUndoKeyDown);
+    return () => window.removeEventListener("keydown", onUndoKeyDown);
   });
 
   useEffect(() => {
@@ -2182,6 +2211,7 @@ export default function App() {
       setCurrentId(nextCurrentId);
       setBuffer(nextBuffer);
       resetRecordedSelectionToEnd(nextBuffer);
+      pendingDeleteUndoRef.current = null;
       return true;
     } catch (err) {
       setError(formatError(err));
@@ -2329,6 +2359,7 @@ export default function App() {
       role: "user",
       endOfTurn: true,
       hidden: false,
+      deleted: false,
       starred: false,
       createdAt: nowEpoch(),
       priorContextHash: contextHash(priorText),
@@ -2398,6 +2429,7 @@ export default function App() {
       role: turn.role,
       endOfTurn: turn.role === "user",
       hidden: false,
+      deleted: false,
       starred: false,
       createdAt: nowEpoch(),
       priorContextHash: contextHash(priorText),
@@ -2796,6 +2828,7 @@ export default function App() {
     try {
       await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
       setTree(nextTree);
+      pendingDeleteUndoRef.current = null;
       if (hidden && nodeIdToUpdate === currentId) {
         setShowHidden(true);
       }
@@ -2825,6 +2858,7 @@ export default function App() {
     try {
       await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
       setTree(nextTree);
+      pendingDeleteUndoRef.current = null;
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -2838,6 +2872,7 @@ export default function App() {
     nextTree: Tree,
     nextCurrentId: string,
     nextSelectedId = nextCurrentId,
+    options: { keepDeleteUndo?: boolean } = {},
   ) {
     const nextPath = pathFromRoot(nextTree, nextCurrentId);
     const nextBuffer = concatPathText(nextPath);
@@ -2853,6 +2888,7 @@ export default function App() {
       setBuffer(nextBuffer);
       resetRecordedSelectionToEnd(nextBuffer);
       setMapLocateRequest((value) => value + 1);
+      if (!options.keepDeleteUndo) pendingDeleteUndoRef.current = null;
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -2869,14 +2905,24 @@ export default function App() {
     const node = committed.tree.nodes[nodeIdToDeleteFromMap];
     if (!node || node.parentId === null) return;
 
-    const idsToDelete = new Set(collectSubtreeNodeIds(committed.tree, node.id));
+    const idsToDelete = collectSubtreeNodeIds(committed.tree, node.id);
+    const idsAlreadyDeleted = new Set(
+      idsToDelete.filter((id) => committed.tree.nodes[id]?.deleted),
+    );
+    const newlyDeletedIds = idsToDelete.filter((id) => !idsAlreadyDeleted.has(id));
+    if (newlyDeletedIds.length === 0) return;
+
     const nextNodes = { ...committed.tree.nodes };
-    for (const nodeIdToDelete of idsToDelete) {
-      delete nextNodes[nodeIdToDelete];
+    for (const id of newlyDeletedIds) {
+      const target = nextNodes[id];
+      if (target) nextNodes[id] = { ...target, deleted: true };
     }
 
-    const fallbackId = nextNodes[node.parentId] ? node.parentId : committed.tree.rootId;
-    const nextCurrentId = idsToDelete.has(committed.currentId)
+    const subtreeSet = new Set(idsToDelete);
+    const fallbackId = !subtreeSet.has(node.parentId)
+      ? node.parentId
+      : committed.tree.rootId;
+    const nextCurrentId = subtreeSet.has(committed.currentId)
       ? fallbackId
       : committed.currentId;
     const nextTree: Tree = {
@@ -2884,7 +2930,14 @@ export default function App() {
       nodes: nextNodes,
     };
 
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId);
+    pendingDeleteUndoRef.current = {
+      deletedIds: newlyDeletedIds,
+      prevCurrentId: committed.currentId,
+      prevSelectedId: nodeIdToDeleteFromMap,
+    };
+    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
+      keepDeleteUndo: true,
+    });
   }
 
   function buildMergedTree(
@@ -3036,29 +3089,68 @@ export default function App() {
     );
     if (eligible.length === 0) return;
 
-    const idsToDelete = new Set<string>();
+    const subtreeSet = new Set<string>();
     for (const id of eligible) {
       for (const subId of collectSubtreeNodeIds(committed.tree, id)) {
-        idsToDelete.add(subId);
+        subtreeSet.add(subId);
       }
     }
+    const newlyDeletedIds: string[] = [];
+    for (const id of subtreeSet) {
+      if (!committed.tree.nodes[id]?.deleted) newlyDeletedIds.push(id);
+    }
+    if (newlyDeletedIds.length === 0) return;
 
     const nextNodes = { ...committed.tree.nodes };
-    for (const id of idsToDelete) {
-      delete nextNodes[id];
+    for (const id of newlyDeletedIds) {
+      const target = nextNodes[id];
+      if (target) nextNodes[id] = { ...target, deleted: true };
     }
 
     let fallbackId = committed.tree.rootId;
     const firstEligibleParent = committed.tree.nodes[eligible[0]]?.parentId;
-    if (firstEligibleParent && nextNodes[firstEligibleParent]) {
+    if (firstEligibleParent && !subtreeSet.has(firstEligibleParent)) {
       fallbackId = firstEligibleParent;
     }
-    const nextCurrentId = idsToDelete.has(committed.currentId)
+    const nextCurrentId = subtreeSet.has(committed.currentId)
       ? fallbackId
       : committed.currentId;
     const nextTree: Tree = { rootId: committed.tree.rootId, nodes: nextNodes };
 
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId);
+    pendingDeleteUndoRef.current = {
+      deletedIds: newlyDeletedIds,
+      prevCurrentId: committed.currentId,
+      prevSelectedId: eligible[0],
+    };
+    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
+      keepDeleteUndo: true,
+    });
+  }
+
+  async function onUndoLastDelete() {
+    if (!tree || saving || streaming) return;
+    const undo = pendingDeleteUndoRef.current;
+    if (!undo) return;
+    pendingDeleteUndoRef.current = null;
+
+    const restorable = undo.deletedIds.filter(
+      (id) => tree.nodes[id]?.deleted === true,
+    );
+    if (restorable.length === 0) return;
+
+    const nextNodes = { ...tree.nodes };
+    for (const id of restorable) {
+      const target = nextNodes[id];
+      if (target) nextNodes[id] = { ...target, deleted: false };
+    }
+    const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
+    const nextCurrentId = nextNodes[undo.prevCurrentId]
+      ? undo.prevCurrentId
+      : (currentId ?? tree.rootId);
+    const nextSelectedId = nextNodes[undo.prevSelectedId]
+      ? undo.prevSelectedId
+      : nextCurrentId;
+    await persistTreeEdit(tree, nextTree, nextCurrentId, nextSelectedId);
   }
 
   async function onHideMapSelection(selectedIdsToHide: string[]) {
@@ -3098,6 +3190,7 @@ export default function App() {
   function visibleTreeChildren(node: TreeNode): TreeNode[] {
     if (!tree) return [];
     return childrenOf(tree, node.id)
+      .filter((child) => !child.deleted)
       .filter((child) => showHidden || !child.hidden || currentPathIds.has(child.id))
       .filter(
         (child) =>
@@ -3119,6 +3212,7 @@ export default function App() {
     if (!tree) return 0;
     return Object.values(tree.nodes).filter((node) => {
       if (node.parentId === null) return true;
+      if (node.deleted) return false;
       if (!showHidden && node.hidden && !currentPathIds.has(node.id)) return false;
       if (
         starredOnly &&
@@ -4058,7 +4152,7 @@ export default function App() {
                         : "No single-child chain to collapse.";
 
                 const deleteTooltip = canDelete
-                  ? "Delete this node and every descendant beneath it. This cannot be undone from the UI."
+                  ? "Delete this node and every descendant beneath it. Press cmd/ctrl+Z to restore."
                   : "Root cannot be deleted.";
 
                 const mergeSelectionTooltip = canMergeSelection
@@ -4072,7 +4166,7 @@ export default function App() {
                     : "Selection includes the root or the active node, which can't be hidden. Drop those from the selection first.";
 
                 const deleteSelectionTooltip = canMultiDelete
-                  ? `Delete all ${multiSelectionDeleteIds.length} selected nodes and their descendants. This cannot be undone from the UI.`
+                  ? `Delete all ${multiSelectionDeleteIds.length} selected nodes and their descendants. Press cmd/ctrl+Z to restore.`
                   : validMapSelectionIds.length < 2
                     ? "Shift-click or shift-drag to select at least two nodes."
                     : "Selection includes the root, which can't be deleted. Drop the root from the selection first.";

@@ -21,7 +21,7 @@ function findDescendantPathMatchingText(
   text: string,
 ): TreeNode[] | null {
   const childrenOf = (nodeId: string) =>
-    Object.values(nodes).filter((n) => n.parentId === nodeId);
+    Object.values(nodes).filter((n) => n.parentId === nodeId && !n.deleted);
 
   const search = (
     node: TreeNode,
@@ -133,6 +133,7 @@ export function reshape(
             role: node.role,
             endOfTurn: false,
             hidden: false,
+            deleted: false,
             starred: node.starred,
             createdAt: opts.now(),
             priorContextHash: contextHash(priorText),
@@ -146,6 +147,7 @@ export function reshape(
             role: node.role,
             endOfTurn: node.endOfTurn,
             hidden: node.hidden,
+            deleted: node.deleted,
             starred: false,
             createdAt: opts.now(),
             priorContextHash: contextHash(priorText + firstHalf.text),
@@ -212,6 +214,7 @@ export function reshape(
     role: opts.role ?? "user",
     endOfTurn: opts.endOfTurn ?? false,
     hidden: false,
+    deleted: false,
     starred: false,
     createdAt: opts.now(),
     priorContextHash: contextHash(priorText),
