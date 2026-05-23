@@ -18,8 +18,10 @@ client/dist/
 .idea/
 *.swp
 
-# Claude Code plan files (personal)
+# Agent guidance (personal, not shipped in repo)
 .claude/
+CLAUDE.md
+AGENTS.md
 
 # Project artifacts (to be confirmed once implemented)
 *.bwbk

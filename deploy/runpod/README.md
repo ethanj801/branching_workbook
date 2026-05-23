@@ -1,56 +1,62 @@
-# RunPod Image Helper
+# RunPod recipe
 
-This directory is optional infrastructure for the disposable-host workflow.
-User-facing setup and connection instructions live in the repo-root
-[README.md](/Users/EthanJ/Documents/github/branching_workbook/README.md).
+Optional Dockerfile and pod template for running TabbyAPI on RunPod. This is one example disposable-host setup — any Linux GPU machine works. For the app-side connection mechanics (SSH tunnel, env vars, model loading) see the parent [deploy README](../README.md).
 
-This subdirectory exists only for the custom RunPod image helper:
+This directory contains:
 
-- [Dockerfile](/Users/EthanJ/Documents/github/branching_workbook/deploy/runpod/Dockerfile)
-- [runpod-entrypoint.sh](/Users/EthanJ/Documents/github/branching_workbook/deploy/runpod/runpod-entrypoint.sh)
+- [`Dockerfile`](./Dockerfile) — extends the stock TabbyAPI image with RunPod-specific startup behavior.
+- [`runpod-entrypoint.sh`](./runpod-entrypoint.sh) — entrypoint that starts `sshd` and TabbyAPI with sane defaults.
 
-## What The Image Does
+## What the image does
 
-The image extends the stock TabbyAPI container and bakes in the RunPod-specific
-startup behavior we need:
+- Starts `sshd` so RunPod's SSH-over-TCP exposure works.
+- Writes a minimal `config.yml` at `/workspace/tabby-config/config.yml`.
+- Binds TabbyAPI to `127.0.0.1:5000`.
+- Disables TabbyAPI auth (SSH is the security boundary).
+- Stores downloaded models under `/workspace/models`.
+- Enables `HF_HUB_ENABLE_HF_TRANSFER=1` for faster Hugging Face downloads.
 
-- starts `sshd`
-- writes a minimal `config.yml` into `/workspace/tabby-config/config.yml`
-- binds TabbyAPI to `127.0.0.1:5000`
-- disables TabbyAPI auth for the recommended SSH-tunnel workflow
-- stores models under `/workspace/models`
-- enables `HF_HUB_ENABLE_HF_TRANSFER=1`
+Once built and pushed to your container registry, the RunPod template doesn't need a custom start command.
 
-That keeps the Pod template simple. Once this image is built and pushed, the
-template does not need a custom startup command.
-
-## Build And Push
-
-Build from the repo root:
+## Build and push your own image
 
 ```bash
 docker build \
-  -t <registry>/branching-workbook-tabby-runpod:latest \
+  -t <your-registry>/branching-workbook-tabby-runpod:latest \
   -f deploy/runpod/Dockerfile \
   deploy/runpod
+
+docker push <your-registry>/branching-workbook-tabby-runpod:latest
 ```
 
-Push:
+## RunPod template
+
+Create a `Pod` template with:
+
+- **Type**: `Pod`
+- **Compute**: NVIDIA GPU of your choice
+- **Container image**: `<your-registry>/branching-workbook-tabby-runpod:latest`
+- **Exposed TCP port**: `22`
+- **Volume mount path**: `/workspace` (use a non-zero volume disk to persist downloaded models across pod restarts)
+- **Environment variable**: `PUBLIC_KEY=<your SSH public key>`
+
+Leave the template start command blank — the image's entrypoint handles it.
+
+## SSH into the pod
+
+Use the **SSH over exposed TCP** command from the RunPod *Connect* tab. Example shape:
 
 ```bash
-docker push <registry>/branching-workbook-tabby-runpod:latest
+ssh root@<pod-ip> -p <ssh-port> -i ~/.ssh/<your-private-key>
 ```
 
-## Template Shape
+Confirm TabbyAPI is up inside the pod:
 
-Use a custom RunPod `Pod` template with:
+```bash
+curl http://127.0.0.1:5000/health
+curl http://127.0.0.1:5000/v1/model
+```
 
-- Type: `Pod`
-- Compute: `Nvidia GPU`
-- Container image: `<registry>/branching-workbook-tabby-runpod:latest`
-- Exposed TCP port: `22`
-- Volume mount path: `/workspace`
-- Environment variable: `PUBLIC_KEY=<your ssh public key>`
+## Connect Branching Workbook
 
-The image entrypoint already starts SSH and TabbyAPI. Leave the template start
-command blank.
+From here, follow the SSH-tunnel and env-var setup in the parent [`deploy/README.md`](../README.md#2-open-an-ssh-tunnel).

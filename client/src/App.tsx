@@ -38,6 +38,7 @@ import {
   type ChatCompletionMessage,
   type ChatRole,
   type ComposeDisplayMode,
+  type DialogResult,
   type ModelLoadEvent,
   type ModelLoadRequest,
   type ProjectInfo,
@@ -143,6 +144,10 @@ type AutocompleteState =
   | { phase: "idle" }
   | { phase: "thinking" }
   | { phase: "showing"; suggestions: string[]; visibleIdx: number };
+
+// Triggered when the server's native dialog endpoint isn't available
+// (off-macOS); the user types a project path into a fallback modal.
+type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "chat" };
 
 type ChatTurn = {
   role: ChatRole;
@@ -584,6 +589,10 @@ export default function App() {
     useState<UsedCandidateRange | null>(null);
   const [branchPaneRatio, setBranchPaneRatio] = useState(SINGLE_ROW_BRANCH_PANE_RATIO);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
+  const [manualPathRequest, setManualPathRequest] = useState<ManualPathRequest | null>(
+    null,
+  );
+  const [manualPathInput, setManualPathInput] = useState("");
   const [treeVisible, setTreeVisible] = useState(true);
   const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
   const [chatSystemDraft, setChatSystemDraft] = useState("");
@@ -721,6 +730,42 @@ export default function App() {
         window.requestAnimationFrame(restore);
       });
     };
+  }
+
+  // Pin the END OF THE ACTUAL TEXT (last .cm-line) to the bottom of the
+  // manuscript viewport. Used on generate so the model's continuation
+  // anchor is always visible alongside the streaming branches.
+  //
+  // We can't just scroll to scrollHeight: .cm-content has a min-height of
+  // ~34rem (see WorkbookEditor's editorBaseTheme), so a one-line buffer
+  // has a lot of empty padding below the text. Scrolling by container
+  // dimensions would push the real text above the viewport. Anchor on the
+  // last rendered line instead.
+  //
+  // Two RAFs to outlast the candidate-pane resize and any contenteditable
+  // caret-into-view that fires when state updates settle.
+  function scrollManuscriptToEnd(): void {
+    const scrollContainer = document.querySelector(
+      ".bw-manuscript-scroll",
+    ) as HTMLElement | null;
+    if (!scrollContainer) return;
+    const apply = () => {
+      const lines = scrollContainer.querySelectorAll(".cm-line");
+      const lastLine = lines[lines.length - 1] as HTMLElement | undefined;
+      if (!lastLine) return;
+      const lineRect = lastLine.getBoundingClientRect();
+      const containerRect = scrollContainer.getBoundingClientRect();
+      const lineBottomInContainer =
+        lineRect.bottom - containerRect.top + scrollContainer.scrollTop;
+      const target = Math.max(0, lineBottomInContainer - scrollContainer.clientHeight);
+      if (Math.abs(scrollContainer.scrollTop - target) > 0.5) {
+        scrollContainer.scrollTop = target;
+      }
+    };
+    window.requestAnimationFrame(() => {
+      apply();
+      window.requestAnimationFrame(apply);
+    });
   }
 
   const clearBranchPicker = useCallback(() => {
@@ -1447,21 +1492,17 @@ export default function App() {
     return base.replace(/\.bwbk$/i, "") || "Branching Workbook";
   }
 
-  async function onCreateProject(kind: "prose" | "chat" = "prose") {
-    setError(null);
-    let chosen: string | null;
-    try {
-      const picked = await dialogPickNewProject();
-      chosen = picked.path;
-    } catch (err) {
-      setError(formatError(err));
-      return;
-    }
-    if (!chosen) return;
+  // Mirror the server dialog_create behavior: if the user didn't include
+  // .bwbk, append it rather than replacing whatever they typed.
+  function ensureBwbkSuffix(path: string): string {
+    return path.toLowerCase().endsWith(".bwbk") ? path : `${path}.bwbk`;
+  }
 
+  async function createProjectFromPath(path: string, kind: "prose" | "chat") {
+    const normalized = ensureBwbkSuffix(path);
     setLoadingProject(true);
     try {
-      const info = await createProject(chosen, titleFromPath(chosen), kind);
+      const info = await createProject(normalized, titleFromPath(normalized), kind);
       await loadProject(info);
     } catch (err) {
       setError(formatError(err));
@@ -1470,26 +1511,64 @@ export default function App() {
     }
   }
 
-  async function onOpenProject() {
-    setError(null);
-    let chosen: string | null;
-    try {
-      const picked = await dialogPickProject();
-      chosen = picked.path;
-    } catch (err) {
-      setError(formatError(err));
-      return;
-    }
-    if (!chosen) return;
-
+  async function openProjectFromPath(path: string) {
     setLoadingProject(true);
     try {
-      const info = await openProject(chosen);
+      const info = await openProject(path);
       await loadProject(info);
     } catch (err) {
       setError(formatError(err));
     } finally {
       setLoadingProject(false);
+    }
+  }
+
+  async function onCreateProject(kind: "prose" | "chat" = "prose") {
+    setError(null);
+    let result: DialogResult;
+    try {
+      result = await dialogPickNewProject();
+    } catch (err) {
+      setError(formatError(err));
+      return;
+    }
+    if (result.status === "unavailable") {
+      setManualPathInput("");
+      setManualPathRequest({ mode: "create", kind });
+      return;
+    }
+    if (!result.path) return;
+    await createProjectFromPath(result.path, kind);
+  }
+
+  async function onOpenProject() {
+    setError(null);
+    let result: DialogResult;
+    try {
+      result = await dialogPickProject();
+    } catch (err) {
+      setError(formatError(err));
+      return;
+    }
+    if (result.status === "unavailable") {
+      setManualPathInput("");
+      setManualPathRequest({ mode: "open" });
+      return;
+    }
+    if (!result.path) return;
+    await openProjectFromPath(result.path);
+  }
+
+  async function onSubmitManualPath() {
+    if (!manualPathRequest) return;
+    const path = manualPathInput.trim();
+    if (!path) return;
+    const request = manualPathRequest;
+    setManualPathRequest(null);
+    if (request.mode === "create") {
+      await createProjectFromPath(path, request.kind);
+    } else {
+      await openProjectFromPath(path);
     }
   }
 
@@ -1802,7 +1881,6 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    const restoreManuscriptScroll = pinManuscriptScroll();
     setCandidates(
       Array.from({ length: n }, () => ({
         text: "",
@@ -1823,7 +1901,7 @@ export default function App() {
     setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
-    restoreManuscriptScroll();
+    scrollManuscriptToEnd();
     abortRef.current = new AbortController();
     let firstVisibleChosen = false;
 
@@ -1993,26 +2071,18 @@ export default function App() {
       return;
     }
 
+    // Completions are continuations of the draft, so they always append at
+    // the end of the buffer — never at a recorded cursor position, which is
+    // often stale (the user clicked into the editor earlier just to read).
+    // The one exception is replacing a previously-used branch with a
+    // different one: that swaps in place rather than appending again.
     const canReplaceUsed = usedCandidateRange !== null;
-    // Inline compose pins insertion to the end of the document. The ghost
-    // preview is rendered at end-of-doc, and clicking "Use" while the
-    // editor isn't focused would otherwise pull the cursor to a stale
-    // selection — sometimes way above the visible region.
-    const selection = bufferSelectionArmedRef.current
-      ? bufferSelectionRef.current
-      : null;
-    const useEnd =
-      !canReplaceUsed && (composeDisplayMode === "inline" || selection === null);
     const start = canReplaceUsed
       ? Math.max(0, Math.min(buffer.length, usedCandidateRange.start))
-      : useEnd
-        ? buffer.length
-        : Math.max(0, Math.min(buffer.length, selection?.start ?? buffer.length));
+      : buffer.length;
     const end = canReplaceUsed
       ? Math.max(start, Math.min(buffer.length, usedCandidateRange.end))
-      : useEnd
-        ? buffer.length
-        : Math.max(start, Math.min(buffer.length, selection?.end ?? start));
+      : buffer.length;
     const nextBuffer = `${buffer.slice(0, start)}${text}${buffer.slice(end)}`;
     const nextCursor = start + text.length;
 
@@ -3133,9 +3203,7 @@ export default function App() {
     if (!undo) return;
     pendingDeleteUndoRef.current = null;
 
-    const restorable = undo.deletedIds.filter(
-      (id) => tree.nodes[id]?.deleted === true,
-    );
+    const restorable = undo.deletedIds.filter((id) => tree.nodes[id]?.deleted === true);
     if (restorable.length === 0) return;
 
     const nextNodes = { ...tree.nodes };
@@ -4012,21 +4080,22 @@ export default function App() {
                   </button>
                 );
               })}
-              {mapMarquee && (() => {
-                const rect = marqueeRect(mapMarquee);
-                return (
-                  <div
-                    className="bw-node-map-marquee"
-                    style={{
-                      left: rect.x,
-                      top: rect.y,
-                      width: rect.width,
-                      height: rect.height,
-                    }}
-                    aria-hidden="true"
-                  />
-                );
-              })()}
+              {mapMarquee &&
+                (() => {
+                  const rect = marqueeRect(mapMarquee);
+                  return (
+                    <div
+                      className="bw-node-map-marquee"
+                      style={{
+                        left: rect.x,
+                        top: rect.y,
+                        width: rect.width,
+                        height: rect.height,
+                      }}
+                      aria-hidden="true"
+                    />
+                  );
+                })()}
             </div>
             {mapTooltip && (
               <div
@@ -4115,13 +4184,14 @@ export default function App() {
                   </span>
                 );
 
-                const hideTooltip = selectedNode.parentId === null
-                  ? "Root cannot be hidden."
-                  : selectedNode.id === currentId && !selectedNode.hidden
-                    ? "Select another node before hiding this active node."
-                    : selectedNode.hidden
-                      ? "Unhide this node so it shows up in normal tree views again."
-                      : "Hide this node from normal tree views (it stays in the file as a sibling branch).";
+                const hideTooltip =
+                  selectedNode.parentId === null
+                    ? "Root cannot be hidden."
+                    : selectedNode.id === currentId && !selectedNode.hidden
+                      ? "Select another node before hiding this active node."
+                      : selectedNode.hidden
+                        ? "Unhide this node so it shows up in normal tree views again."
+                        : "Hide this node from normal tree views (it stays in the file as a sibling branch).";
 
                 const mergeUpTooltip = canMergeUp
                   ? "Fold the selected node up into its parent. The parent absorbs this node's text; this node disappears."
@@ -4241,9 +4311,9 @@ export default function App() {
               })()}
             </div>
             <div className="bw-node-map-merge-note">
-              Shift-click a node to add it to the selection, or shift-drag a box
-              across the canvas to select everything inside it. Merge is blocked
-              whenever the upstream node has more than one child.
+              Shift-click a node to add it to the selection, or shift-drag a box across
+              the canvas to select everything inside it. Merge is blocked whenever the
+              upstream node has more than one child.
             </div>
             <div className="bw-node-map-minimap" aria-label="Node map minimap">
               <div className="bw-node-map-section-title">
@@ -4646,6 +4716,69 @@ export default function App() {
                 onClick={() => void onCloseProject()}
               >
                 Discard & close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {manualPathRequest && (
+        <div
+          className="bw-modal-backdrop"
+          role="dialog"
+          aria-label={
+            manualPathRequest.mode === "create"
+              ? "Enter path for new workbook"
+              : "Enter path of workbook to open"
+          }
+          onMouseDown={() => setManualPathRequest(null)}
+        >
+          <section
+            className="bw-confirm"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="bw-confirm-title">
+              {manualPathRequest.mode === "create"
+                ? `New ${manualPathRequest.kind} workbook`
+                : "Open workbook"}
+            </div>
+            <p>
+              Native file dialog isn't available on this platform. Enter the full path
+              to {manualPathRequest.mode === "create" ? "save the new" : "the"}{" "}
+              <code>.bwbk</code> file.
+            </p>
+            <input
+              type="text"
+              className="bw-input w-full"
+              autoFocus
+              placeholder="/path/to/workbook.bwbk"
+              value={manualPathInput}
+              onChange={(event) => setManualPathInput(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  void onSubmitManualPath();
+                } else if (event.key === "Escape") {
+                  event.preventDefault();
+                  setManualPathRequest(null);
+                }
+              }}
+            />
+            <div className="bw-confirm-actions">
+              <button
+                type="button"
+                className="bw-button"
+                onClick={() => setManualPathRequest(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="bw-button bw-button-primary"
+                onClick={() => void onSubmitManualPath()}
+                disabled={!manualPathInput.trim()}
+              >
+                {manualPathRequest.mode === "create" ? "Create" : "Open"}
               </button>
             </div>
           </section>

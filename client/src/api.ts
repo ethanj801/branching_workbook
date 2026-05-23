@@ -294,20 +294,50 @@ export function updateProjectSettings(
 // Native OS file dialog endpoints. The browser cannot show a real
 // filesystem picker, so the local FastAPI wrapper drives one via
 // AppleScript and hands back the chosen path. The path is never logged
-// or persisted — it is the response body and nothing more. A null path
-// means the user cancelled the dialog.
+// or persisted — it is the response body and nothing more.
+//
+// The server's native-dialog implementation is macOS-only; off-platform
+// it returns 501. We surface that as a discriminated `unavailable` so
+// the caller can fall back to a text-input prompt rather than treating
+// it as a generic failure.
 export type DialogPath = { path: string | null };
 
-export function dialogPickProject(): Promise<DialogPath> {
-  return requestJson<DialogPath>("/api/projects/dialog/open", {
-    method: "POST",
-  });
+export type DialogResult =
+  | { status: "ok"; path: string | null }
+  | { status: "unavailable"; reason: string };
+
+async function postDialog(url: string): Promise<DialogResult> {
+  const response = await fetch(url, { method: "POST" });
+  if (response.status === 501) {
+    let reason = "Native file dialog is not available on this platform.";
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") reason = payload.detail;
+    } catch {
+      // keep default reason
+    }
+    return { status: "unavailable", reason };
+  }
+  if (!response.ok) {
+    let message = `POST ${url} failed: ${response.status}`;
+    try {
+      const payload = (await response.json()) as { detail?: unknown };
+      if (typeof payload.detail === "string") message = payload.detail;
+    } catch {
+      // keep status-based message
+    }
+    throw new Error(message);
+  }
+  const payload = (await response.json()) as DialogPath;
+  return { status: "ok", path: payload.path };
 }
 
-export function dialogPickNewProject(): Promise<DialogPath> {
-  return requestJson<DialogPath>("/api/projects/dialog/create", {
-    method: "POST",
-  });
+export function dialogPickProject(): Promise<DialogResult> {
+  return postDialog("/api/projects/dialog/open");
+}
+
+export function dialogPickNewProject(): Promise<DialogResult> {
+  return postDialog("/api/projects/dialog/create");
 }
 
 export function listNodes(): Promise<NodeModel[]> {
