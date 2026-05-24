@@ -288,6 +288,117 @@ async def test_batch_main_path_flag_is_exclusive(
     assert nodes["C"]["is_main_path"] is True
 
 
+async def test_batch_chat_fork_reparent_roundtrips(
+    client: AsyncClient, project_path: Path
+):
+    """Editing an upstream chat turn fires a single batch that inserts the
+    fork node and updates downstream nodes' parent_id to point at it. The
+    server should accept this in one atomic batch; downstream nodes must
+    end up reparented and the old node must keep its identity (just lose
+    its children) so the loom sibling history is intact."""
+    await client.post(
+        "/api/projects",
+        json={"path": str(project_path), "title": "chat", "kind": "chat"},
+    )
+    # Seed: system → U (user) → A (assistant) — both end_of_turn.
+    u = _mk("U", "system", "ask", role="user", end_of_turn=True)
+    a = _mk("A", "U", "answer", role="assistant", end_of_turn=True)
+    await client.post(
+        "/api/nodes/batch",
+        json={"creates": [u, a], "main_path": ["root", "system", "U", "A"]},
+    )
+
+    # Edit U: insert fork U' as sibling of U, reparent A from U to U'.
+    u_fork = _mk("U2", "system", "ask (edited)", role="user", end_of_turn=True)
+    a_reparented = _mk("A", "U2", "answer", role="assistant", end_of_turn=True)
+    r = await client.post(
+        "/api/nodes/batch",
+        json={
+            "creates": [u_fork],
+            "updates": [a_reparented],
+            "main_path": ["root", "system", "U2", "A"],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"created": 1, "updated": 1, "deleted": 0}
+
+    nodes = {n["id"]: n for n in (await client.get("/api/nodes")).json()}
+    # Old user preserved as a childless sibling under system.
+    assert nodes["U"]["parent_id"] == "system"
+    assert nodes["U"]["text"] == "ask"
+    assert nodes["U"]["is_main_path"] is False
+    assert not any(n["parent_id"] == "U" for n in nodes.values())
+    # Fork is on the main path with the edited text.
+    assert nodes["U2"]["parent_id"] == "system"
+    assert nodes["U2"]["text"] == "ask (edited)"
+    assert nodes["U2"]["is_main_path"] is True
+    # Assistant reparented onto the fork.
+    assert nodes["A"]["parent_id"] == "U2"
+    assert nodes["A"]["is_main_path"] is True
+
+
+async def test_batch_chat_multi_fork_reparent_chains_through_each_fork(
+    client: AsyncClient, project_path: Path
+):
+    """The batch-save model commits every dirty chat draft in one
+    POST /api/nodes/batch. When two turns at different depths are edited
+    at once the client emits two fork creates plus the parent-pointer
+    updates needed to re-thread the chain through each fork. The server
+    has to accept the whole bundle atomically — partial application
+    would leave the active path broken mid-tree."""
+    await client.post(
+        "/api/projects",
+        json={"path": str(project_path), "title": "chat", "kind": "chat"},
+    )
+    # Seed: system → U1 → A1 → U2 → A2 (each end_of_turn).
+    u1 = _mk("U1", "system", "q1", role="user", end_of_turn=True)
+    a1 = _mk("A1", "U1", "r1", role="assistant", end_of_turn=True)
+    u2 = _mk("U2", "A1", "q2", role="user", end_of_turn=True)
+    a2 = _mk("A2", "U2", "r2", role="assistant", end_of_turn=True)
+    await client.post(
+        "/api/nodes/batch",
+        json={
+            "creates": [u1, a1, u2, a2],
+            "main_path": ["root", "system", "U1", "A1", "U2", "A2"],
+        },
+    )
+
+    # Edit both U1 and U2. Forks are F1 (sibling of U1 under system) and
+    # F2 (sibling of U2, but reparented onto A1 — same as before).
+    # Chain: system → F1 → A1 → F2 → A2.
+    f1 = _mk("F1", "system", "Q1!", role="user", end_of_turn=True)
+    a1_re = _mk("A1", "F1", "r1", role="assistant", end_of_turn=True)
+    f2 = _mk("F2", "A1", "Q2!", role="user", end_of_turn=True)
+    a2_re = _mk("A2", "F2", "r2", role="assistant", end_of_turn=True)
+    r = await client.post(
+        "/api/nodes/batch",
+        json={
+            "creates": [f1, f2],
+            "updates": [a1_re, a2_re],
+            "main_path": ["root", "system", "F1", "A1", "F2", "A2"],
+        },
+    )
+    assert r.status_code == 200
+    assert r.json() == {"created": 2, "updated": 2, "deleted": 0}
+
+    nodes = {n["id"]: n for n in (await client.get("/api/nodes")).json()}
+    # Old user turns survive as childless siblings.
+    assert nodes["U1"]["parent_id"] == "system"
+    assert not any(n["parent_id"] == "U1" for n in nodes.values())
+    assert nodes["U2"]["parent_id"] == "A1"
+    assert not any(n["parent_id"] == "U2" for n in nodes.values())
+    # The new chain threads through both forks.
+    assert nodes["F1"]["parent_id"] == "system"
+    assert nodes["A1"]["parent_id"] == "F1"
+    assert nodes["F2"]["parent_id"] == "A1"
+    assert nodes["A2"]["parent_id"] == "F2"
+    # Only the new chain is on the main path.
+    for nid in ("root", "system", "F1", "A1", "F2", "A2"):
+        assert nodes[nid]["is_main_path"] is True, nid
+    for nid in ("U1", "U2"):
+        assert nodes[nid]["is_main_path"] is False, nid
+
+
 async def test_batch_rolls_back_on_integrity_error(
     client: AsyncClient, project_path: Path
 ):

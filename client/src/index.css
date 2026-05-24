@@ -899,7 +899,10 @@ textarea:disabled {
 .bw-chat-turn-editor {
   width: 100%;
   min-height: 7rem;
-  resize: vertical;
+  /* Grow to fit content; manual drag-resize is unnecessary and would only
+     be lost across re-mount cycles (e.g. when candidates show/clear). */
+  field-sizing: content;
+  resize: none;
   border: 1px solid var(--line);
   border-radius: 5px;
   background: rgba(255, 254, 249, 0.78);
@@ -957,7 +960,6 @@ textarea:disabled {
 .bw-chat-turn-editor {
   margin-top: 0.6rem;
   min-height: 5.5rem;
-  resize: vertical;
   background: rgba(255, 254, 249, 0.52);
 }
 
