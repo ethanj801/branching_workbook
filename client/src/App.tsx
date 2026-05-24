@@ -48,6 +48,7 @@ import {
   type TabbyModel,
 } from "./api";
 import type { KeyBinding } from "@codemirror/view";
+import AutoGrowTextarea from "./AutoGrowTextarea";
 import WorkbookEditor, {
   type EditorSelection,
   type WorkbookEditorHandle,
@@ -4624,7 +4625,7 @@ export default function App() {
             </button>
             {chatSystemExpanded && (
               <div className="bw-chat-system-editor">
-                <textarea
+                <AutoGrowTextarea
                   value={chatSystemDraft}
                   onChange={(event) => setChatSystemDraft(event.target.value)}
                   onBlur={() => void onSaveChatSystem()}
@@ -4669,7 +4670,7 @@ export default function App() {
                     )}
                   </div>
                   {editable ? (
-                    <textarea
+                    <AutoGrowTextarea
                       className="bw-chat-turn-editor"
                       data-chat-node-id={turnKey}
                       value={draft?.text ?? turn.text}
@@ -4771,7 +4772,7 @@ export default function App() {
               <div className="bw-chat-turn-head">
                 <span>YOU</span>
               </div>
-              <textarea
+              <AutoGrowTextarea
                 value={chatUserDraft}
                 onChange={(event) => setChatUserDraft(event.target.value)}
                 onKeyDown={(event) => {

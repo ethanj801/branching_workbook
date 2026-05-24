@@ -839,6 +839,14 @@ textarea:disabled {
   padding: 0 clamp(0.75rem, 2vw, 2rem);
 }
 
+/* When the node-viewer sidebar is collapsed, let the chat transcript use
+   the freed horizontal space instead of staying pinned at the 58rem
+   reading-width cap. Still has an upper bound so lines don't become
+   uncomfortable on ultra-wide displays. */
+.bw-workspace[data-tree="false"] .bw-chat-transcript {
+  width: min(96rem, calc(100% - clamp(1.5rem, 6vw, 7rem)));
+}
+
 .bw-chat-system,
 .bw-chat-turn {
   border: 0.5px solid var(--line);
