@@ -58,6 +58,11 @@ import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
+  canGenerateAssistantFromTail,
+  foldChatTurns,
+  type ChatTurn,
+} from "./chat/turns";
+import {
   NODE_MAP_FIT_PADDING,
   NODE_MAP_MAX_SCALE,
   NODE_MAP_MINIMAP_MAX_HEIGHT,
@@ -148,13 +153,6 @@ type AutocompleteState =
 // Triggered when the server's native dialog endpoint isn't available
 // (off-macOS); the user types a project path into a fallback modal.
 type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "chat" };
-
-type ChatTurn = {
-  role: ChatRole;
-  nodes: TreeNode[];
-  text: string;
-  endOfTurn: boolean;
-};
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
@@ -622,6 +620,9 @@ export default function App() {
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
+  // After adding a blank assistant chunk, focus its editor so the user
+  // can start typing immediately. Consumed by the effect below.
+  const pendingChatFocusRef = useRef<string | null>(null);
   // Single-slot undo for the most recent Delete action. Cleared when any
   // other tree mutation persists, so cmd+Z always restores the last delete
   // and nothing earlier.
@@ -2183,25 +2184,10 @@ export default function App() {
   }
 
   const chatPathNodes = currentPath.filter((node) => node.parentId !== null);
-  const chatTurns = useMemo<ChatTurn[]>(() => {
-    const turns: ChatTurn[] = [];
-    for (const node of chatPathNodes) {
-      const previous = turns[turns.length - 1];
-      if (!previous || previous.role !== node.role || previous.endOfTurn) {
-        turns.push({
-          role: node.role,
-          nodes: [node],
-          text: node.text,
-          endOfTurn: node.endOfTurn,
-        });
-      } else {
-        previous.nodes.push(node);
-        previous.text += node.text;
-        previous.endOfTurn = node.endOfTurn;
-      }
-    }
-    return turns;
-  }, [chatPathNodes]);
+  const chatTurns = useMemo<ChatTurn[]>(
+    () => foldChatTurns(chatPathNodes),
+    [chatPathNodes],
+  );
   const chatSystemNode = chatPathNodes.find((node) => node.role === "system") ?? null;
   const chatTailNode = chatPathNodes[chatPathNodes.length - 1] ?? null;
   const chatTailTurn = chatTurns[chatTurns.length - 1] ?? null;
@@ -2212,10 +2198,7 @@ export default function App() {
       chatTailNode.role === "system" ||
       (chatTailNode.role === "assistant" && chatTailNode.endOfTurn));
   const chatCanGenerateAssistant =
-    project?.kind === "chat" &&
-    !branchPickerOpen &&
-    (chatTailNode?.role === "user" ||
-      (chatTailNode?.role === "assistant" && !chatTailNode.endOfTurn));
+    project?.kind === "chat" && canGenerateAssistantFromTail(chatTailNode);
   const chatHasPendingUserDraft = chatCanComposeUser && chatUserDraft.trim().length > 0;
   const chatCanSubmitOrGenerate = chatCanGenerateAssistant || chatHasPendingUserDraft;
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
@@ -2233,26 +2216,27 @@ export default function App() {
     setChatSystemDraft(chatSystemNode?.text ?? "");
   }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind]);
 
+  useEffect(() => {
+    const id = pendingChatFocusRef.current;
+    if (!id) return;
+    if (!chatTurns.some((turn) => turn.nodes[0]?.id === id)) return;
+    if (saving || streaming) return;
+    pendingChatFocusRef.current = null;
+    const ta = document.querySelector<HTMLTextAreaElement>(
+      `textarea[data-chat-node-id="${id}"]`,
+    );
+    if (ta) {
+      ta.focus();
+      const len = ta.value.length;
+      ta.setSelectionRange(len, len);
+    }
+  }, [chatTurns, saving, streaming]);
+
   function buildChatPayload(path: TreeNode[]): {
     messages: ChatCompletionMessage[];
     responsePrefix: string | undefined;
   } {
-    const turns: ChatTurn[] = [];
-    for (const node of path.filter((item) => item.parentId !== null)) {
-      const previous = turns[turns.length - 1];
-      if (!previous || previous.role !== node.role || previous.endOfTurn) {
-        turns.push({
-          role: node.role,
-          nodes: [node],
-          text: node.text,
-          endOfTurn: node.endOfTurn,
-        });
-      } else {
-        previous.nodes.push(node);
-        previous.text += node.text;
-        previous.endOfTurn = node.endOfTurn;
-      }
-    }
+    const turns = foldChatTurns(path.filter((item) => item.parentId !== null));
 
     const lastTurn = turns[turns.length - 1] ?? null;
     const continuingAssistant =
@@ -2452,6 +2436,9 @@ export default function App() {
     const text = nextText;
     if (text === turn.text) return;
     if (!text.trim()) {
+      // Empty save is a no-op when the turn started empty (e.g. a freshly
+      // added blank assistant chunk the user hasn't typed into yet).
+      if (turn.text.length === 0) return;
       setError("Chat turns cannot be empty.");
       setChatTurnDrafts((current) => {
         const next = { ...current };
@@ -2648,6 +2635,39 @@ export default function App() {
       },
     };
     await persistChatTree(tree, nextTree, currentId);
+  }
+
+  // Append an empty assistant chunk the user can type into directly,
+  // bypassing the model. The chunk is non-final (endOfTurn=false) so
+  // they can keep extending it or click "End turn" when done.
+  async function onAddChatAssistantChunk() {
+    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
+    if (!chatCanGenerateAssistant) return;
+    const priorText = concatPathText(pathFromRoot(tree, currentId));
+    const node: TreeNode = {
+      id: nodeId(),
+      parentId: currentId,
+      text: "",
+      name: null,
+      source: "user_written",
+      role: "assistant",
+      endOfTurn: false,
+      hidden: false,
+      deleted: false,
+      starred: false,
+      createdAt: nowEpoch(),
+      priorContextHash: contextHash(priorText),
+    };
+    const nextTree: Tree = {
+      rootId: tree.rootId,
+      nodes: {
+        ...tree.nodes,
+        [node.id]: node,
+      },
+    };
+    clearBranchPicker();
+    pendingChatFocusRef.current = node.id;
+    await persistChatTree(tree, nextTree, node.id);
   }
 
   // Starred lineage: nodes worth showing when "Only starred paths" is on.
@@ -4516,6 +4536,7 @@ export default function App() {
                   {turn.role === "user" || turn.role === "assistant" ? (
                     <textarea
                       className="bw-chat-turn-editor"
+                      data-chat-node-id={turn.nodes[0]?.id ?? ""}
                       value={chatTurnDrafts[turn.nodes[0]?.id ?? ""] ?? turn.text}
                       onChange={(event) => {
                         const key = turn.nodes[0]?.id;
@@ -5881,22 +5902,35 @@ export default function App() {
                     Stop
                   </button>
                 ) : isChatProject ? (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (chatHasPendingUserDraft) void onSubmitChatUser();
-                      else void startChatAssistantGeneration();
-                    }}
-                    disabled={saving || !currentTabbyModel || !chatCanSubmitOrGenerate}
-                    className="bw-button bw-button-primary"
-                    title={
-                      chatHasPendingUserDraft
-                        ? "Send message and generate reply"
-                        : "Generate assistant branches"
-                    }
-                  >
-                    {chatHasPendingUserDraft ? "Send" : "Generate"}
-                  </button>
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => void onAddChatAssistantChunk()}
+                      disabled={saving || streaming || !chatCanGenerateAssistant}
+                      className="bw-button"
+                      title="Append an empty assistant chunk you can type into"
+                    >
+                      Add assistant
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (chatHasPendingUserDraft) void onSubmitChatUser();
+                        else void startChatAssistantGeneration();
+                      }}
+                      disabled={
+                        saving || !currentTabbyModel || !chatCanSubmitOrGenerate
+                      }
+                      className="bw-button bw-button-primary"
+                      title={
+                        chatHasPendingUserDraft
+                          ? "Send message and generate reply"
+                          : "Generate assistant branches"
+                      }
+                    >
+                      {chatHasPendingUserDraft ? "Send" : "Generate"}
+                    </button>
+                  </>
                 ) : workspaceMode === "compose" && streaming ? (
                   <button
                     type="button"
