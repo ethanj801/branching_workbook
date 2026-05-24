@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { ChatRole, TreeNode } from "../tree/types";
 import type { Tree } from "../tree/types";
+import { pathFromRoot } from "../tree/types";
 import {
   applyChatTurnEditFork,
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
+  commitChatDrafts,
+  foldChainFromFirst,
+  foldChainMatchingBaseText,
   foldChatTurns,
+  hasUnsavedChatDrafts,
 } from "./turns";
 
 function makeNode(
@@ -83,6 +88,108 @@ describe("foldChatTurns", () => {
     ]);
     expect(turns).toHaveLength(1);
     expect(turns[0].endOfTurn).toBe(true);
+  });
+});
+
+describe("foldChainFromFirst", () => {
+  it("returns just the start node when it's already endOfTurn", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    expect(foldChainFromFirst(tree, "u1").map((n) => n.id)).toEqual(["u1"]);
+  });
+
+  it("walks same-role children until endOfTurn", () => {
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const u1 = makeNode("u1", "a2", "user", "thanks", true);
+    const tree = makeTree(root, a1, a2, u1);
+    expect(foldChainFromFirst(tree, "a1").map((n) => n.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("stops at the first node with no same-role child", () => {
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "partial");
+    const tree = makeTree(root, a1);
+    expect(foldChainFromFirst(tree, "a1").map((n) => n.id)).toEqual(["a1"]);
+  });
+
+  it("returns empty when the start node is missing", () => {
+    const root = makeNode("root", null, "user", "");
+    const tree = makeTree(root);
+    expect(foldChainFromFirst(tree, "ghost")).toEqual([]);
+  });
+});
+
+describe("foldChainMatchingBaseText", () => {
+  it("returns the unique chain whose concat equals baseText", () => {
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    const chain = foldChainMatchingBaseText(tree, "a1", "Hello world.");
+    expect(chain?.map((n) => n.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("picks the matching continuation when sibling alternatives exist", () => {
+    // Regression for the off-path arbitrary-pick bug: a length-stopped
+    // assistant turn (a1) has two kept continuations (a2 used in the
+    // active path, a2_alt kept as a sibling alternative). A draft
+    // whose baseText is "Hello world." must land on the a1→a2 chain;
+    // first-child-only would pick whichever sibling came first in
+    // tree iteration order and produce a dead-leaf fork.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const a2_alt = makeNode("a2_alt", "a1", "assistant", "there.", true);
+    const tree = makeTree(root, a1, a2, a2_alt);
+    const chain = foldChainMatchingBaseText(tree, "a1", "Hello world.");
+    expect(chain?.map((n) => n.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("returns null when no chain matches baseText", () => {
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    // baseText snapshot is stale: chain reads "Hello world." but
+    // the snapshot says something else entirely.
+    expect(foldChainMatchingBaseText(tree, "a1", "Goodbye world.")).toBeNull();
+  });
+
+  it("returns null when two distinct chains both match baseText", () => {
+    // Pathological but possible: two kept continuations whose chains
+    // happen to read the same text. We can't pick one safely.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const a2_dup = makeNode("a2_dup", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2, a2_dup);
+    expect(foldChainMatchingBaseText(tree, "a1", "Hello world.")).toBeNull();
+  });
+
+  it("does not return a strict prefix of a longer matching chain", () => {
+    // If a1 alone matches baseText but a1 has a same-role continuation
+    // (it's not endOfTurn), a1 isn't really a complete turn. We must
+    // require the candidate to end naturally.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello", false);
+    const a2 = makeNode("a2", "a1", "assistant", " world.", true);
+    const tree = makeTree(root, a1, a2);
+    // The full chain reads "Hello world.", not "Hello". So a draft
+    // with baseText="Hello" against an a1 that has a same-role
+    // continuation doesn't match any valid candidate chain.
+    expect(foldChainMatchingBaseText(tree, "a1", "Hello")).toBeNull();
+  });
+
+  it("accepts a single-node chain when the node is endOfTurn", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    expect(foldChainMatchingBaseText(tree, "u1", "hi")?.map((n) => n.id)).toEqual([
+      "u1",
+    ]);
   });
 });
 
@@ -246,5 +353,483 @@ describe("applyChatTurnEditFork", () => {
     // Original chain still intact.
     expect(next.nodes["a1"].parentId).toBe("root");
     expect(next.nodes["a2"].parentId).toBe("a1");
+  });
+});
+
+function makeStubDeps() {
+  let idCounter = 0;
+  let nowCounter = 1000;
+  return {
+    newNodeId: () => `fork-${++idCounter}`,
+    now: () => ++nowCounter,
+    contextHash: (text: string) => `h(${text.length})`,
+  };
+}
+
+// Small constructor for the new {text, baseText} draft shape so the
+// tests don't have to spell out both fields every time.
+function draft(text: string, baseText: string) {
+  return { text, baseText };
+}
+
+describe("commitChatDrafts", () => {
+  it("is a no-op when nothing is dirty", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a1 = makeNode("a1", "u1", "assistant", "hello", true);
+    const tree = makeTree(root, u1, a1);
+    const turns = foldChatTurns([u1, a1]);
+
+    const result = commitChatDrafts(tree, "a1", turns, {}, null, makeStubDeps());
+    expect(result.tree).toBe(tree); // identity preserved on no-op
+    expect(result.currentId).toBe("a1");
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.systemDraftCommitted).toBe(false);
+  });
+
+  it("updates a leaf turn in place when it has no descendants", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a1 = makeNode("a1", "u1", "assistant", "hello", true);
+    const tree = makeTree(root, u1, a1);
+    const turns = foldChatTurns([u1, a1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a1",
+      turns,
+      { a1: draft("hello there", "hello") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["a1"]);
+    // No fork created — a1 is single-node leaf.
+    expect(Object.keys(result.tree.nodes).sort()).toEqual(["a1", "root", "u1"]);
+    expect(result.tree.nodes["a1"].text).toBe("hello there");
+    expect(result.currentId).toBe("a1");
+  });
+
+  it("forks an upstream dirty turn and keeps the chain through fork", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a1 = makeNode("a1", "u1", "assistant", "hello", true);
+    const tree = makeTree(root, u1, a1);
+    const turns = foldChatTurns([u1, a1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a1",
+      turns,
+      { u1: draft("hi (edited)", "hi") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["u1"]);
+    expect(result.currentId).toBe("a1"); // still the leaf, reparented under fork
+    expect(result.tree.nodes["fork-1"].text).toBe("hi (edited)");
+    expect(result.tree.nodes["a1"].parentId).toBe("fork-1");
+    // Original u1 preserved as a childless sibling.
+    expect(result.tree.nodes["u1"].text).toBe("hi");
+    expect(
+      Object.values(result.tree.nodes).filter((n) => n.parentId === "u1"),
+    ).toHaveLength(0);
+  });
+
+  it("commits multiple dirty turns top-down with the chain rewired through each fork", () => {
+    // root → u1 → a1 → u2 → a2  (a2 is the leaf)
+    // Edit u1 AND u2; both fork. Saving top-down means u1's fork moves
+    // a1 (and the chain below) onto fork-1, then u2's fork (built on
+    // the already-moved chain) moves a2 onto fork-2. Final path:
+    // root → fork-1 → a1 → fork-2 → a2.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "q1", true);
+    const a1 = makeNode("a1", "u1", "assistant", "r1", true);
+    const u2 = makeNode("u2", "a1", "user", "q2", true);
+    const a2 = makeNode("a2", "u2", "assistant", "r2", true);
+    const tree = makeTree(root, u1, a1, u2, a2);
+    const turns = foldChatTurns([u1, a1, u2, a2]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a2",
+      turns,
+      { u1: draft("Q1!", "q1"), u2: draft("Q2!", "q2") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["u1", "u2"]);
+    expect(result.currentId).toBe("a2");
+    // Validate the new path actually threads through both forks.
+    const path = pathFromRoot(result.tree, "a2").map((n) => n.id);
+    expect(path).toEqual(["root", "fork-1", "a1", "fork-2", "a2"]);
+    // Originals preserved as childless siblings.
+    expect(
+      Object.values(result.tree.nodes).filter((n) => n.parentId === "u1"),
+    ).toHaveLength(0);
+    expect(
+      Object.values(result.tree.nodes).filter((n) => n.parentId === "u2"),
+    ).toHaveLength(0);
+  });
+
+  it("lands on the fork when the dirty turn was the tail itself", () => {
+    // Multi-chunk assistant turn with no descendants: forking yields a
+    // new leaf the user should sit on.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "alpha ");
+    const a2 = makeNode("a2", "a1", "assistant", "beta", true);
+    const tree = makeTree(root, a1, a2);
+    const turns = foldChatTurns([a1, a2]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a2",
+      turns,
+      { a1: draft("rewritten", "alpha beta") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.currentId).toBe("fork-1");
+  });
+
+  it("commits a dirty system edit and reports it separately", () => {
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("sys", "root", "system", "be terse", true);
+    const u1 = makeNode("u1", "sys", "user", "hi", true);
+    const tree = makeTree(root, sys, u1);
+    const turns = foldChatTurns([sys, u1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u1",
+      turns,
+      {},
+      { nodeId: "sys", text: "be helpful" },
+      makeStubDeps(),
+    );
+    expect(result.systemDraftCommitted).toBe(true);
+    expect(result.tree.nodes["sys"].text).toBe("be helpful");
+    expect(result.consumedTurnDraftIds).toEqual([]);
+  });
+
+  it("skips a draft that would empty a previously non-empty turn", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    const turns = foldChatTurns([u1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u1",
+      turns,
+      { u1: draft("   ", "hi") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.tree.nodes["u1"].text).toBe("hi");
+  });
+
+  it("commits an empty save on a turn that was already empty (newly added chunk)", () => {
+    // Mirror onSaveChatTurn's no-op-on-empty-started-empty branch:
+    // committing an unchanged empty turn shouldn't error and shouldn't
+    // bloat the tree.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a1 = makeNode("a1", "u1", "assistant", "", false);
+    const tree = makeTree(root, u1, a1);
+    const turns = foldChatTurns([u1, a1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a1",
+      turns,
+      { a1: draft("", "") },
+      null,
+      makeStubDeps(),
+    );
+    // draft.text === draft.baseText, so the no-op short-circuits before
+    // the empty-trim check.
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.tree).toBe(tree);
+  });
+
+  it("commits an off-path draft as a synthetic single-node fork", () => {
+    // Active path is root → system → u_b, but the user has a draft on
+    // u_a (sibling, off-path). Save must still land the edit — leaving
+    // it dirty-but-unsaveable was a real dead end before this fix.
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("system", "root", "system", "", true);
+    const ua = makeNode("u_a", "system", "user", "branch A question", true);
+    const ub = makeNode("u_b", "system", "user", "branch B question", true);
+    const tree = makeTree(root, sys, ua, ub);
+    // chatTurns is what the active path would fold to — only branch B.
+    const turns = foldChatTurns([sys, ub]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u_b",
+      turns,
+      { u_a: draft("branch A question (edited)", "branch A question") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["u_a"]);
+    // u_a is a single-node leaf — in-place update, no fork.
+    expect(result.tree.nodes["u_a"].text).toBe("branch A question (edited)");
+    // Active path tail unchanged.
+    expect(result.currentId).toBe("u_b");
+  });
+
+  it("disambiguates an off-path multi-chunk draft by baseText when sibling continuations exist", () => {
+    // a1 has two kept continuations: a2 ("world.") and a2_alt
+    // ("there."). The user was editing the a1→a2 chain ("Hello
+    // world.") off-path. Without baseText-driven chain selection
+    // the commit would arbitrarily pick whichever sibling the tree
+    // iterator returned first and produce a dead-leaf fork attached
+    // to the wrong subtree. With baseText="Hello world." we pick a2
+    // unambiguously and the fork correctly takes over a2's
+    // descendants.
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("system", "root", "system", "", true);
+    const ub = makeNode("u_b", "system", "user", "active branch", true);
+    const u1 = makeNode("u1", "system", "user", "off-path question", true);
+    const a1 = makeNode("a1", "u1", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const u2 = makeNode("u2", "a2", "user", "follow-up", true);
+    const a2_alt = makeNode("a2_alt", "a1", "assistant", "there.", true);
+    const tree = makeTree(root, sys, ub, u1, a1, a2, u2, a2_alt);
+    const turns = foldChatTurns([sys, ub]); // active path
+
+    const result = commitChatDrafts(
+      tree,
+      "u_b",
+      turns,
+      { a1: draft("Hello world. (revised)", "Hello world.") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["a1"]);
+    // Fork carries the edit and took over a2's downstream (u2).
+    const fork = result.tree.nodes["fork-1"];
+    expect(fork.text).toBe("Hello world. (revised)");
+    expect(result.tree.nodes["u2"].parentId).toBe("fork-1");
+    // a2 is preserved as a now-childless sibling under a1.
+    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    expect(
+      Object.values(result.tree.nodes).filter((n) => n.parentId === "a2"),
+    ).toHaveLength(0);
+    // a2_alt is untouched (still a sibling of a2 under a1).
+    expect(result.tree.nodes["a2_alt"].parentId).toBe("a1");
+  });
+
+  it("bails on an ambiguous off-path multi-chunk draft instead of guessing", () => {
+    // Two sibling continuations whose chains both read the same text
+    // — there's no safe pick. Skip rather than corrupt; the draft
+    // stays in the map and the user can resolve by navigating to the
+    // intended branch.
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("system", "root", "system", "", true);
+    const ub = makeNode("u_b", "system", "user", "active branch", true);
+    const a1 = makeNode("a1", "sys", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const a2_dup = makeNode("a2_dup", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, sys, ub, a1, a2, a2_dup);
+    const turns = foldChatTurns([sys, ub]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u_b",
+      turns,
+      { a1: draft("Hello world. (revised)", "Hello world.") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.tree).toBe(tree);
+  });
+
+  it("commits an off-path multi-chunk draft without dragging continuation chunks under the fork", () => {
+    // Regression: synthesizing the off-path turn as a single-node
+    // turn made applyChatTurnEditFork treat the continuation chunks
+    // (a2, here) as downstream descendants and reparent them under
+    // the new fork. Saving "Goodbye." for the off-path "Hello " →
+    // "world." chain used to produce "Goodbye.world." instead of
+    // just "Goodbye.".
+    //
+    // Build a tree where the multi-chunk assistant turn lives off the
+    // active path: root → system → u_b is active, and the off-path
+    // chain hangs off u_a.
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("system", "root", "system", "", true);
+    const ua = makeNode("u_a", "system", "user", "ask A", true);
+    const ub = makeNode("u_b", "system", "user", "ask B", true);
+    const a1 = makeNode("a1", "u_a", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, sys, ua, ub, a1, a2);
+    // Active path is sys → u_b; the off-path turn (a1+a2) isn't in
+    // these chatTurns.
+    const turns = foldChatTurns([sys, ub]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u_b",
+      turns,
+      { a1: draft("Goodbye.", "Hello world.") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["a1"]);
+    // The fork's only persisted text is the user's draft — no
+    // "world." dangling underneath.
+    const fork = result.tree.nodes["fork-1"];
+    expect(fork.text).toBe("Goodbye.");
+    const forkChildren = Object.values(result.tree.nodes).filter(
+      (n) => n.parentId === "fork-1",
+    );
+    expect(forkChildren).toEqual([]);
+    // Original chain intact as a sibling history branch.
+    expect(result.tree.nodes["a1"].parentId).toBe("u_a");
+    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    // Active path tail unchanged.
+    expect(result.currentId).toBe("u_b");
+  });
+
+  it("treats a multi-chunk turn's untouched draft as a no-op (baseText check)", () => {
+    // Regression for the dirty-tracking false positive: a draft equal
+    // to the full folded text (set when the user first focused the
+    // editor) must not commit anything, even though it differs from
+    // the first chunk's text in isolation.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    const turns = foldChatTurns([a1, a2]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a2",
+      turns,
+      { a1: draft("Hello world.", "Hello world.") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.tree).toBe(tree);
+  });
+
+  it("commits a multi-chunk turn shrunk to the first chunk's text", () => {
+    // Regression for the dirty-tracking false negative: editing the
+    // merged "Hello world." down to exactly "Hello " makes draft.text
+    // equal a1's text in isolation but still differs from the folded
+    // baseText, so it must be treated as a real edit.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    const turns = foldChatTurns([a1, a2]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a2",
+      turns,
+      { a1: draft("Hello ", "Hello world.") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["a1"]);
+    // Multi-chunk turn forks; original a1→a2 chain preserved as a
+    // childless-sibling branch and the fork takes over the main path.
+    expect(result.tree.nodes["fork-1"].text).toBe("Hello ");
+    expect(result.tree.nodes["a1"].parentId).toBe("root");
+    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    expect(result.currentId).toBe("fork-1");
+  });
+});
+
+describe("hasUnsavedChatDrafts", () => {
+  it("is false when there is no tree", () => {
+    expect(hasUnsavedChatDrafts(null, null, "", {})).toBe(false);
+  });
+
+  it("is false when every draft's text matches its baseText snapshot", () => {
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("sys", "root", "system", "be helpful", true);
+    const u1 = makeNode("u1", "sys", "user", "hi", true);
+    const tree = makeTree(root, sys, u1);
+    expect(
+      hasUnsavedChatDrafts(tree, sys, "be helpful", { u1: draft("hi", "hi") }),
+    ).toBe(false);
+  });
+
+  it("is true when the system draft differs from the system node", () => {
+    const root = makeNode("root", null, "user", "");
+    const sys = makeNode("sys", "root", "system", "be helpful", true);
+    const tree = makeTree(root, sys);
+    expect(hasUnsavedChatDrafts(tree, sys, "be terse", {})).toBe(true);
+  });
+
+  it("is true when a turn draft differs from its baseText snapshot", () => {
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    expect(
+      hasUnsavedChatDrafts(tree, null, "", { u1: draft("hi (edited)", "hi") }),
+    ).toBe(true);
+  });
+
+  it("does not false-positive on a multi-chunk turn whose draft equals the full folded text", () => {
+    // The textarea shows the concatenated turn text; the draft equals
+    // that concat as soon as the user focuses the editor. If we
+    // compared against only the first node's text the check would
+    // always say dirty for multi-chunk turns.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    expect(
+      hasUnsavedChatDrafts(tree, null, "", {
+        a1: draft("Hello world.", "Hello world."),
+      }),
+    ).toBe(false);
+  });
+
+  it("does flag a multi-chunk turn whose draft equals just the first chunk text", () => {
+    // Symmetric regression: editing the merged "Hello world." down to
+    // "Hello " would compare equal to a1.text in isolation but must
+    // still register as dirty against the folded baseText.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const tree = makeTree(root, a1, a2);
+    expect(
+      hasUnsavedChatDrafts(tree, null, "", {
+        a1: draft("Hello ", "Hello world."),
+      }),
+    ).toBe(true);
+  });
+
+  it("still flags drafts whose node is not on the current active path", () => {
+    // Regression: dirty check used to iterate only chatTurns (active
+    // path), so editing turn X then navigating to a sibling branch
+    // dropped X from the dirty check.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "branch A question", true);
+    const u2 = makeNode("u2", "root", "user", "branch B question", true);
+    const tree = makeTree(root, u1, u2);
+    expect(
+      hasUnsavedChatDrafts(tree, null, "", {
+        u1: draft("branch A question (edited)", "branch A question"),
+      }),
+    ).toBe(true);
+  });
+
+  it("ignores drafts whose node has been removed from the tree", () => {
+    const root = makeNode("root", null, "user", "");
+    const tree = makeTree(root);
+    expect(
+      hasUnsavedChatDrafts(tree, null, "", {
+        ghost: draft("edit on deleted turn", ""),
+      }),
+    ).toBe(false);
   });
 });

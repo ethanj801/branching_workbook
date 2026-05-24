@@ -61,8 +61,11 @@ import {
   applyChatTurnEditFork,
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
+  commitChatDrafts,
   foldChatTurns,
+  hasUnsavedChatDrafts,
   type ChatTurn,
+  type ChatTurnDraft,
 } from "./chat/turns";
 import {
   NODE_MAP_FIT_PADDING,
@@ -597,7 +600,9 @@ export default function App() {
   const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
   const [chatSystemDraft, setChatSystemDraft] = useState("");
   const [chatUserDraft, setChatUserDraft] = useState("");
-  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, string>>({});
+  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, ChatTurnDraft>>(
+    {},
+  );
   const [treeWidth, setTreeWidth] = useState(288);
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
   const [mapScale, setMapScale] = useState(1);
@@ -625,6 +630,12 @@ export default function App() {
   // After adding a blank assistant chunk, focus its editor so the user
   // can start typing immediately. Consumed by the effect below.
   const pendingChatFocusRef = useRef<string | null>(null);
+  // commitChatDraftsAndPersist closes over state that changes every
+  // render. Stash it behind a ref so the global keyboard handler can
+  // call it without re-binding (and re-running its effect) every time.
+  const commitChatDraftsAndPersistRef = useRef<
+    (() => Promise<{ tree: Tree; currentId: string } | null>) | null
+  >(null);
   // Single-slot undo for the most recent Delete action. Cleared when any
   // other tree mutation persists, so cmd+Z always restores the last delete
   // and nothing earlier.
@@ -1188,7 +1199,14 @@ export default function App() {
     function onKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        void commitBuffer();
+        if (project?.kind === "chat") {
+          // commitBuffer is a no-op for chat; route Cmd/Ctrl+S through
+          // the chat-aware path so the keyboard shortcut matches the
+          // Save button.
+          void commitChatDraftsAndPersistRef.current?.();
+        } else {
+          void commitBuffer();
+        }
       }
       if (
         (event.metaKey || event.ctrlKey) &&
@@ -1605,7 +1623,7 @@ export default function App() {
 
   function hasDirtyBuffer(): boolean {
     if (!project || !tree || !currentId) return false;
-    if (project.kind === "chat") return false;
+    if (project.kind === "chat") return chatHasUnsavedDrafts;
     return buffer !== concatPathText(pathFromRoot(tree, currentId));
   }
 
@@ -1695,6 +1713,10 @@ export default function App() {
   }
 
   async function onSave() {
+    if (project?.kind === "chat") {
+      await commitChatDraftsAndPersist();
+      return;
+    }
     await commitBuffer();
   }
 
@@ -1784,8 +1806,13 @@ export default function App() {
   async function onSelectNode(nodeIdToSelect: string) {
     if (!tree || !currentId || streaming || saving) return;
 
+    // For chat, flush any pending drafts before re-anchoring the path
+    // so they don't get stranded as off-path drafts the user can't
+    // see (and that the save shortcut can't reach either).
     const committed =
-      project?.kind === "chat" ? { tree, currentId, buffer } : await commitBuffer();
+      project?.kind === "chat"
+        ? await commitChatDraftsAndPersist()
+        : await commitBuffer();
     if (!committed) return;
 
     const selectedId =
@@ -2206,12 +2233,21 @@ export default function App() {
   const chatHasPendingUserDraft = chatCanComposeUser && chatUserDraft.trim().length > 0;
   const chatCanSubmitOrGenerate = chatCanGenerateAssistant || chatHasPendingUserDraft;
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  // True iff at least one chat turn draft or the system draft differs
+  // from what's already persisted. Used both to enable the actionbar
+  // Save button and to prompt before closing the project. Iterates the
+  // full draft map (not just turns on the active path) so a draft the
+  // user navigated away from still counts as unsaved.
+  const chatHasUnsavedDrafts =
+    project?.kind === "chat" &&
+    hasUnsavedChatDrafts(tree, chatSystemNode, chatSystemDraft, chatTurnDrafts);
   const dirtyBuffer =
     project !== null &&
-    project.kind !== "chat" &&
     tree !== null &&
     currentId !== null &&
-    buffer !== concatPathText(currentPath);
+    (project.kind === "chat"
+      ? chatHasUnsavedDrafts
+      : buffer !== concatPathText(currentPath));
   const emptyDraftStartsFromRoot =
     project !== null && currentPath.length > 1 && buffer.trim().length === 0;
 
@@ -2295,6 +2331,58 @@ export default function App() {
     };
     await persistChatTree(tree, nextTree, currentId);
   }
+
+  // Commit every dirty chat draft (system + per-turn) in a single
+  // round-trip and return the resulting tree/currentId, mirroring the
+  // commitBuffer contract for prose. Returns null if persistence
+  // failed; returns the input snapshot unchanged when nothing was
+  // dirty. Callers that need to chain another mutation (Generate,
+  // Send, Add assistant, navigation) call this first so the chain
+  // operates on the freshly-committed tree.
+  async function commitChatDraftsAndPersist(): Promise<{
+    tree: Tree;
+    currentId: string;
+  } | null> {
+    if (!tree || !currentId || project?.kind !== "chat") return null;
+    if (saving || streaming) return null;
+
+    const systemEdit =
+      chatSystemNode && chatSystemDraft !== chatSystemNode.text
+        ? { nodeId: chatSystemNode.id, text: chatSystemDraft }
+        : null;
+    const result = commitChatDrafts(
+      tree,
+      currentId,
+      chatTurns,
+      chatTurnDrafts,
+      systemEdit,
+      { newNodeId: nodeId, now: nowEpoch, contextHash },
+    );
+
+    if (result.tree === tree && result.currentId === currentId) {
+      return { tree, currentId };
+    }
+
+    setSaving(true);
+    setError(null);
+    try {
+      await mutateNodes(mutationBatchFromTrees(tree, result.tree, result.currentId));
+      setTree(result.tree);
+      setCurrentId(result.currentId);
+      setBuffer(concatPathText(pathFromRoot(result.tree, result.currentId)));
+      pendingDeleteUndoRef.current = null;
+      setChatTurnDrafts({});
+      clearBranchPicker();
+      return { tree: result.tree, currentId: result.currentId };
+    } catch (err) {
+      setError(formatError(err));
+      return null;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  commitChatDraftsAndPersistRef.current = commitChatDraftsAndPersist;
 
   async function startChatAssistantGeneration(baseTree = tree, baseId = currentId) {
     if (!baseTree || !baseId || streaming) return;
@@ -2405,12 +2493,18 @@ export default function App() {
     if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
     const text = chatUserDraft;
     if (!text.trim()) return;
-    if (!tree.nodes[currentId]) return;
 
-    const priorText = concatPathText(pathFromRoot(tree, currentId));
+    // Flush any pending turn / system edits first so this new turn
+    // attaches to the freshly-committed tree, not a stale snapshot.
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return;
+    const { tree: workingTree, currentId: workingId } = committed;
+    if (!workingTree.nodes[workingId]) return;
+
+    const priorText = concatPathText(pathFromRoot(workingTree, workingId));
     const node: TreeNode = {
       id: nodeId(),
-      parentId: currentId,
+      parentId: workingId,
       text,
       name: null,
       source: "user_written",
@@ -2423,13 +2517,13 @@ export default function App() {
       priorContextHash: contextHash(priorText),
     };
     const nextTree: Tree = {
-      rootId: tree.rootId,
+      rootId: workingTree.rootId,
       nodes: {
-        ...tree.nodes,
+        ...workingTree.nodes,
         [node.id]: node,
       },
     };
-    const saved = await persistChatTree(tree, nextTree, node.id);
+    const saved = await persistChatTree(workingTree, nextTree, node.id);
     if (!saved) return;
     setChatUserDraft("");
     void startChatAssistantGeneration(nextTree, node.id);
@@ -2447,7 +2541,7 @@ export default function App() {
       setChatTurnDrafts((current) => {
         const next = { ...current };
         const key = turn.nodes[0]?.id;
-        if (key) next[key] = turn.text;
+        if (key) next[key] = { text: turn.text, baseText: turn.text };
         return next;
       });
       return;
@@ -2511,7 +2605,13 @@ export default function App() {
 
     const saved = await persistChatTree(tree, nextTree, nextCurrentId);
     if (saved) {
-      setChatTurnDrafts({});
+      // Only clear the saved turn's own draft — other turns may have
+      // pending edits the user hasn't committed yet.
+      setChatTurnDrafts((current) => {
+        const next = { ...current };
+        delete next[firstNode.id];
+        return next;
+      });
       clearBranchPicker();
     }
   }
@@ -2654,10 +2754,15 @@ export default function App() {
   async function onAddChatAssistantChunk() {
     if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
     if (!chatCanAddAssistantChunk) return;
-    const priorText = concatPathText(pathFromRoot(tree, currentId));
+
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return;
+    const { tree: workingTree, currentId: workingId } = committed;
+
+    const priorText = concatPathText(pathFromRoot(workingTree, workingId));
     const node: TreeNode = {
       id: nodeId(),
-      parentId: currentId,
+      parentId: workingId,
       text: "",
       name: null,
       source: "user_written",
@@ -2670,15 +2775,15 @@ export default function App() {
       priorContextHash: contextHash(priorText),
     };
     const nextTree: Tree = {
-      rootId: tree.rootId,
+      rootId: workingTree.rootId,
       nodes: {
-        ...tree.nodes,
+        ...workingTree.nodes,
         [node.id]: node,
       },
     };
     clearBranchPicker();
     pendingChatFocusRef.current = node.id;
-    await persistChatTree(tree, nextTree, node.id);
+    await persistChatTree(workingTree, nextTree, node.id);
   }
 
   // Starred lineage: nodes worth showing when "Only starred paths" is on.
@@ -4529,6 +4634,9 @@ export default function App() {
             .map((turn, index) => {
               const isActiveAssistant =
                 turn.role === "assistant" && chatTailTurn === turn && !turn.endOfTurn;
+              const turnKey = turn.nodes[0]?.id ?? "";
+              const draft = chatTurnDrafts[turnKey];
+              const editable = turn.role === "user" || turn.role === "assistant";
               return (
                 <section
                   key={`${turn.nodes[0]?.id ?? index}-${index}`}
@@ -4544,32 +4652,40 @@ export default function App() {
                       </span>
                     )}
                   </div>
-                  {turn.role === "user" || turn.role === "assistant" ? (
+                  {editable ? (
                     <textarea
                       className="bw-chat-turn-editor"
-                      data-chat-node-id={turn.nodes[0]?.id ?? ""}
-                      value={chatTurnDrafts[turn.nodes[0]?.id ?? ""] ?? turn.text}
+                      data-chat-node-id={turnKey}
+                      value={draft?.text ?? turn.text}
                       onChange={(event) => {
-                        const key = turn.nodes[0]?.id;
-                        if (!key) return;
-                        setChatTurnDrafts((current) => ({
-                          ...current,
-                          [key]: event.target.value,
-                        }));
+                        if (!turnKey) return;
+                        const nextText = event.target.value;
+                        // Capture turn.text as the baseText snapshot on
+                        // first edit; subsequent keystrokes reuse the
+                        // existing snapshot so the comparison stays
+                        // anchored to what the user started typing
+                        // against, not to whatever the turn currently
+                        // looks like.
+                        setChatTurnDrafts((current) => {
+                          const existing = current[turnKey];
+                          const baseText = existing?.baseText ?? turn.text;
+                          return {
+                            ...current,
+                            [turnKey]: { text: nextText, baseText },
+                          };
+                        });
                       }}
-                      onBlur={(event) => void onSaveChatTurn(turn, event.target.value)}
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
-                          event.currentTarget.blur();
+                          void onSaveChatTurn(turn, event.currentTarget.value);
                         }
                         if (event.key === "Escape") {
                           event.preventDefault();
-                          const key = turn.nodes[0]?.id;
-                          if (key) {
+                          if (turnKey) {
                             setChatTurnDrafts((current) => {
                               const next = { ...current };
-                              delete next[key];
+                              delete next[turnKey];
                               return next;
                             });
                           }
@@ -5925,9 +6041,17 @@ export default function App() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => {
-                        if (chatHasPendingUserDraft) void onSubmitChatUser();
-                        else void startChatAssistantGeneration();
+                      onClick={async () => {
+                        if (chatHasPendingUserDraft) {
+                          void onSubmitChatUser();
+                          return;
+                        }
+                        const committed = await commitChatDraftsAndPersist();
+                        if (!committed) return;
+                        void startChatAssistantGeneration(
+                          committed.tree,
+                          committed.currentId,
+                        );
                       }}
                       disabled={
                         saving || !currentTabbyModel || !chatCanSubmitOrGenerate
