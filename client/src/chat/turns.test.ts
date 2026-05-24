@@ -11,6 +11,8 @@ import {
   foldChainMatchingBaseText,
   foldChatTurns,
   hasUnsavedChatDrafts,
+  isDraftCommitable,
+  isDraftDirty,
 } from "./turns";
 
 function makeNode(
@@ -190,6 +192,47 @@ describe("foldChainMatchingBaseText", () => {
     expect(foldChainMatchingBaseText(tree, "u1", "hi")?.map((n) => n.id)).toEqual([
       "u1",
     ]);
+  });
+
+  it("skips hidden continuations when picking a chain", () => {
+    // Off-path drafts are reconstructed via this fold; if a sibling
+    // chain that the user hid still participated in matching, an
+    // edit would commit a fork onto an invisible branch the user
+    // can't navigate to or see.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const a2_hidden = makeNode("a2_hidden", "a1", "assistant", "world.", true);
+    a2_hidden.hidden = true;
+    const tree = makeTree(root, a1, a2, a2_hidden);
+    // Without filtering this would be ambiguous (two matching chains)
+    // and return null; the hidden sibling should be ignored so the
+    // visible chain wins cleanly.
+    const chain = foldChainMatchingBaseText(tree, "a1", "Hello world.");
+    expect(chain?.map((n) => n.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("skips deleted continuations when picking a chain", () => {
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2 = makeNode("a2", "a1", "assistant", "world.", true);
+    const a2_dead = makeNode("a2_dead", "a1", "assistant", "world.", true);
+    a2_dead.deleted = true;
+    const tree = makeTree(root, a1, a2, a2_dead);
+    const chain = foldChainMatchingBaseText(tree, "a1", "Hello world.");
+    expect(chain?.map((n) => n.id)).toEqual(["a1", "a2"]);
+  });
+
+  it("returns null when the only matching chain is hidden", () => {
+    // If the visible tree has no chain matching baseText, the fold
+    // must still bail rather than fall through to a hidden one —
+    // the draft belongs to a branch the user can no longer see.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "Hello ");
+    const a2_hidden = makeNode("a2_hidden", "a1", "assistant", "world.", true);
+    a2_hidden.hidden = true;
+    const tree = makeTree(root, a1, a2_hidden);
+    expect(foldChainMatchingBaseText(tree, "a1", "Hello world.")).toBeNull();
   });
 });
 
@@ -717,6 +760,49 @@ describe("commitChatDrafts", () => {
     expect(result.tree).toBe(tree);
   });
 
+  it("reports skipped draft ids when a dirty draft is uncommitable (emptied turn)", () => {
+    // Used to be a silent return; with the unified commit boundary the
+    // skipped id is reported back so the persist caller can surface an
+    // error instead of leaving the draft permadirty without explanation.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    const turns = foldChatTurns([u1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u1",
+      turns,
+      { u1: draft("   ", "hi") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.skippedTurnDraftIds).toEqual(["u1"]);
+    expect(result.tree).toBe(tree);
+  });
+
+  it("does not report a clean (non-dirty) draft as skipped", () => {
+    // A draft whose text already matches baseText is a no-op, not a
+    // failure — it should appear in neither bucket so the caller has
+    // no reason to display an error.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const tree = makeTree(root, u1);
+    const turns = foldChatTurns([u1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "u1",
+      turns,
+      { u1: draft("hi", "hi") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual([]);
+    expect(result.skippedTurnDraftIds).toEqual([]);
+  });
+
   it("commits a multi-chunk turn shrunk to the first chunk's text", () => {
     // Regression for the dirty-tracking false negative: editing the
     // merged "Hello world." down to exactly "Hello " makes draft.text
@@ -743,6 +829,37 @@ describe("commitChatDrafts", () => {
     expect(result.tree.nodes["a1"].parentId).toBe("root");
     expect(result.tree.nodes["a2"].parentId).toBe("a1");
     expect(result.currentId).toBe("fork-1");
+  });
+});
+
+describe("isDraftDirty / isDraftCommitable", () => {
+  it("isDraftDirty is true iff text differs from baseText", () => {
+    expect(isDraftDirty({ text: "hi", baseText: "hi" })).toBe(false);
+    expect(isDraftDirty({ text: "hi!", baseText: "hi" })).toBe(true);
+    expect(isDraftDirty({ text: "", baseText: "" })).toBe(false);
+    expect(isDraftDirty({ text: "", baseText: "hi" })).toBe(true);
+  });
+
+  it("isDraftCommitable is false for clean drafts", () => {
+    expect(isDraftCommitable({ text: "hi", baseText: "hi" })).toBe(false);
+  });
+
+  it("isDraftCommitable is true for ordinary edits", () => {
+    expect(isDraftCommitable({ text: "hi there", baseText: "hi" })).toBe(true);
+  });
+
+  it("isDraftCommitable is false when the edit empties a previously non-empty turn", () => {
+    // Saving an emptied turn would silently delete the user's text;
+    // the commit path treats this as uncommitable so the user can fix
+    // or revert before anything persists.
+    expect(isDraftCommitable({ text: "", baseText: "hi" })).toBe(false);
+    expect(isDraftCommitable({ text: "   ", baseText: "hi" })).toBe(false);
+  });
+
+  it("isDraftCommitable is true for typing into a freshly-blank assistant chunk", () => {
+    // baseText === "" means the turn started empty (e.g. the Add
+    // assistant chunk button), so committing text into it is fine.
+    expect(isDraftCommitable({ text: "Sure!", baseText: "" })).toBe(true);
   });
 });
 

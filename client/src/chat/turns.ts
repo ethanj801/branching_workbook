@@ -38,34 +38,37 @@ export function foldChainFromFirst(tree: Tree, firstNodeId: string): TreeNode[] 
 // would stay under the stale original and the fork would become a
 // dead leaf). A candidate chain must end naturally — either at an
 // endOfTurn=true node or where no same-role continuation exists —
-// so we don't accept a prefix of a longer chain.
+// so we don't accept a prefix of a longer chain. Hidden and deleted
+// nodes are skipped entirely: the user can't see them, so committing
+// a draft onto an invisible branch would produce a fork they have
+// no way to navigate to.
 export function foldChainMatchingBaseText(
   tree: Tree,
   firstNodeId: string,
   baseText: string,
 ): TreeNode[] | null {
   const start = tree.nodes[firstNodeId];
-  if (!start) return null;
+  if (!start || start.hidden || start.deleted) return null;
 
   const matches: TreeNode[][] = [];
+
+  function visibleSameRoleChildren(parentId: string, role: ChatRole): TreeNode[] {
+    return Object.values(tree.nodes).filter(
+      (n) => n.parentId === parentId && n.role === role && !n.hidden && !n.deleted,
+    );
+  }
 
   function walk(chain: TreeNode[], textSoFar: string): void {
     const last = chain[chain.length - 1];
     if (textSoFar === baseText) {
       const hasSameRoleContinuation =
-        !last.endOfTurn &&
-        Object.values(tree.nodes).some(
-          (n) => n.parentId === last.id && n.role === last.role,
-        );
+        !last.endOfTurn && visibleSameRoleChildren(last.id, last.role).length > 0;
       if (!hasSameRoleContinuation) matches.push(chain);
       return;
     }
     if (!baseText.startsWith(textSoFar)) return;
     if (last.endOfTurn) return;
-    const sameRoleChildren = Object.values(tree.nodes).filter(
-      (n) => n.parentId === last.id && n.role === last.role,
-    );
-    for (const child of sameRoleChildren) {
+    for (const child of visibleSameRoleChildren(last.id, last.role)) {
       walk([...chain, child], textSoFar + child.text);
     }
   }
@@ -158,6 +161,26 @@ export type ChatTurnDraft = {
   baseText: string;
 };
 
+// A draft is "dirty" iff its current text differs from the baseText
+// snapshot captured when the user first started typing. This is the
+// single source of truth for "is there an unsaved edit here" — both
+// the dirty-state UI (Save button, close warning) and the commit
+// skip-rules consult it, so they can't drift apart.
+export function isDraftDirty(draft: ChatTurnDraft): boolean {
+  return draft.text !== draft.baseText;
+}
+
+// A dirty draft is "commitable" unless committing it would silently
+// delete the user's work — emptying a previously non-empty turn
+// would do that, so we treat it as uncommitable and let the persist
+// caller surface an error instead of silently dropping the edit.
+// Typing into a freshly-blank turn (baseText === "") is fine.
+export function isDraftCommitable(draft: ChatTurnDraft): boolean {
+  if (!isDraftDirty(draft)) return false;
+  if (!draft.text.trim() && draft.baseText.length > 0) return false;
+  return true;
+}
+
 // Returns true iff any chat draft (turn or system) differs from the
 // snapshot the user started editing against. Iterates the full draft
 // map rather than just turns on the active path so a draft the user
@@ -173,7 +196,7 @@ export function hasUnsavedChatDrafts(
   if (systemNode && systemDraft !== systemNode.text) return true;
   for (const [id, draft] of Object.entries(turnDrafts)) {
     if (!tree.nodes[id]) continue;
-    if (draft.text !== draft.baseText) return true;
+    if (isDraftDirty(draft)) return true;
   }
   return false;
 }
@@ -188,6 +211,11 @@ export type ChatDraftCommitResult = {
   tree: Tree;
   currentId: string;
   consumedTurnDraftIds: string[];
+  // Drafts that were dirty (per isDraftDirty) but uncommitable (per
+  // isDraftCommitable) — for example, an empty-text save against a
+  // non-empty turn. Reported so the persist caller can surface a
+  // user-facing error instead of leaving a permadirty mystery.
+  skippedTurnDraftIds: string[];
   systemDraftCommitted: boolean;
 };
 
@@ -218,6 +246,7 @@ export function commitChatDrafts(
   let working: Tree = tree;
   let nextCurrentId = currentId;
   const consumedTurnDraftIds: string[] = [];
+  const skippedTurnDraftIds: string[] = [];
   let systemDraftCommitted = false;
 
   if (systemEdit) {
@@ -235,8 +264,7 @@ export function commitChatDrafts(
   }
 
   function applyDraftToTurn(turn: ChatTurn, draft: ChatTurnDraft): boolean {
-    if (draft.text === draft.baseText) return false;
-    if (!draft.text.trim() && draft.baseText.length > 0) return false;
+    if (!isDraftCommitable(draft)) return false;
 
     const firstId = turn.nodes[0]?.id;
     if (!firstId) return false;
@@ -300,7 +328,11 @@ export function commitChatDrafts(
     if (!firstId) continue;
     const draft = drafts[firstId];
     if (!draft) continue;
-    if (applyDraftToTurn(turn, draft)) consumedTurnDraftIds.push(firstId);
+    if (applyDraftToTurn(turn, draft)) {
+      consumedTurnDraftIds.push(firstId);
+    } else if (isDraftDirty(draft)) {
+      skippedTurnDraftIds.push(firstId);
+    }
   }
 
   // Off-path drafts: any draft we didn't reach via the active-path
@@ -314,9 +346,9 @@ export function commitChatDrafts(
   // If baseText matches zero or multiple chains we skip the draft;
   // the user can navigate back to the matching branch and commit on
   // path, or discard via Escape.
-  const consumed = new Set(consumedTurnDraftIds);
+  const handled = new Set([...consumedTurnDraftIds, ...skippedTurnDraftIds]);
   for (const [firstId, draft] of Object.entries(drafts)) {
-    if (consumed.has(firstId)) continue;
+    if (handled.has(firstId)) continue;
     const firstNode = working.nodes[firstId];
     if (!firstNode || firstNode.parentId === null) continue;
     const chain = foldChainMatchingBaseText(working, firstId, draft.baseText);
@@ -328,13 +360,18 @@ export function commitChatDrafts(
       text: chain.map((n) => n.text).join(""),
       endOfTurn: last.endOfTurn,
     };
-    if (applyDraftToTurn(syntheticTurn, draft)) consumedTurnDraftIds.push(firstId);
+    if (applyDraftToTurn(syntheticTurn, draft)) {
+      consumedTurnDraftIds.push(firstId);
+    } else if (isDraftDirty(draft)) {
+      skippedTurnDraftIds.push(firstId);
+    }
   }
 
   return {
     tree: working,
     currentId: nextCurrentId,
     consumedTurnDraftIds,
+    skippedTurnDraftIds,
     systemDraftCommitted,
   };
 }

@@ -58,7 +58,6 @@ import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
-  applyChatTurnEditFork,
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
   commitChatDrafts,
@@ -1623,7 +1622,14 @@ export default function App() {
 
   function hasDirtyBuffer(): boolean {
     if (!project || !tree || !currentId) return false;
-    if (project.kind === "chat") return chatHasUnsavedDrafts;
+    if (project.kind === "chat") {
+      // For close-warn purposes the compose box counts too — losing
+      // half-typed compose text on close is just as bad as losing a
+      // turn edit. (The actionbar Save button uses the narrower
+      // chatHasUnsavedDrafts since Save can't ship a compose draft —
+      // that's what Send is for.)
+      return chatHasUnsavedDrafts || chatUserDraft.trim().length > 0;
+    }
     return buffer !== concatPathText(pathFromRoot(tree, currentId));
   }
 
@@ -2315,21 +2321,13 @@ export default function App() {
     }
   }
 
+  // Thin wrapper so the system editor's onBlur and Save button share
+  // the same commit path as Cmd+S / actionbar Save. The system draft
+  // is one of the inputs commitChatDrafts already knows how to
+  // process — no bespoke tree-mutation needed here.
   async function onSaveChatSystem() {
-    if (!tree || !currentId || !chatSystemNode || saving || streaming) return;
-    if (chatSystemDraft === chatSystemNode.text) return;
-    const nextTree: Tree = {
-      rootId: tree.rootId,
-      nodes: {
-        ...tree.nodes,
-        [chatSystemNode.id]: {
-          ...chatSystemNode,
-          text: chatSystemDraft,
-          endOfTurn: true,
-        },
-      },
-    };
-    await persistChatTree(tree, nextTree, currentId);
+    if (project?.kind !== "chat" || saving || streaming) return;
+    await commitChatDraftsAndPersist();
   }
 
   // Commit every dirty chat draft (system + per-turn) in a single
@@ -2339,7 +2337,9 @@ export default function App() {
   // dirty. Callers that need to chain another mutation (Generate,
   // Send, Add assistant, navigation) call this first so the chain
   // operates on the freshly-committed tree.
-  async function commitChatDraftsAndPersist(): Promise<{
+  async function commitChatDraftsAndPersist(
+    options: { preserveBranchPicker?: boolean } = {},
+  ): Promise<{
     tree: Tree;
     currentId: string;
   } | null> {
@@ -2359,7 +2359,21 @@ export default function App() {
       { newNodeId: nodeId, now: nowEpoch, contextHash },
     );
 
+    // Dirty-but-uncommitable drafts (e.g. a turn the user emptied)
+    // would otherwise vanish silently. Surface a user-facing error
+    // and abort the commit so the source of the dirty state is
+    // visible; the user can type something, revert with Escape, or
+    // navigate to a different branch.
+    if (result.skippedTurnDraftIds.length > 0) {
+      setError(
+        "Some chat turns are empty and can't be saved. Type something or press Escape to discard.",
+      );
+      return null;
+    }
+
     if (result.tree === tree && result.currentId === currentId) {
+      // Even with no tree change a draft can be reverted-to-clean —
+      // those become no-ops here; nothing to evict.
       return { tree, currentId };
     }
 
@@ -2371,8 +2385,21 @@ export default function App() {
       setCurrentId(result.currentId);
       setBuffer(concatPathText(pathFromRoot(result.tree, result.currentId)));
       pendingDeleteUndoRef.current = null;
-      setChatTurnDrafts({});
-      clearBranchPicker();
+      // Evict only the drafts we actually consumed. The wholesale
+      // wipe used to drop any unsaved off-path / sibling-branch
+      // drafts on every commit, including the cleanest no-op.
+      if (result.consumedTurnDraftIds.length > 0) {
+        setChatTurnDrafts((current) => {
+          const next = { ...current };
+          for (const id of result.consumedTurnDraftIds) delete next[id];
+          return next;
+        });
+      }
+      // Most callers want the picker closed after any tree-changing
+      // commit (the candidates were generated against a now-stale
+      // path). Keep is the exception: it's explicitly a "save this
+      // one, leave the rest visible" action, so it opts out.
+      if (!options.preserveBranchPicker) clearBranchPicker();
       return { tree: result.tree, currentId: result.currentId };
     } catch (err) {
       setError(formatError(err));
@@ -2382,7 +2409,15 @@ export default function App() {
     }
   }
 
-  commitChatDraftsAndPersistRef.current = commitChatDraftsAndPersist;
+  // Sync the ref in an effect rather than during render. React 18+
+  // may invoke a component body multiple times before committing
+  // (strict mode, concurrent rendering), and mutating a ref in render
+  // means a discarded render's ref write can clobber the committed
+  // one — leaving the global keydown handler holding a stale
+  // closure.
+  useEffect(() => {
+    commitChatDraftsAndPersistRef.current = commitChatDraftsAndPersist;
+  });
 
   async function startChatAssistantGeneration(baseTree = tree, baseId = currentId) {
     if (!baseTree || !baseId || streaming) return;
@@ -2529,93 +2564,6 @@ export default function App() {
     void startChatAssistantGeneration(nextTree, node.id);
   }
 
-  async function onSaveChatTurn(turn: ChatTurn, nextText: string) {
-    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
-    const text = nextText;
-    if (text === turn.text) return;
-    if (!text.trim()) {
-      // Empty save is a no-op when the turn started empty (e.g. a freshly
-      // added blank assistant chunk the user hasn't typed into yet).
-      if (turn.text.length === 0) return;
-      setError("Chat turns cannot be empty.");
-      setChatTurnDrafts((current) => {
-        const next = { ...current };
-        const key = turn.nodes[0]?.id;
-        if (key) next[key] = { text: turn.text, baseText: turn.text };
-        return next;
-      });
-      return;
-    }
-
-    const firstNode = turn.nodes[0];
-    if (!firstNode || firstNode.parentId === null) return;
-
-    const canUpdateInPlace =
-      turn.nodes.length === 1 && childrenOf(tree, firstNode.id).length === 0;
-
-    if (canUpdateInPlace) {
-      const nextTree: Tree = {
-        rootId: tree.rootId,
-        nodes: {
-          ...tree.nodes,
-          [firstNode.id]: {
-            ...firstNode,
-            text,
-            endOfTurn: turn.role === "user" ? true : firstNode.endOfTurn,
-          },
-        },
-      };
-      await persistChatTree(tree, nextTree, currentId);
-      setChatTurnDrafts((current) => {
-        const next = { ...current };
-        delete next[firstNode.id];
-        return next;
-      });
-      return;
-    }
-
-    const priorText = concatPathText(pathFromRoot(tree, firstNode.parentId));
-    const fork: TreeNode = {
-      id: nodeId(),
-      parentId: firstNode.parentId,
-      text,
-      name: null,
-      source: turn.role === "assistant" ? "composed" : "user_written",
-      role: turn.role,
-      endOfTurn: turn.role === "user",
-      hidden: false,
-      deleted: false,
-      starred: false,
-      createdAt: nowEpoch(),
-      priorContextHash: contextHash(priorText),
-    };
-    const { tree: nextTree } = applyChatTurnEditFork(tree, turn, fork);
-
-    // Keep the chat tail where it was if it's downstream of the edited
-    // turn (now reachable through the fork via the re-parented chain).
-    // If the edited turn was itself the tail — e.g. a multi-chunk turn
-    // with no descendants — land on the fork instead.
-    const lastNode = turn.nodes[turn.nodes.length - 1];
-    const prevPath = pathFromRoot(tree, currentId);
-    const downstreamOfLast =
-      lastNode !== undefined &&
-      currentId !== lastNode.id &&
-      prevPath.some((node) => node.id === lastNode.id);
-    const nextCurrentId = downstreamOfLast ? currentId : fork.id;
-
-    const saved = await persistChatTree(tree, nextTree, nextCurrentId);
-    if (saved) {
-      // Only clear the saved turn's own draft — other turns may have
-      // pending edits the user hasn't committed yet.
-      setChatTurnDrafts((current) => {
-        const next = { ...current };
-        delete next[firstNode.id];
-        return next;
-      });
-      clearBranchPicker();
-    }
-  }
-
   async function onDeleteChatTurn(turn: ChatTurn) {
     if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
     const firstNode = turn.nodes[0];
@@ -2653,9 +2601,30 @@ export default function App() {
       setError("Select a branch with text before using it.");
       return;
     }
-    const base = tree.nodes[candidateBaseId];
+    // Flush any pending turn / system edits first so the candidate
+    // attaches to the freshly-committed tree, not a stale snapshot.
+    // Without this an edit-in-progress on an earlier turn would be
+    // silently dropped by the next save.
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return;
+    const base = committed.tree.nodes[candidateBaseId];
     if (!base) {
       setError("The generation base no longer exists.");
+      return;
+    }
+    // If the flush forked the turn the candidate was generated
+    // against, candidateBaseId still exists — but as a sibling on
+    // the abandoned branch. Attaching the chosen candidate there
+    // would orphan it off the active path. Bail with a clear
+    // message instead of silently producing dead text.
+    const committedPathIds = new Set(
+      pathFromRoot(committed.tree, committed.currentId).map((node) => node.id),
+    );
+    if (!committedPathIds.has(candidateBaseId)) {
+      setError(
+        "Saving your edit changed the generation base. Regenerate to attach a candidate to the new path.",
+      );
+      clearBranchPicker();
       return;
     }
     const endOfTurn = candidates[index]?.finishReason === "stop";
@@ -2671,13 +2640,13 @@ export default function App() {
       endOfTurn,
     );
     const nextTree: Tree = {
-      rootId: tree.rootId,
+      rootId: committed.tree.rootId,
       nodes: {
-        ...tree.nodes,
+        ...committed.tree.nodes,
         [node.id]: node,
       },
     };
-    const saved = await persistChatTree(tree, nextTree, node.id);
+    const saved = await persistChatTree(committed.tree, nextTree, node.id);
     if (saved) clearBranchPicker();
   }
 
@@ -2697,8 +2666,27 @@ export default function App() {
       setError("Select a branch with text before keeping it.");
       return;
     }
-    if (!tree.nodes[candidateBaseId]) {
+    // Same draft-flush rationale as onUseChatCandidate. Keep
+    // preserves the picker because the whole point of Keep is to
+    // save one candidate while leaving the others visible for
+    // continued evaluation.
+    const committed = await commitChatDraftsAndPersist({ preserveBranchPicker: true });
+    if (!committed) return;
+    if (!committed.tree.nodes[candidateBaseId]) {
       setError("The generation base no longer exists.");
+      return;
+    }
+    // Same path-validity check as Use: a flush that forked the
+    // base turn moved candidateBaseId off the active path. Keep's
+    // saved branch would dangle under the abandoned chain.
+    const committedPathIds = new Set(
+      pathFromRoot(committed.tree, committed.currentId).map((node) => node.id),
+    );
+    if (!committedPathIds.has(candidateBaseId)) {
+      setError(
+        "Saving your edit changed the generation base. Regenerate to keep a candidate against the new path.",
+      );
+      clearBranchPicker();
       return;
     }
     const node = branchNode(
@@ -2713,16 +2701,18 @@ export default function App() {
       candidates[index]?.finishReason === "stop",
     );
     const nextTree: Tree = {
-      rootId: tree.rootId,
+      rootId: committed.tree.rootId,
       nodes: {
-        ...tree.nodes,
+        ...committed.tree.nodes,
         [node.id]: node,
       },
     };
     setSaving(true);
     setError(null);
     try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      await mutateNodes(
+        mutationBatchFromTrees(committed.tree, nextTree, committed.currentId),
+      );
       setTree(nextTree);
       setSavedCandidateIds((current) => ({ ...current, [index]: node.id }));
     } catch (err) {
@@ -2783,7 +2773,13 @@ export default function App() {
     };
     clearBranchPicker();
     pendingChatFocusRef.current = node.id;
-    await persistChatTree(workingTree, nextTree, node.id);
+    const saved = await persistChatTree(workingTree, nextTree, node.id);
+    // If persistence failed the node never made it into the tree —
+    // clearing the focus intent so the effect doesn't sit armed
+    // forever, ready to focus a phantom id (or worse, accidentally
+    // focus an unrelated turn that later coincidentally shares the
+    // id).
+    if (!saved) pendingChatFocusRef.current = null;
   }
 
   // Starred lineage: nodes worth showing when "Only starred paths" is on.
@@ -3102,10 +3098,30 @@ export default function App() {
     }
   }
 
+  // Single commit boundary for any tree-mutating handler that needs
+  // to "flush whatever the user was editing, then perform a tree
+  // mutation against the committed state." Prose flushes the
+  // workbook buffer; chat flushes per-turn + system drafts via the
+  // chat-aware path. Without this, node-map operations on chat
+  // projects would call commitBuffer() — which is a no-op for chat
+  // — and silently mutate the tree on top of an unsaved draft set,
+  // losing the drafts when they later got wiped on next save.
+  async function commitAnyDrafts(): Promise<{
+    tree: Tree;
+    currentId: string;
+  } | null> {
+    if (project?.kind === "chat") {
+      return commitChatDraftsAndPersist();
+    }
+    const committed = await commitBuffer();
+    if (!committed) return null;
+    return { tree: committed.tree, currentId: committed.currentId };
+  }
+
   async function onDeleteMapNode(nodeIdToDeleteFromMap: string) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const committed = await commitBuffer();
+    const committed = await commitAnyDrafts();
     if (!committed) return;
 
     const node = committed.tree.nodes[nodeIdToDeleteFromMap];
@@ -3216,7 +3232,7 @@ export default function App() {
   async function onMergeNodeIntoParent(nodeIdToMerge: string) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const committed = await commitBuffer();
+    const committed = await commitAnyDrafts();
     if (!committed) return;
 
     const node = committed.tree.nodes[nodeIdToMerge];
@@ -3234,7 +3250,7 @@ export default function App() {
   async function onMergeNodeWithOnlyChild(nodeIdToMerge: string) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const committed = await commitBuffer();
+    const committed = await commitAnyDrafts();
     if (!committed) return;
 
     const node = committed.tree.nodes[nodeIdToMerge];
@@ -3261,7 +3277,7 @@ export default function App() {
   async function onMergeMapSelection(selectedIdsToMerge: string[]) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const committed = await commitBuffer();
+    const committed = await commitAnyDrafts();
     if (!committed) return;
 
     const analysis = analyzeNodeMapMergeSelection(committed.tree, selectedIdsToMerge);
@@ -3287,7 +3303,7 @@ export default function App() {
   async function onDeleteMapSelection(selectedIdsToDelete: string[]) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const committed = await commitBuffer();
+    const committed = await commitAnyDrafts();
     if (!committed) return;
 
     const eligible = selectedIdsToDelete.filter(
@@ -4678,7 +4694,11 @@ export default function App() {
                       onKeyDown={(event) => {
                         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
                           event.preventDefault();
-                          void onSaveChatTurn(turn, event.currentTarget.value);
+                          // Cmd+Enter flushes every pending draft via the
+                          // unified commit path — matches Cmd+S / the
+                          // actionbar Save button exactly so editor
+                          // shortcuts and global save can never drift.
+                          void commitChatDraftsAndPersist();
                         }
                         if (event.key === "Escape") {
                           event.preventDefault();
