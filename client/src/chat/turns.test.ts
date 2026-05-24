@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import type { ChatRole, TreeNode } from "../tree/types";
-import { canGenerateAssistantFromTail, foldChatTurns } from "./turns";
+import type { Tree } from "../tree/types";
+import {
+  applyChatTurnEditFork,
+  canAddAssistantChunkFromTail,
+  canGenerateAssistantFromTail,
+  foldChatTurns,
+} from "./turns";
 
 function makeNode(
   id: string,
@@ -111,5 +117,134 @@ describe("canGenerateAssistantFromTail", () => {
         makeNode("s1", "root", "system", "be helpful", true),
       ),
     ).toBe(false);
+  });
+});
+
+describe("canAddAssistantChunkFromTail", () => {
+  it("returns true only when the tail is a user turn", () => {
+    expect(
+      canAddAssistantChunkFromTail(makeNode("u1", "root", "user", "Hi", true)),
+    ).toBe(true);
+  });
+
+  it("returns false for an unfinished assistant tail", () => {
+    // Regression: an unfinished assistant tail (e.g. a length-stopped
+    // generation) used to look enabled because canGenerateAssistantFromTail
+    // returns true. Appending then would have been silently folded into
+    // the existing turn — invisible empty node, no focus.
+    expect(
+      canAddAssistantChunkFromTail(
+        makeNode("a1", "root", "assistant", "cut off mid", false),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false for a finalized assistant tail", () => {
+    expect(
+      canAddAssistantChunkFromTail(makeNode("a1", "root", "assistant", "done.", true)),
+    ).toBe(false);
+  });
+
+  it("returns false for a system tail", () => {
+    expect(
+      canAddAssistantChunkFromTail(
+        makeNode("s1", "root", "system", "be helpful", true),
+      ),
+    ).toBe(false);
+  });
+
+  it("returns false when there is no tail", () => {
+    expect(canAddAssistantChunkFromTail(null)).toBe(false);
+  });
+});
+
+function makeTree(...nodes: ReturnType<typeof makeNode>[]): Tree {
+  return {
+    rootId: nodes[0].id,
+    nodes: Object.fromEntries(nodes.map((n) => [n.id, n])),
+  };
+}
+
+describe("applyChatTurnEditFork", () => {
+  it("reparents the edited turn's immediate children onto the fork", () => {
+    // Tree: root → user("hi") → assistant("hello")
+    // Editing the user turn must move the assistant under the fork so
+    // the chat keeps showing the assistant reply.
+    const root = makeNode("root", null, "user", "");
+    const user = makeNode("u1", "root", "user", "hi", true);
+    const assistant = makeNode("a1", "u1", "assistant", "hello", true);
+    const tree = makeTree(root, user, assistant);
+    const turn = foldChatTurns([user])[0];
+    const fork = makeNode("u-fork", "root", "user", "hi (edited)", true);
+
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    expect(movedChildIds).toEqual(["a1"]);
+    expect(next.nodes["a1"].parentId).toBe("u-fork");
+    // Original user node is preserved as a now-childless sibling.
+    expect(next.nodes["u1"].text).toBe("hi");
+    expect(next.nodes["u1"].parentId).toBe("root");
+    expect(Object.values(next.nodes).filter((n) => n.parentId === "u1")).toHaveLength(
+      0,
+    );
+    expect(next.nodes["u-fork"]).toBe(fork);
+  });
+
+  it("reparents from the last node of a multi-chunk turn", () => {
+    // Multi-chunk assistant turn a1→a2→a3 ; user message u1 after.
+    // Editing the merged turn must move u1 from a3 to fork, while
+    // leaving the a1→a2→a3 chain intact as the prior wording branch.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "alpha ");
+    const a2 = makeNode("a2", "a1", "assistant", "beta ");
+    const a3 = makeNode("a3", "a2", "assistant", "gamma", true);
+    const u1 = makeNode("u1", "a3", "user", "thanks", true);
+    const tree = makeTree(root, a1, a2, a3, u1);
+    const turn = foldChatTurns([a1, a2, a3])[0];
+    const fork = makeNode("a-fork", "root", "assistant", "rewritten", false);
+
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    expect(movedChildIds).toEqual(["u1"]);
+    expect(next.nodes["u1"].parentId).toBe("a-fork");
+    expect(next.nodes["a1"].parentId).toBe("root");
+    expect(next.nodes["a2"].parentId).toBe("a1");
+    expect(next.nodes["a3"].parentId).toBe("a2");
+  });
+
+  it("moves every immediate child when the edited turn has alternative branches", () => {
+    // u1 has two assistant responses (a, a') kept as alternatives.
+    // The user accepts that editing u1 moves both to the fork; the
+    // prior wording becomes a childless sibling.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a = makeNode("a", "u1", "assistant", "hello");
+    const aAlt = makeNode("a-alt", "u1", "assistant", "hi back");
+    const tree = makeTree(root, u1, a, aAlt);
+    const turn = foldChatTurns([u1])[0];
+    const fork = makeNode("u-fork", "root", "user", "howdy", true);
+
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    expect(movedChildIds.sort()).toEqual(["a", "a-alt"]);
+    expect(next.nodes["a"].parentId).toBe("u-fork");
+    expect(next.nodes["a-alt"].parentId).toBe("u-fork");
+    expect(Object.values(next.nodes).filter((n) => n.parentId === "u1")).toHaveLength(
+      0,
+    );
+  });
+
+  it("just inserts the fork when the edited turn has no descendants", () => {
+    // Childless multi-chunk turn — fork stands alone, nothing to move.
+    const root = makeNode("root", null, "user", "");
+    const a1 = makeNode("a1", "root", "assistant", "one ");
+    const a2 = makeNode("a2", "a1", "assistant", "two");
+    const tree = makeTree(root, a1, a2);
+    const turn = foldChatTurns([a1, a2])[0];
+    const fork = makeNode("a-fork", "root", "assistant", "rewritten", false);
+
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    expect(movedChildIds).toEqual([]);
+    expect(next.nodes["a-fork"]).toBe(fork);
+    // Original chain still intact.
+    expect(next.nodes["a1"].parentId).toBe("root");
+    expect(next.nodes["a2"].parentId).toBe("a1");
   });
 });

@@ -58,6 +58,8 @@ import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
+  applyChatTurnEditFork,
+  canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
   foldChatTurns,
   type ChatTurn,
@@ -2199,6 +2201,8 @@ export default function App() {
       (chatTailNode.role === "assistant" && chatTailNode.endOfTurn));
   const chatCanGenerateAssistant =
     project?.kind === "chat" && canGenerateAssistantFromTail(chatTailNode);
+  const chatCanAddAssistantChunk =
+    project?.kind === "chat" && canAddAssistantChunkFromTail(chatTailNode);
   const chatHasPendingUserDraft = chatCanComposeUser && chatUserDraft.trim().length > 0;
   const chatCanSubmitOrGenerate = chatCanGenerateAssistant || chatHasPendingUserDraft;
   const currentNode = tree && currentId ? tree.nodes[currentId] : null;
@@ -2491,14 +2495,21 @@ export default function App() {
       createdAt: nowEpoch(),
       priorContextHash: contextHash(priorText),
     };
-    const nextTree: Tree = {
-      rootId: tree.rootId,
-      nodes: {
-        ...tree.nodes,
-        [fork.id]: fork,
-      },
-    };
-    const saved = await persistChatTree(tree, nextTree, fork.id);
+    const { tree: nextTree } = applyChatTurnEditFork(tree, turn, fork);
+
+    // Keep the chat tail where it was if it's downstream of the edited
+    // turn (now reachable through the fork via the re-parented chain).
+    // If the edited turn was itself the tail — e.g. a multi-chunk turn
+    // with no descendants — land on the fork instead.
+    const lastNode = turn.nodes[turn.nodes.length - 1];
+    const prevPath = pathFromRoot(tree, currentId);
+    const downstreamOfLast =
+      lastNode !== undefined &&
+      currentId !== lastNode.id &&
+      prevPath.some((node) => node.id === lastNode.id);
+    const nextCurrentId = downstreamOfLast ? currentId : fork.id;
+
+    const saved = await persistChatTree(tree, nextTree, nextCurrentId);
     if (saved) {
       setChatTurnDrafts({});
       clearBranchPicker();
@@ -2642,7 +2653,7 @@ export default function App() {
   // they can keep extending it or click "End turn" when done.
   async function onAddChatAssistantChunk() {
     if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
-    if (!chatCanGenerateAssistant) return;
+    if (!chatCanAddAssistantChunk) return;
     const priorText = concatPathText(pathFromRoot(tree, currentId));
     const node: TreeNode = {
       id: nodeId(),
@@ -5906,7 +5917,7 @@ export default function App() {
                     <button
                       type="button"
                       onClick={() => void onAddChatAssistantChunk()}
-                      disabled={saving || streaming || !chatCanGenerateAssistant}
+                      disabled={saving || streaming || !chatCanAddAssistantChunk}
                       className="bw-button"
                       title="Append an empty assistant chunk you can type into"
                     >
