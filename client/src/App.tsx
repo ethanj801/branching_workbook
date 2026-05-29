@@ -519,6 +519,17 @@ function branchPaneRatioForCount(count: number): number {
   return MANY_ROW_BRANCH_PANE_RATIO;
 }
 
+/**
+ * Mirrors the latest value into a stable ref. Lets an effect register a global
+ * listener once (with the ref in its deps) while the handler still reads
+ * fresh values, instead of re-subscribing on every render.
+ */
+function useLatestRef<T>(value: T) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [tree, setTree] = useState<Tree | null>(null);
@@ -1395,9 +1406,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maxBranches]);
 
+  // Map keyboard shortcuts (zoom/fit and undo) live on `window`. We read live
+  // state through refs so these listeners register once instead of re-binding
+  // on every render. zoomNodeMap/onUndoLastDelete are hoisted function
+  // declarations defined further down in this component.
+  const workspaceModeRef = useLatestRef(workspaceMode);
+  const zoomNodeMapRef = useLatestRef(zoomNodeMap);
+  const onUndoLastDeleteRef = useLatestRef(onUndoLastDelete);
+
   useEffect(() => {
     function onMapKeyDown(event: KeyboardEvent) {
-      if (workspaceMode !== "map") return;
+      if (workspaceModeRef.current !== "map") return;
       if (!(event.metaKey || event.ctrlKey)) return;
 
       if (event.key === "0") {
@@ -1405,32 +1424,32 @@ export default function App() {
         setMapFitRequest((value) => value + 1);
       } else if (event.key === "+" || event.key === "=") {
         event.preventDefault();
-        zoomNodeMap(1.12);
+        zoomNodeMapRef.current(1.12);
       } else if (event.key === "-" || event.key === "_") {
         event.preventDefault();
-        zoomNodeMap(1 / 1.12);
+        zoomNodeMapRef.current(1 / 1.12);
       }
     }
 
     window.addEventListener("keydown", onMapKeyDown);
     return () => window.removeEventListener("keydown", onMapKeyDown);
-  });
+  }, [workspaceModeRef, zoomNodeMapRef]);
 
   // cmd/ctrl+Z restores the most recent map-delete. Scoped to the node-map
   // workspace so it doesn't fight CodeMirror's own undo stack in the editor.
   useEffect(() => {
     function onUndoKeyDown(event: KeyboardEvent) {
-      if (workspaceMode !== "map") return;
+      if (workspaceModeRef.current !== "map") return;
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.shiftKey || event.altKey) return;
       if (event.key !== "z" && event.key !== "Z") return;
       if (!pendingDeleteUndoRef.current) return;
       event.preventDefault();
-      void onUndoLastDelete();
+      void onUndoLastDeleteRef.current();
     }
     window.addEventListener("keydown", onUndoKeyDown);
     return () => window.removeEventListener("keydown", onUndoKeyDown);
-  });
+  }, [workspaceModeRef, onUndoLastDeleteRef]);
 
   useEffect(() => {
     setVisibleCandidateIndex((current) =>
