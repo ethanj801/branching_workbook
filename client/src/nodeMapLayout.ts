@@ -46,6 +46,34 @@ export const NODE_MAP_PAN_MARGIN = 48;
 export const NODE_MAP_MINIMAP_MAX_WIDTH = 172;
 export const NODE_MAP_MINIMAP_MAX_HEIGHT = 118;
 
+export function clampNodeMapScale(scale: number): number {
+  return Math.max(NODE_MAP_MIN_SCALE, Math.min(NODE_MAP_MAX_SCALE, scale));
+}
+
+export function clampNodeMapPan(
+  pan: { x: number; y: number },
+  layout: NodeMapLayout,
+  viewport: { width: number; height: number },
+  scale: number,
+): { x: number; y: number } {
+  const contentWidth = layout.width * scale;
+  const contentHeight = layout.height * scale;
+
+  function clampAxis(value: number, viewportSize: number, contentSize: number) {
+    if (contentSize <= viewportSize - NODE_MAP_PAN_MARGIN * 2) {
+      return Math.round((viewportSize - contentSize) / 2);
+    }
+    const min = viewportSize - contentSize - NODE_MAP_PAN_MARGIN;
+    const max = NODE_MAP_PAN_MARGIN;
+    return Math.round(Math.min(max, Math.max(min, value)));
+  }
+
+  return {
+    x: clampAxis(pan.x, viewport.width, contentWidth),
+    y: clampAxis(pan.y, viewport.height, contentHeight),
+  };
+}
+
 function clampNumber(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }

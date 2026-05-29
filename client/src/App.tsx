@@ -70,16 +70,14 @@ import {
 } from "./chat/turns";
 import {
   NODE_MAP_FIT_PADDING,
-  NODE_MAP_MAX_SCALE,
   NODE_MAP_MINIMAP_MAX_HEIGHT,
   NODE_MAP_MINIMAP_MAX_WIDTH,
-  NODE_MAP_MIN_SCALE,
-  NODE_MAP_PAN_MARGIN,
   buildNodeMapLayout,
+  clampNodeMapPan,
+  clampNodeMapScale,
   displayBranchText,
   nodeLabel,
   previewText,
-  type NodeMapLayout,
 } from "./nodeMapLayout";
 import {
   childrenOf,
@@ -222,34 +220,6 @@ function formatModelLabel(model: TabbyModel | null): string {
     .filter(Boolean)
     .join(" / ");
   return suffix ? `${model.id} (${suffix})` : model.id;
-}
-
-function clampNodeMapScale(scale: number): number {
-  return Math.max(NODE_MAP_MIN_SCALE, Math.min(NODE_MAP_MAX_SCALE, scale));
-}
-
-function clampNodeMapPan(
-  pan: { x: number; y: number },
-  layout: NodeMapLayout,
-  viewport: { width: number; height: number },
-  scale: number,
-): { x: number; y: number } {
-  const contentWidth = layout.width * scale;
-  const contentHeight = layout.height * scale;
-
-  function clampAxis(value: number, viewportSize: number, contentSize: number) {
-    if (contentSize <= viewportSize - NODE_MAP_PAN_MARGIN * 2) {
-      return Math.round((viewportSize - contentSize) / 2);
-    }
-    const min = viewportSize - contentSize - NODE_MAP_PAN_MARGIN;
-    const max = NODE_MAP_PAN_MARGIN;
-    return Math.round(Math.min(max, Math.max(min, value)));
-  }
-
-  return {
-    x: clampAxis(pan.x, viewport.width, contentWidth),
-    y: clampAxis(pan.y, viewport.height, contentHeight),
-  };
 }
 
 function NodeNameEditor({
