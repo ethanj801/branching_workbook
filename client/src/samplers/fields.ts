@@ -368,12 +368,14 @@ const KNOWN_KEYS: Set<keyof SamplerBody> = new Set(SAMPLER_FIELDS.map((f) => f.k
 
 /** Neutral body — what "Neutralize Samplers" resets to. */
 export function neutralBody(): SamplerBody {
-  const body: SamplerBody = {};
+  // Each field's `neutral` matches its own key's value type, but TS can't
+  // correlate the two across the SamplerField union. Build a loose record and
+  // assert once at the boundary instead of suppressing every write.
+  const body: Record<string, unknown> = {};
   for (const field of SAMPLER_FIELDS) {
-    // @ts-expect-error value matches its key's type by construction
     body[field.key] = field.neutral;
   }
-  return body;
+  return body as SamplerBody;
 }
 
 /**
@@ -383,17 +385,16 @@ export function neutralBody(): SamplerBody {
  * payload minimal and lets server-side defaults stand.
  */
 export function sanitizeSamplerBody(body: SamplerBody): SamplerBody {
-  const out: SamplerBody = {};
+  const out: Record<string, unknown> = {};
   for (const field of SAMPLER_FIELDS) {
     if (!(field.key in body)) continue;
     const value = body[field.key];
     if (value === undefined || value === null) continue;
     if (value === field.neutral) continue;
     if (typeof value === "string" && value.trim() === "") continue;
-    // @ts-expect-error value matches its key's type by construction
     out[field.key] = value;
   }
-  return out;
+  return out as SamplerBody;
 }
 
 /**
@@ -404,20 +405,18 @@ export function mergePreset(
   preset: SamplerBody | null | undefined,
   overrides: SamplerBody = {},
 ): SamplerBody {
-  const merged: SamplerBody = {};
+  const merged: Record<string, unknown> = {};
   if (preset) {
     for (const [k, v] of Object.entries(preset)) {
       if (KNOWN_KEYS.has(k as keyof SamplerBody)) {
-        // @ts-expect-error JSON shape verified at runtime
         merged[k] = v;
       }
     }
   }
   for (const [k, v] of Object.entries(overrides)) {
     if (KNOWN_KEYS.has(k as keyof SamplerBody)) {
-      // @ts-expect-error JSON shape verified at runtime
       merged[k] = v;
     }
   }
-  return sanitizeSamplerBody(merged);
+  return sanitizeSamplerBody(merged as SamplerBody);
 }

@@ -29,10 +29,11 @@ function applyDraftChange(
   field: SamplerField,
   value: DraftValue,
 ): SamplerBody {
-  const next: SamplerBody = { ...draft };
-  // @ts-expect-error value type matches field.key by construction
+  // value's type matches field.key's value type, but TS can't correlate them
+  // across the SamplerField union, so assert once here.
+  const next: Record<string, unknown> = { ...draft };
   next[field.key] = value;
-  return next;
+  return next as SamplerBody;
 }
 
 function FieldLabel({ field }: { field: SamplerField }) {
@@ -343,8 +344,9 @@ export default function SamplerDrawer({
                       <div key={field.key as string}>
                         <SliderControl
                           field={field}
-                          // @ts-expect-error indexed access returns the field's value type
-                          value={resolvedDraft[field.key] ?? field.neutral}
+                          value={
+                            (resolvedDraft[field.key] ?? field.neutral) as DraftValue
+                          }
                           onChange={(v) => updateField(field, v)}
                           disabled={busy}
                         />
