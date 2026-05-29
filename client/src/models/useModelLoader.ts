@@ -210,3 +210,6 @@ export function useModelLoader({
     onDownloadModel,
   };
 }
+
+/** Everything {@link useModelLoader} returns — the prop shape for ModelPanel. */
+export type ModelLoader = ReturnType<typeof useModelLoader>;
