@@ -48,6 +48,7 @@ import { mergePreset, neutralBody } from "./samplers/fields";
 import { useModelLoader } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
+import { applyChoice, emptyCandidates, type Candidate } from "./candidates";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
@@ -87,12 +88,6 @@ type TreeContextMenu = {
   nodeId: string;
   x: number;
   y: number;
-};
-
-type Candidate = {
-  text: string;
-  done: boolean;
-  finishReason: string | null;
 };
 
 type CandidateContext = "prose" | "chat";
@@ -1451,13 +1446,7 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    setCandidates(
-      Array.from({ length: n }, () => ({
-        text: "",
-        done: false,
-        finishReason: null,
-      })),
-    );
+    setCandidates(emptyCandidates(n));
     setCandidateContext("prose");
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(committed.currentId);
@@ -1490,31 +1479,7 @@ export default function App() {
               firstVisibleChosen = true;
               setVisibleCandidateIndex(choice.index);
             }
-            setCandidates((current) => {
-              const next =
-                current.length === n
-                  ? [...current]
-                  : Array.from(
-                      { length: n },
-                      (_, index) =>
-                        current[index] ?? {
-                          text: "",
-                          done: false,
-                          finishReason: null,
-                        },
-                    );
-              const existing = next[choice.index] ?? {
-                text: "",
-                done: false,
-                finishReason: null,
-              };
-              next[choice.index] = {
-                text: existing.text + choice.text,
-                done: existing.done || choice.finish_reason !== null,
-                finishReason: choice.finish_reason ?? existing.finishReason,
-              };
-              return next;
-            });
+            setCandidates((current) => applyChoice(current, choice, n));
           }
         },
         abortRef.current.signal,
@@ -1977,13 +1942,7 @@ export default function App() {
     const promptSnapshot = concatPathText(basePath);
     const { messages, responsePrefix } = buildChatPayload(basePath);
 
-    setCandidates(
-      Array.from({ length: n }, () => ({
-        text: "",
-        done: false,
-        finishReason: null,
-      })),
-    );
+    setCandidates(emptyCandidates(n));
     setCandidateContext("chat");
     setCandidatePrompt(promptSnapshot);
     setCandidateBaseId(baseId);
