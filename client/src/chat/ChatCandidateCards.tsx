@@ -1,5 +1,6 @@
 import type { Candidate } from "../candidates";
 import BranchCard from "../generation/BranchCard";
+import type { CandidateContext } from "../generation/useCandidates";
 
 type ChatCandidateCardsProps = {
   candidates: Candidate[];
@@ -8,7 +9,7 @@ type ChatCandidateCardsProps = {
   savedCandidateIds: Record<number, string>;
   pickedCandidateIndex: number | null;
   branchPickerOpen: boolean;
-  candidateContext: "prose" | "chat";
+  candidateContext: CandidateContext;
   onUseCandidate: (index: number) => void;
   onKeepCandidate: (index: number) => void | Promise<void>;
   clearBranchPicker: () => void;

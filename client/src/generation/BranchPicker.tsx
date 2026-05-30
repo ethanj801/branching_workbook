@@ -130,6 +130,9 @@ export default function BranchPicker({
         />
       )}
 
+      {/* The collapsed strip uses its own compact "mini" card (preview text,
+          Expand / Drop, click-to-expand) — a deliberately different shape from
+          the full grid/chat card, so it is not a BranchCard. */}
       {branchViewMode === "strip" && (
         <section className="bw-branch-strip">
           <div className="bw-branch-strip-label">
