@@ -49,6 +49,17 @@ import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
 import { applyChoice, emptyCandidates, type Candidate } from "./candidates";
 import { approxTokenCount } from "./tokens";
+import {
+  DEFAULT_BRANCH_COUNT,
+  DEFAULT_MAX_TOKENS,
+  DEFAULT_TOKENS_PER_SUGGESTION,
+  MAX_BRANCH_UI_LIMIT,
+  branchGridColumns,
+  maxBranchesForModel,
+  resolveBranchCount,
+  resolveMaxTokens,
+  resolveTokensPerSuggestion,
+} from "./generation/branchControls";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -250,20 +261,11 @@ function NodeNameEditor({
   );
 }
 
-const DEFAULT_MAX_TOKENS = 256;
-const DEFAULT_BRANCH_COUNT = 3;
-const DEFAULT_BRANCH_LIMIT = 12;
-const MAX_BRANCH_UI_LIMIT = 12;
-const DEFAULT_TOKENS_PER_SUGGESTION = 2;
 const AUTOCOMPLETE_POOL_TARGET = 10;
 const COLLAPSED_RAIL_WIDTH = 40;
 const SINGLE_ROW_BRANCH_PANE_RATIO = 0.5;
 const TWO_ROW_BRANCH_PANE_RATIO = 0.65;
 const MANY_ROW_BRANCH_PANE_RATIO = 0.75;
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
 
 // Trim a partial trailing word off the prompt before sending it to the model.
 // BPE tokenizers fold a leading space into each word ("Hello", " world"), so a
@@ -293,41 +295,6 @@ function trimAutocompletePromptSuffix(prompt: string): {
     trimmedPrompt: prompt.slice(0, lastWsIdx + 1),
     partial: prompt.slice(lastWsIdx + 1),
   };
-}
-
-function parsePositiveInt(text: string, fallback: number): number {
-  const parsed = Number.parseInt(text, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function maxBranchesForModel(model: TabbyModel | null): number {
-  const maxBatchSize = model?.parameters?.max_batch_size;
-  if (typeof maxBatchSize !== "number" || !Number.isFinite(maxBatchSize)) {
-    return DEFAULT_BRANCH_LIMIT;
-  }
-  return clampNumber(Math.trunc(maxBatchSize), 1, MAX_BRANCH_UI_LIMIT);
-}
-
-function parseBranchCountInput(text: string): number | null {
-  const trimmed = text.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number.parseInt(trimmed, 10);
-  return parsed > 0 ? parsed : null;
-}
-
-function branchGridColumns(count: number): number | null {
-  const lookup: Record<number, number> = {
-    1: 1,
-    2: 2,
-    3: 3,
-    4: 2,
-    5: 3,
-    6: 3,
-    7: 4,
-    8: 4,
-    9: 3,
-  };
-  return lookup[count] ?? null;
 }
 
 function branchPaneRatioForCount(count: number): number {
@@ -796,11 +763,7 @@ export default function App() {
       return;
     }
 
-    const tokensPerSuggestion = clampNumber(
-      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
-      1,
-      8,
-    );
+    const tokensPerSuggestion = resolveTokensPerSuggestion(tokensPerSuggestionText);
     const { trimmedPrompt, partial } = trimAutocompletePromptSuffix(buffer);
     const samplerSnapshot = mergePreset(draftBody);
     let cancelled = false;
@@ -1027,11 +990,9 @@ export default function App() {
 
   useEffect(() => {
     if (branchCountText.trim() === "") return;
-    const parsed = parseBranchCountInput(branchCountText);
-    if (parsed === null) return;
-    const clamped = clampNumber(parsed, 1, maxBranches);
-    if (clamped !== parsed) {
-      setBranchCountText(String(clamped));
+    const result = resolveBranchCount(branchCountText, maxBranches);
+    if (result.ok && result.limitHint) {
+      setBranchCountText(String(result.value));
       setBranchLimitHint(true);
       setBranchCountError(null);
     }
@@ -1375,51 +1336,34 @@ export default function App() {
   }
 
   function normalizeBranchCount(): number | null {
-    const parsed = parseBranchCountInput(branchCountText);
-    if (parsed === null) {
+    const result = resolveBranchCount(branchCountText, maxBranches);
+    if (!result.ok) {
       setBranchLimitHint(false);
-      setBranchCountError(`Enter 1-${maxBranches} branches.`);
+      setBranchCountError(result.error);
       return null;
     }
-    const clamped = clampNumber(parsed, 1, maxBranches);
-    setBranchCountText(String(clamped));
-    setBranchLimitHint(parsed > maxBranches);
+    setBranchCountText(String(result.value));
+    setBranchLimitHint(result.limitHint);
     setBranchCountError(null);
-    saveProjectSettings({ branch_count: clamped });
-    return clamped;
+    saveProjectSettings({ branch_count: result.value });
+    return result.value;
   }
 
   function normalizeMaxTokens(): number {
-    const trimmed = maxTokensText.trim();
-    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
-    // The visual cap mirrors the loaded model's context length when known so
-    // a typo like 999999 doesn't ship a request the backend will silently
-    // truncate or reject. With no model loaded, fall back to a generous but
-    // sane upper bound rather than letting unbounded values through.
-    const ceiling = contextMax ?? 32768;
-    if (!Number.isFinite(parsed) || parsed < 1) {
-      // Empty/garbage: snap to default and flag, mirroring the Branches input
-      // pattern so the user sees what value will actually be sent.
-      setMaxTokensText(String(DEFAULT_MAX_TOKENS));
-      setMaxTokensError(`Enter 1-${ceiling.toLocaleString()} tokens.`);
-      setMaxTokensLimitHint(false);
-      saveProjectSettings({ max_tokens: DEFAULT_MAX_TOKENS });
-      return DEFAULT_MAX_TOKENS;
-    }
-    const clamped = Math.min(parsed, ceiling);
-    setMaxTokensText(String(clamped));
-    setMaxTokensLimitHint(parsed > ceiling);
-    setMaxTokensError(null);
-    saveProjectSettings({ max_tokens: clamped });
-    return clamped;
+    // The ceiling mirrors the loaded model's context length when known, so a
+    // typo like 999999 doesn't ship a request the backend would silently
+    // truncate or reject; empty/garbage snaps to the default and flags, so the
+    // user sees what value will actually be sent.
+    const result = resolveMaxTokens(maxTokensText, contextMax);
+    setMaxTokensText(String(result.value));
+    setMaxTokensLimitHint(result.limitHint);
+    setMaxTokensError(result.error);
+    saveProjectSettings({ max_tokens: result.value });
+    return result.value;
   }
 
   function normalizeTokensPerSuggestion(): number {
-    const normalized = clampNumber(
-      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
-      1,
-      8,
-    );
+    const normalized = resolveTokensPerSuggestion(tokensPerSuggestionText);
     setTokensPerSuggestionText(String(normalized));
     saveProjectSettings({ tokens_per_suggestion: normalized });
     return normalized;
