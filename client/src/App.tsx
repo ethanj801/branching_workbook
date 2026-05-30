@@ -61,6 +61,7 @@ import InlineCandidateControls from "./generation/InlineCandidateControls";
 import { useLatestRef } from "./useLatestRef";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
+import { expandLineage } from "./tree/lineage";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
@@ -2106,32 +2107,7 @@ export default function App() {
       .filter((node) => node.starred)
       .map((node) => node.id);
     if (starredIds.length === 0) return null;
-
-    const lineage = new Set<string>();
-    // Ancestors of every starred node.
-    for (const id of starredIds) {
-      let cur: string | null | undefined = id;
-      while (cur && !lineage.has(cur)) {
-        lineage.add(cur);
-        cur = tree.nodes[cur]?.parentId ?? null;
-      }
-    }
-    // Descendants of every starred node.
-    const childrenByParent: Record<string, string[]> = {};
-    for (const node of Object.values(tree.nodes)) {
-      if (node.parentId === null) continue;
-      (childrenByParent[node.parentId] ??= []).push(node.id);
-    }
-    const stack = [...starredIds];
-    while (stack.length > 0) {
-      const id = stack.pop()!;
-      for (const childId of childrenByParent[id] ?? []) {
-        if (lineage.has(childId)) continue;
-        lineage.add(childId);
-        stack.push(childId);
-      }
-    }
-    return lineage;
+    return expandLineage(tree, starredIds);
   }, [tree]);
 
   // Search lineage: nodes worth showing when a search query is active. A
@@ -2152,30 +2128,7 @@ export default function App() {
   const searchLineageIds = useMemo<Set<string> | null>(() => {
     if (!tree || searchMatchIds === null) return null;
     if (searchMatchIds.size === 0) return new Set<string>();
-
-    const lineage = new Set<string>();
-    for (const id of searchMatchIds) {
-      let cur: string | null | undefined = id;
-      while (cur && !lineage.has(cur)) {
-        lineage.add(cur);
-        cur = tree.nodes[cur]?.parentId ?? null;
-      }
-    }
-    const childrenByParent: Record<string, string[]> = {};
-    for (const node of Object.values(tree.nodes)) {
-      if (node.parentId === null) continue;
-      (childrenByParent[node.parentId] ??= []).push(node.id);
-    }
-    const stack = [...searchMatchIds];
-    while (stack.length > 0) {
-      const id = stack.pop()!;
-      for (const childId of childrenByParent[id] ?? []) {
-        if (lineage.has(childId)) continue;
-        lineage.add(childId);
-        stack.push(childId);
-      }
-    }
-    return lineage;
+    return expandLineage(tree, searchMatchIds);
   }, [searchMatchIds, tree]);
   const searchMatchCount = searchMatchIds?.size ?? null;
   const hasStarredNodes =
