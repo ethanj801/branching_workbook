@@ -57,6 +57,7 @@ import {
 } from "./generation/branchControls";
 import { useBranchControls } from "./generation/useBranchControls";
 import { useCandidates } from "./generation/useCandidates";
+import BranchPicker from "./generation/BranchPicker";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -77,7 +78,7 @@ import {
   type ChatTurn,
   type ChatTurnDraft,
 } from "./chat/turns";
-import { displayBranchText, nodeLabel, previewText } from "./nodeMapLayout";
+import { nodeLabel, previewText } from "./nodeMapLayout";
 import {
   childrenOf,
   concatPathText,
@@ -3389,235 +3390,27 @@ export default function App() {
               {!isChatProject &&
                 workspaceMode === "compose" &&
                 candidateContext === "prose" &&
-                branchPickerOpen &&
-                branchViewMode === "grid" &&
-                composeDisplayMode === "cards" && (
-                  <section
-                    className="bw-branch-comparison"
-                    style={{ flexBasis: `${branchPaneRatio * 100}%` }}
-                  >
-                    <div className="bw-branch-comparison-head">
-                      <div>
-                        <div className="bw-kicker">Branches</div>
-                        <div className="bw-branch-context">
-                          {candidates.length} candidate
-                          {candidates.length === 1 ? "" : "s"}
-                          {streaming ? " generating" : " ready"}
-                        </div>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={clearBranchPicker}
-                        disabled={streaming || saving}
-                        className="bw-button bw-branch-clear"
-                      >
-                        Clear
-                      </button>
-                    </div>
-                    <div
-                      className="bw-branch-grid"
-                      data-balanced={branchColumns !== null}
-                      style={
-                        branchColumns === null
-                          ? undefined
-                          : ({
-                              "--branch-grid-tracks": branchColumns * 2,
-                            } as CSSProperties)
-                      }
-                    >
-                      {candidates.map((candidate, index) => {
-                        const hasText = candidate.text.length > 0;
-                        const isStreaming = streaming && !candidate.done;
-                        const kept = !!savedCandidateIds[index];
-                        const picked = pickedCandidateIndex === index;
-                        const centeredStart =
-                          firstCenteredBranchIndex === index && centeredBranchStart
-                            ? centeredBranchStart
-                            : null;
-                        return (
-                          <section
-                            key={index}
-                            className="bw-branch-card"
-                            data-empty={!hasText}
-                            data-streaming={isStreaming}
-                            data-picked={picked}
-                            style={
-                              centeredStart === null
-                                ? undefined
-                                : { gridColumn: `${centeredStart} / span 2` }
-                            }
-                          >
-                            <div className="bw-branch-card-head">
-                              <div className="bw-branch-card-title">
-                                <span>Branch {index + 1}</span>
-                                {picked && (
-                                  <span className="bw-branch-used-badge">Used</span>
-                                )}
-                                {isStreaming && (
-                                  <span
-                                    className="bw-branch-pulse"
-                                    aria-label="Streaming"
-                                  />
-                                )}
-                              </div>
-                              {hasText && (
-                                <span className="bw-branch-token-count">
-                                  {approxTokenCount(candidate.text)} tok
-                                </span>
-                              )}
-                            </div>
-                            <div className="bw-branch-text">
-                              {hasText ? (
-                                displayBranchText(candidate.text)
-                              ) : (
-                                <span className="bw-empty">
-                                  {streaming ? "Waiting for tokens..." : "No text."}
-                                </span>
-                              )}
-                            </div>
-                            <div className="bw-branch-actions">
-                              <button
-                                type="button"
-                                onClick={() => onUseCandidate(index)}
-                                disabled={!hasText || streaming || saving || picked}
-                                className={`bw-button ${
-                                  picked ? "bw-button-used" : "bw-button-primary"
-                                }`}
-                              >
-                                {picked ? "Used" : "Use"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => void onKeepCandidate(index)}
-                                disabled={!hasText || streaming || saving || kept}
-                                className="bw-button"
-                              >
-                                {kept ? "Kept" : "Keep"}
-                              </button>
-                            </div>
-                          </section>
-                        );
-                      })}
-                    </div>
-                  </section>
-                )}
-
-              {!isChatProject &&
-                workspaceMode === "compose" &&
-                candidateContext === "prose" &&
-                branchPickerOpen &&
-                branchViewMode === "grid" &&
-                composeDisplayMode === "cards" && (
-                  <div
-                    className="bw-row-splitter"
-                    role="separator"
-                    aria-orientation="horizontal"
-                    aria-label="Resize branch comparison"
-                    onMouseDown={startRowDrag}
+                branchPickerOpen && (
+                  <BranchPicker
+                    candidates={candidates}
+                    savedCandidateIds={savedCandidateIds}
+                    pickedCandidateIndex={pickedCandidateIndex}
+                    branchViewMode={branchViewMode}
+                    composeDisplayMode={composeDisplayMode}
+                    branchPaneRatio={branchPaneRatio}
+                    streaming={streaming}
+                    saving={saving}
+                    branchColumns={branchColumns}
+                    firstCenteredBranchIndex={firstCenteredBranchIndex}
+                    centeredBranchStart={centeredBranchStart}
+                    onUseCandidate={onUseCandidate}
+                    onKeepCandidate={onKeepCandidate}
+                    clearBranchPicker={clearBranchPicker}
+                    dropCandidate={dropCandidate}
+                    setBranchViewMode={setBranchViewMode}
+                    startRowDrag={startRowDrag}
+                    pinManuscriptScroll={pinManuscriptScroll}
                   />
-                )}
-
-              {!isChatProject &&
-                workspaceMode === "compose" &&
-                candidateContext === "prose" &&
-                branchPickerOpen &&
-                branchViewMode === "strip" && (
-                  <section className="bw-branch-strip">
-                    <div className="bw-branch-strip-label">
-                      <span className="bw-kicker">Last generation</span>
-                      <span>{candidates.length} candidates</span>
-                    </div>
-                    <div className="bw-branch-strip-cards">
-                      {candidates.map((candidate, index) => {
-                        const picked = pickedCandidateIndex === index;
-                        const kept = !!savedCandidateIds[index];
-                        const hasText = candidate.text.length > 0;
-                        return (
-                          <div
-                            key={index}
-                            className="bw-branch-mini"
-                            data-picked={picked}
-                          >
-                            <button
-                              type="button"
-                              className="bw-branch-mini-main"
-                              onClick={() => {
-                                const restore = pinManuscriptScroll();
-                                setBranchViewMode("grid");
-                                restore();
-                              }}
-                              title="Expand last generation"
-                            >
-                              <span className="bw-branch-mini-label">
-                                {picked ? "✓ " : ""}
-                                Branch {index + 1}
-                              </span>
-                              <span className="bw-branch-mini-preview">
-                                {hasText ? previewText(candidate.text) : "No text."}
-                              </span>
-                            </button>
-                            <div className="bw-branch-mini-actions">
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  void onKeepCandidate(index);
-                                }}
-                                disabled={!hasText || saving || kept}
-                                title={kept ? "Already kept" : "Keep branch"}
-                              >
-                                {kept ? "Kept" : "Keep"}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  onUseCandidate(index);
-                                }}
-                                disabled={!hasText || saving || picked}
-                                title={picked ? "Already used" : "Use instead"}
-                              >
-                                Use instead
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  const restore = pinManuscriptScroll();
-                                  setBranchViewMode("grid");
-                                  restore();
-                                }}
-                                title="Expand branches"
-                              >
-                                Expand
-                              </button>
-                              <button
-                                type="button"
-                                onClick={(event) => {
-                                  event.stopPropagation();
-                                  dropCandidate(index);
-                                }}
-                                disabled={saving || streaming}
-                                aria-label={`Drop branch ${index + 1}`}
-                                title="Drop this branch from the strip"
-                              >
-                                Drop
-                              </button>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
-                    <button
-                      type="button"
-                      className="bw-branch-strip-close"
-                      onClick={clearBranchPicker}
-                      aria-label="Clear last generation"
-                      title="Clear last generation"
-                    >
-                      ×
-                    </button>
-                  </section>
                 )}
 
               {isChatProject ? (
