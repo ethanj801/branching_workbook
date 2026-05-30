@@ -48,7 +48,6 @@ import { useModelLoader } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
 import { applyChoice } from "./candidates";
-import { approxTokenCount } from "./tokens";
 import {
   MAX_BRANCH_UI_LIMIT,
   branchGridColumns,
@@ -58,6 +57,7 @@ import {
 import { useBranchControls } from "./generation/useBranchControls";
 import { useCandidates } from "./generation/useCandidates";
 import BranchPicker from "./generation/BranchPicker";
+import InlineCandidateControls from "./generation/InlineCandidateControls";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -3564,74 +3564,18 @@ export default function App() {
                     </section>
                   </div>
                   {showInlineCandidateControls && visibleCandidate && (
-                    <div
-                      className="bw-inline-controls"
-                      data-streaming={streaming && !visibleCandidate.done}
-                    >
-                      {candidates.length > 1 && (
-                        <div className="bw-inline-cycler" aria-label="Cycle branches">
-                          <button
-                            type="button"
-                            onClick={() => cycleVisibleCandidate(-1)}
-                            aria-label="Previous branch"
-                          >
-                            ‹
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => cycleVisibleCandidate(1)}
-                            aria-label="Next branch"
-                          >
-                            ›
-                          </button>
-                        </div>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => onUseCandidate(visibleCandidateIndex)}
-                        disabled={!visibleCandidate.text || streaming || saving}
-                        className="bw-button bw-button-primary"
-                      >
-                        Use
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => void onKeepCandidate(visibleCandidateIndex)}
-                        disabled={
-                          !visibleCandidate.text ||
-                          saving ||
-                          !!savedCandidateIds[visibleCandidateIndex]
-                        }
-                        title={
-                          savedCandidateIds[visibleCandidateIndex]
-                            ? "Already kept"
-                            : "Keep branch"
-                        }
-                        className="bw-button"
-                      >
-                        {savedCandidateIds[visibleCandidateIndex] ? "Kept" : "Keep"}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={clearBranchPicker}
-                        disabled={streaming || saving}
-                        className="bw-button"
-                      >
-                        Clear
-                      </button>
-                      <span className="bw-inline-placement">
-                        inserts at end of draft
-                      </span>
-                      <span className="bw-inline-meta">
-                        Branch {visibleCandidateIndex + 1}
-                        {candidates.length > 1 ? ` of ${candidates.length}` : ""}
-                        {visibleCandidate.text
-                          ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
-                          : ""}
-                        {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
-                        {streaming && !visibleCandidate.done && " · streaming"}
-                      </span>
-                    </div>
+                    <InlineCandidateControls
+                      visibleCandidate={visibleCandidate}
+                      visibleCandidateIndex={visibleCandidateIndex}
+                      candidatesLength={candidates.length}
+                      streaming={streaming}
+                      saving={saving}
+                      savedCandidateIds={savedCandidateIds}
+                      cycleVisibleCandidate={cycleVisibleCandidate}
+                      onUseCandidate={onUseCandidate}
+                      onKeepCandidate={onKeepCandidate}
+                      clearBranchPicker={clearBranchPicker}
+                    />
                   )}
                 </>
               )}
