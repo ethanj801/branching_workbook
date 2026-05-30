@@ -58,6 +58,7 @@ import { useBranchControls } from "./generation/useBranchControls";
 import { useCandidates } from "./generation/useCandidates";
 import BranchPicker from "./generation/BranchPicker";
 import InlineCandidateControls from "./generation/InlineCandidateControls";
+import { useLatestRef } from "./useLatestRef";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -852,6 +853,7 @@ export default function App() {
     [buffer, currentId, project, saving, streaming, tree],
   );
 
+  const onGenerateRef = useLatestRef(onGenerate);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -872,7 +874,7 @@ export default function App() {
         project?.kind !== "chat"
       ) {
         event.preventDefault();
-        void onGenerate();
+        void onGenerateRef.current();
       }
       if (event.key === "Escape") {
         if (closeConfirmOpen) {
@@ -893,7 +895,7 @@ export default function App() {
     closeConfirmOpen,
     commitBuffer,
     modelPanelOpen,
-    onGenerate,
+    onGenerateRef,
     project?.kind,
     samplerOpen,
     treeMenu,
@@ -2199,19 +2201,22 @@ export default function App() {
     branchPickerOpen &&
     branchViewMode === "grid" &&
     visibleCandidate !== null;
+  const acceptAutocompleteSuggestionRef = useLatestRef(acceptAutocompleteSuggestion);
+  const onUseCandidateRef = useLatestRef(onUseCandidate);
+  const cycleVisibleCandidateRef = useLatestRef(cycleVisibleCandidate);
   const editorKeyBindings = useMemo<KeyBinding[]>(
     () => [
       {
         key: "Tab",
         run: () => {
-          if (acceptAutocompleteSuggestion()) return true;
+          if (acceptAutocompleteSuggestionRef.current()) return true;
           if (
             workspaceMode === "compose" &&
             composeDisplayMode === "inline" &&
             branchPickerOpen &&
             branchViewMode === "grid"
           ) {
-            onUseCandidate(visibleCandidateIndex);
+            onUseCandidateRef.current(visibleCandidateIndex);
             return true;
           }
           return false;
@@ -2242,7 +2247,7 @@ export default function App() {
           workspaceMode === "autocomplete"
             ? cycleAutocomplete(1)
             : composeDisplayMode === "inline"
-              ? cycleVisibleCandidate(1)
+              ? cycleVisibleCandidateRef.current(1)
               : false,
       },
       {
@@ -2251,17 +2256,19 @@ export default function App() {
           workspaceMode === "autocomplete"
             ? cycleAutocomplete(-1)
             : composeDisplayMode === "inline"
-              ? cycleVisibleCandidate(-1)
+              ? cycleVisibleCandidateRef.current(-1)
               : false,
       },
     ],
     [
+      acceptAutocompleteSuggestionRef,
       autocompleteState.phase,
-      autocompleteSuggestion,
       branchPickerOpen,
       branchViewMode,
       clearBranchPicker,
       composeDisplayMode,
+      cycleVisibleCandidateRef,
+      onUseCandidateRef,
       visibleCandidateIndex,
       workspaceMode,
     ],
