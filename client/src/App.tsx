@@ -47,7 +47,7 @@ import { mergePreset, neutralBody } from "./samplers/fields";
 import { useModelLoader } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
-import { applyChoice, emptyCandidates, type Candidate } from "./candidates";
+import { applyChoice } from "./candidates";
 import { approxTokenCount } from "./tokens";
 import {
   MAX_BRANCH_UI_LIMIT,
@@ -56,6 +56,7 @@ import {
   resolveTokensPerSuggestion,
 } from "./generation/branchControls";
 import { useBranchControls } from "./generation/useBranchControls";
+import { useCandidates } from "./generation/useCandidates";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -98,16 +99,7 @@ type TreeContextMenu = {
   y: number;
 };
 
-type CandidateContext = "prose" | "chat";
-
-type BranchViewMode = "grid" | "strip";
-
 type WorkspaceMode = "compose" | "autocomplete" | "map";
-
-type UsedCandidateRange = {
-  start: number;
-  end: number;
-};
 
 type LinearChain = {
   nodes: TreeNode[];
@@ -307,16 +299,6 @@ export default function App() {
   const [tree, setTree] = useState<Tree | null>(null);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [buffer, setBuffer] = useState("");
-  const [candidates, setCandidates] = useState<Candidate[]>([]);
-  const [candidateContext, setCandidateContext] = useState<CandidateContext>("prose");
-  const [candidatePrompt, setCandidatePrompt] = useState<string | null>(null);
-  const [candidateBaseId, setCandidateBaseId] = useState<string | null>(null);
-  const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
-  const [candidateSamplerSnapshot, setCandidateSamplerSnapshot] =
-    useState<SamplerBody | null>(null);
-  const [savedCandidateIds, setSavedCandidateIds] = useState<Record<number, string>>(
-    {},
-  );
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
@@ -326,6 +308,32 @@ export default function App() {
   const [starredOnly, setStarredOnly] = useState(false);
   const [treeSearch, setTreeSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const {
+    candidates,
+    candidateContext,
+    candidatePrompt,
+    candidateBaseId,
+    candidateModelId,
+    candidateSamplerSnapshot,
+    savedCandidateIds,
+    pickedCandidateIndex,
+    usedCandidateRange,
+    visibleCandidateIndex,
+    branchViewMode,
+    branchPickerOpen,
+    visibleCandidate,
+    setCandidates,
+    setVisibleCandidateIndex,
+    setBranchViewMode,
+    setUsedCandidateRange,
+    clearBranchPicker,
+    startGeneration,
+    markUsed,
+    markKept,
+    cycleVisibleCandidate,
+    dropCandidate,
+  } = useCandidates({ streaming, saving });
 
   const models = useModelLoader({
     setError,
@@ -342,8 +350,6 @@ export default function App() {
   const [treeMenu, setTreeMenu] = useState<TreeContextMenu | null>(null);
   const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>({});
   const [expandedChains, setExpandedChains] = useState<Record<string, boolean>>({});
-  const [branchViewMode, setBranchViewMode] = useState<BranchViewMode>("grid");
-  const [visibleCandidateIndex, setVisibleCandidateIndex] = useState(0);
   const [composeDisplayMode, setComposeDisplayMode] =
     useState<ComposeDisplayMode>("cards");
   const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>("compose");
@@ -351,9 +357,6 @@ export default function App() {
     phase: "idle",
   });
   const [autocompleteStatus, setAutocompleteStatus] = useState<string | null>(null);
-  const [pickedCandidateIndex, setPickedCandidateIndex] = useState<number | null>(null);
-  const [usedCandidateRange, setUsedCandidateRange] =
-    useState<UsedCandidateRange | null>(null);
   const [branchPaneRatio, setBranchPaneRatio] = useState(SINGLE_ROW_BRANCH_PANE_RATIO);
   const [closeConfirmOpen, setCloseConfirmOpen] = useState(false);
   const [manualPathRequest, setManualPathRequest] = useState<ManualPathRequest | null>(
@@ -395,7 +398,6 @@ export default function App() {
     prevSelectedId: string;
   } | null>(null);
 
-  const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
   const branchControls = useBranchControls({
@@ -513,54 +515,6 @@ export default function App() {
     window.requestAnimationFrame(() => {
       apply();
       window.requestAnimationFrame(apply);
-    });
-  }
-
-  const clearBranchPicker = useCallback(() => {
-    setCandidates([]);
-    setCandidateContext("prose");
-    setCandidatePrompt(null);
-    setCandidateBaseId(null);
-    setCandidateModelId(null);
-    setCandidateSamplerSnapshot(null);
-    setSavedCandidateIds({});
-    setPickedCandidateIndex(null);
-    setUsedCandidateRange(null);
-    setVisibleCandidateIndex(0);
-    setBranchViewMode("grid");
-  }, []);
-
-  function dropCandidate(indexToDrop: number) {
-    if (streaming || saving) return;
-    const nextCandidates = candidates.filter((_, index) => index !== indexToDrop);
-    if (nextCandidates.length === 0) {
-      clearBranchPicker();
-      return;
-    }
-
-    setCandidates(nextCandidates);
-    setSavedCandidateIds((current) => {
-      const next: Record<number, string> = {};
-      for (const [rawIndex, nodeId] of Object.entries(current)) {
-        const index = Number(rawIndex);
-        if (!Number.isInteger(index) || index === indexToDrop) continue;
-        next[index > indexToDrop ? index - 1 : index] = nodeId;
-      }
-      return next;
-    });
-    setPickedCandidateIndex((current) => {
-      if (current === null) return null;
-      if (current === indexToDrop) return null;
-      return current > indexToDrop ? current - 1 : current;
-    });
-    setVisibleCandidateIndex((current) => {
-      if (current === indexToDrop) {
-        return Math.min(indexToDrop, nextCandidates.length - 1);
-      }
-      return Math.min(
-        current > indexToDrop ? current - 1 : current,
-        nextCandidates.length - 1,
-      );
     });
   }
 
@@ -976,7 +930,7 @@ export default function App() {
     setVisibleCandidateIndex((current) =>
       candidates.length === 0 ? 0 : Math.min(current, candidates.length - 1),
     );
-  }, [candidates.length]);
+  }, [candidates.length, setVisibleCandidateIndex]);
 
   function startColumnDrag(
     event: ReactMouseEvent<HTMLDivElement>,
@@ -1324,17 +1278,14 @@ export default function App() {
     // mid-stream doesn't retroactively change what a persisted node says
     // produced it.
     const samplerSnapshot = mergePreset(draftBody);
-    setCandidates(emptyCandidates(n));
-    setCandidateContext("prose");
-    setCandidatePrompt(promptSnapshot);
-    setCandidateBaseId(committed.currentId);
-    setCandidateModelId(currentTabbyModel.id);
-    setCandidateSamplerSnapshot(samplerSnapshot);
-    setSavedCandidateIds({});
-    setPickedCandidateIndex(null);
-    setUsedCandidateRange(null);
-    setVisibleCandidateIndex(0);
-    setBranchViewMode("grid");
+    startGeneration({
+      context: "prose",
+      count: n,
+      prompt: promptSnapshot,
+      baseId: committed.currentId,
+      modelId: currentTabbyModel.id,
+      samplerSnapshot,
+    });
     setBranchPaneRatio(branchPaneRatioForCount(n));
     setError(null);
     setStreaming(true);
@@ -1398,14 +1349,6 @@ export default function App() {
       return { ...current, visibleIdx: nextIdx };
     });
     return handled;
-  }
-
-  function cycleVisibleCandidate(delta: 1 | -1): boolean {
-    if (!branchPickerOpen || candidates.length <= 1) return false;
-    setVisibleCandidateIndex(
-      (current) => (current + delta + candidates.length) % candidates.length,
-    );
-    return true;
   }
 
   function normalizeAutocompleteSuggestion(
@@ -1515,9 +1458,7 @@ export default function App() {
     setBuffer(nextBuffer);
     bufferSelectionArmedRef.current = true;
     bufferSelectionRef.current = { start: nextCursor, end: nextCursor };
-    setUsedCandidateRange({ start, end: nextCursor });
-    setPickedCandidateIndex(index);
-    setBranchViewMode("strip");
+    markUsed(index, { start, end: nextCursor });
     window.requestAnimationFrame(() => {
       if (scrollContainer && scrollTopBefore !== null) {
         scrollContainer.scrollTop = scrollTopBefore;
@@ -1587,7 +1528,7 @@ export default function App() {
     try {
       await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
       setTree(nextTree);
-      setSavedCandidateIds((current) => ({ ...current, [index]: node.id }));
+      markKept(index, node.id);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -1820,17 +1761,14 @@ export default function App() {
     const promptSnapshot = concatPathText(basePath);
     const { messages, responsePrefix } = buildChatPayload(basePath);
 
-    setCandidates(emptyCandidates(n));
-    setCandidateContext("chat");
-    setCandidatePrompt(promptSnapshot);
-    setCandidateBaseId(baseId);
-    setCandidateModelId(currentTabbyModel.id);
-    setCandidateSamplerSnapshot(samplerSnapshot);
-    setSavedCandidateIds({});
-    setPickedCandidateIndex(null);
-    setUsedCandidateRange(null);
-    setVisibleCandidateIndex(0);
-    setBranchViewMode("grid");
+    startGeneration({
+      context: "chat",
+      count: n,
+      prompt: promptSnapshot,
+      baseId,
+      modelId: currentTabbyModel.id,
+      samplerSnapshot,
+    });
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
@@ -2085,7 +2023,7 @@ export default function App() {
         mutationBatchFromTrees(committed.tree, nextTree, committed.currentId),
       );
       setTree(nextTree);
-      setSavedCandidateIds((current) => ({ ...current, [index]: node.id }));
+      markKept(index, node.id);
     } catch (err) {
       setError(formatError(err));
     } finally {
@@ -2252,7 +2190,6 @@ export default function App() {
         ? "Current path is pinned because filters would otherwise hide it."
         : null;
   const isChatProject = project?.kind === "chat";
-  const visibleCandidate = candidates[visibleCandidateIndex] ?? null;
   const showInlineCandidateControls =
     !isChatProject &&
     workspaceMode === "compose" &&
