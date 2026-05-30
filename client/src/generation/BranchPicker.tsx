@@ -2,8 +2,8 @@ import { type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 
 import type { ComposeDisplayMode } from "../api";
 import type { Candidate } from "../candidates";
-import { displayBranchText, previewText } from "../nodeMapLayout";
-import { approxTokenCount } from "../tokens";
+import { previewText } from "../nodeMapLayout";
+import BranchCard from "./BranchCard";
 import type { BranchViewMode } from "./useCandidates";
 
 type BranchPickerProps = {
@@ -90,8 +90,6 @@ export default function BranchPicker({
             }
           >
             {candidates.map((candidate, index) => {
-              const hasText = candidate.text.length > 0;
-              const isStreaming = streaming && !candidate.done;
               const kept = !!savedCandidateIds[index];
               const picked = pickedCandidateIndex === index;
               const centeredStart =
@@ -99,62 +97,23 @@ export default function BranchPicker({
                   ? centeredBranchStart
                   : null;
               return (
-                <section
+                <BranchCard
                   key={index}
-                  className="bw-branch-card"
-                  data-empty={!hasText}
-                  data-streaming={isStreaming}
-                  data-picked={picked}
+                  candidate={candidate}
+                  index={index}
+                  streaming={streaming}
+                  saving={saving}
+                  kept={kept}
+                  picked={picked}
+                  onUseCandidate={onUseCandidate}
+                  onKeepCandidate={onKeepCandidate}
                   style={
                     centeredStart === null
                       ? undefined
                       : { gridColumn: `${centeredStart} / span 2` }
                   }
-                >
-                  <div className="bw-branch-card-head">
-                    <div className="bw-branch-card-title">
-                      <span>Branch {index + 1}</span>
-                      {picked && <span className="bw-branch-used-badge">Used</span>}
-                      {isStreaming && (
-                        <span className="bw-branch-pulse" aria-label="Streaming" />
-                      )}
-                    </div>
-                    {hasText && (
-                      <span className="bw-branch-token-count">
-                        {approxTokenCount(candidate.text)} tok
-                      </span>
-                    )}
-                  </div>
-                  <div className="bw-branch-text">
-                    {hasText ? (
-                      displayBranchText(candidate.text)
-                    ) : (
-                      <span className="bw-empty">
-                        {streaming ? "Waiting for tokens..." : "No text."}
-                      </span>
-                    )}
-                  </div>
-                  <div className="bw-branch-actions">
-                    <button
-                      type="button"
-                      onClick={() => onUseCandidate(index)}
-                      disabled={!hasText || streaming || saving || picked}
-                      className={`bw-button ${
-                        picked ? "bw-button-used" : "bw-button-primary"
-                      }`}
-                    >
-                      {picked ? "Used" : "Use"}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void onKeepCandidate(index)}
-                      disabled={!hasText || streaming || saving || kept}
-                      className="bw-button"
-                    >
-                      {kept ? "Kept" : "Keep"}
-                    </button>
-                  </div>
-                </section>
+                  keepDisabledWhileStreaming
+                />
               );
             })}
           </div>
