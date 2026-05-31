@@ -329,6 +329,7 @@ export default function App() {
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
+  const manuscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
@@ -404,9 +405,7 @@ export default function App() {
   // caret-into-view can yank the scroll container to the top. Snapshot before
   // the state mutation, restore across two animation frames.
   function pinManuscriptScroll(): () => void {
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     if (!scrollContainer) return () => {};
     const distanceFromBottom =
       scrollContainer.scrollHeight -
@@ -444,9 +443,7 @@ export default function App() {
   // Two RAFs to outlast the candidate-pane resize and any contenteditable
   // caret-into-view that fires when state updates settle.
   function scrollManuscriptToEnd(): void {
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     if (!scrollContainer) return;
     const apply = () => {
       const lines = scrollContainer.querySelectorAll(".cm-line");
@@ -1453,9 +1450,7 @@ export default function App() {
     // and the contenteditable's caret-into-view behavior yanks the scroll
     // container to the top. Snapshot scrollTop here and restore it after the
     // dispatch settles.
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     const scrollTopBefore = scrollContainer?.scrollTop ?? null;
 
     preserveUsedRangeForBufferRef.current = nextBuffer;
@@ -2496,7 +2491,7 @@ export default function App() {
                 />
               ) : (
                 <>
-                  <div className="bw-manuscript-scroll">
+                  <div className="bw-manuscript-scroll" ref={manuscriptScrollRef}>
                     <section className="bw-manuscript">
                       {currentNode && (
                         <div className="bw-manuscript-head mb-4">
