@@ -2,9 +2,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
+  type Dispatch,
   type MouseEvent as ReactMouseEvent,
+  type SetStateAction,
 } from "react";
 import {
   closeProject as closeProjectApi,
@@ -56,6 +59,7 @@ import BranchPicker from "./generation/BranchPicker";
 import InlineCandidateControls from "./generation/InlineCandidateControls";
 import { useLatestRef } from "./useLatestRef";
 import { formatError } from "./errors";
+import { initialWorkspaceState, workspaceReducer } from "./workspace/workspaceReducer";
 import ChatSurface from "./chat/ChatSurface";
 import { useChatController } from "./chat/useChatController";
 import TreeSidebar from "./sidebar/TreeSidebar";
@@ -244,19 +248,72 @@ function branchPaneRatioForCount(count: number): number {
 }
 
 export default function App() {
-  const [project, setProject] = useState<ProjectInfo | null>(null);
-  const [tree, setTree] = useState<Tree | null>(null);
-  const [currentId, setCurrentId] = useState<string | null>(null);
-  const [buffer, setBuffer] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [workspace, dispatchWorkspace] = useReducer(
+    workspaceReducer,
+    initialWorkspaceState,
+  );
+  const {
+    project,
+    tree,
+    currentId,
+    buffer,
+    mapSelectedId,
+    mapSelectionIds,
+    mapLocateRequest,
+    streaming,
+    saving,
+    error,
+  } = workspace;
+  // Thin wrapper setters keep every existing call site unchanged while the
+  // state lives in one reducer. `dispatchWorkspace` is stable, so wrapping each
+  // in useCallback reproduces the stable identity useState setters had (some
+  // are listed in effect/callback dependency arrays). Stage B replaces the
+  // coupled multi-setter handlers with single semantic dispatches; these
+  // wrappers stay for the standalone / high-frequency / externally-handed-out
+  // updates (editor typing, the async flags, the many error sites, and
+  // NodeMapView's own selection setters).
+  const setTree = useCallback<Dispatch<SetStateAction<Tree | null>>>(
+    (value) => dispatchWorkspace({ type: "setTree", value }),
+    [],
+  );
+  const setCurrentId = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => dispatchWorkspace({ type: "setCurrentId", value }),
+    [],
+  );
+  const setBuffer = useCallback<Dispatch<SetStateAction<string>>>(
+    (value) => dispatchWorkspace({ type: "setBuffer", value }),
+    [],
+  );
+  const setMapSelectedId = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => dispatchWorkspace({ type: "setMapSelectedId", value }),
+    [],
+  );
+  const setMapSelectionIds = useCallback<Dispatch<SetStateAction<string[]>>>(
+    (value) => dispatchWorkspace({ type: "setMapSelectionIds", value }),
+    [],
+  );
+  const setMapLocateRequest = useCallback<Dispatch<SetStateAction<number>>>(
+    (value) => dispatchWorkspace({ type: "setMapLocateRequest", value }),
+    [],
+  );
+  const setStreaming = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (value) => dispatchWorkspace({ type: "setStreaming", value }),
+    [],
+  );
+  const setSaving = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (value) => dispatchWorkspace({ type: "setSaving", value }),
+    [],
+  );
+  const setError = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => dispatchWorkspace({ type: "setError", value }),
+    [],
+  );
   const [loadingProject, setLoadingProject] = useState(true);
   const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [starredOnly, setStarredOnly] = useState(false);
   const [treeSearch, setTreeSearch] = useState("");
-  const [error, setError] = useState<string | null>(null);
 
   const candidatesApi = useCandidates({ streaming, saving });
   const {
@@ -315,10 +372,7 @@ export default function App() {
   const [manualPathInput, setManualPathInput] = useState("");
   const [treeVisible, setTreeVisible] = useState(true);
   const [treeWidth, setTreeWidth] = useState(288);
-  const [mapLocateRequest, setMapLocateRequest] = useState(0);
   const [mapFitRequest, setMapFitRequest] = useState(0);
-  const [mapSelectedId, setMapSelectedId] = useState<string | null>(null);
-  const [mapSelectionIds, setMapSelectionIds] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
@@ -466,7 +520,7 @@ export default function App() {
       setError(formatError(err));
       return [];
     }
-  }, []);
+  }, [setError]);
 
   const applyActivePreset = useCallback(
     (presetsList: SamplerPreset[], nextActiveId: string | null) => {
@@ -570,10 +624,13 @@ export default function App() {
       const [nodes, settings] = await Promise.all([listNodes(), getProjectSettings()]);
       const loaded = loadedTreeFromModels(nodes);
       const loadedBuffer = concatPathText(pathFromRoot(loaded.tree, loaded.currentId));
-      setProject(info);
-      setTree(loaded.tree);
-      setCurrentId(loaded.currentId);
-      setBuffer(loadedBuffer);
+      dispatchWorkspace({
+        type: "projectLoaded",
+        project: info,
+        tree: loaded.tree,
+        currentId: loaded.currentId,
+        buffer: loadedBuffer,
+      });
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
       // Chat projects render their surface inside compose mode — there's no
@@ -604,6 +661,7 @@ export default function App() {
       clearBranchPicker,
       refreshPresets,
       resetChatDrafts,
+      setError,
     ],
   );
 
@@ -629,7 +687,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadProject]);
+  }, [loadProject, setError]);
 
   useEffect(() => {
     void refreshModels();
@@ -824,9 +882,12 @@ export default function App() {
         const batch = mutationBatchFromTrees(tree, reshaped.tree, reshaped.currentId);
 
         await mutateNodes(batch);
-        setTree(reshaped.tree);
-        setCurrentId(reshaped.currentId);
-        setBuffer(nextBuffer);
+        dispatchWorkspace({
+          type: "bufferReshaped",
+          tree: reshaped.tree,
+          currentId: reshaped.currentId,
+          buffer: nextBuffer,
+        });
         // commitBuffer fires on any non-trivial buffer reshape; if there
         // were edits to flush, the previous delete-undo is no longer the
         // last thing the user did.
@@ -844,7 +905,7 @@ export default function App() {
         setSaving(false);
       }
     },
-    [buffer, currentId, project, saving, streaming, tree],
+    [buffer, currentId, project, saving, setError, setSaving, streaming, tree],
   );
 
   const onGenerateRef = useLatestRef(onGenerate);
@@ -921,7 +982,14 @@ export default function App() {
     const fallbackId = validSelectedId ?? currentId;
     setMapSelectedId(fallbackId);
     setMapSelectionIds([fallbackId]);
-  }, [currentId, mapSelectedId, mapSelectionIds, tree]);
+  }, [
+    currentId,
+    mapSelectedId,
+    mapSelectionIds,
+    setMapSelectedId,
+    setMapSelectionIds,
+    tree,
+  ]);
 
   useEffect(() => {
     setVisibleCandidateIndex((current) =>
@@ -1091,10 +1159,7 @@ export default function App() {
     setCloseConfirmOpen(false);
     try {
       await closeProjectApi();
-      setProject(null);
-      setTree(null);
-      setCurrentId(null);
-      setBuffer("");
+      dispatchWorkspace({ type: "projectClosed" });
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
       resetChatDrafts();
@@ -1243,9 +1308,12 @@ export default function App() {
     setError(null);
     try {
       await mutateNodes({ main_path: path.map((node) => node.id) });
-      setTree(committed.tree);
-      setCurrentId(targetId);
-      setBuffer(nextBuffer);
+      dispatchWorkspace({
+        type: "nodeSelected",
+        tree: committed.tree,
+        currentId: targetId,
+        buffer: nextBuffer,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
     } catch (err) {
       setError(formatError(err));
@@ -1716,7 +1784,7 @@ export default function App() {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, currentNodeId));
-      setTree(nextTree);
+      dispatchWorkspace({ type: "treeMutated", tree: nextTree });
       options.onSuccess?.();
     } catch (err) {
       setError(formatError(err));
@@ -1744,13 +1812,14 @@ export default function App() {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
-      setTree(nextTree);
-      setCurrentId(nextCurrentId);
-      setMapSelectedId(nextSelectedId);
-      setMapSelectionIds([nextSelectedId]);
-      setBuffer(nextBuffer);
+      dispatchWorkspace({
+        type: "editPersisted",
+        tree: nextTree,
+        currentId: nextCurrentId,
+        buffer: nextBuffer,
+        selectedId: nextSelectedId,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
-      setMapLocateRequest((value) => value + 1);
       if (!options.keepDeleteUndo) pendingDeleteUndoRef.current = null;
     } catch (err) {
       setError(formatError(err));
