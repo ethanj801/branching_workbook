@@ -25,7 +25,6 @@ import {
   streamCompletion,
   updateProjectSettings,
   updatePreset,
-  type ChatRole,
   type ComposeDisplayMode,
   type DialogResult,
   type ProjectInfo,
@@ -56,10 +55,11 @@ import { useCandidates } from "./generation/useCandidates";
 import BranchPicker from "./generation/BranchPicker";
 import InlineCandidateControls from "./generation/InlineCandidateControls";
 import { useLatestRef } from "./useLatestRef";
+import { formatError } from "./errors";
 import ChatSurface from "./chat/ChatSurface";
 import { useChatController } from "./chat/useChatController";
 import TreeSidebar from "./sidebar/TreeSidebar";
-import { contextHash } from "./tree/hash";
+import { branchNode, nodeId, nowEpoch } from "./tree/nodeFactory";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
@@ -101,47 +101,6 @@ type AutocompleteState =
 // Triggered when the server's native dialog endpoint isn't available
 // (off-macOS); the user types a project path into a fallback modal.
 type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "chat" };
-
-function formatError(err: unknown): string {
-  return err instanceof Error ? err.message : "Unexpected error";
-}
-
-function nodeId(): string {
-  return crypto.randomUUID();
-}
-
-function nowEpoch(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function branchNode(
-  parentId: string,
-  text: string,
-  source: NodeSource,
-  hidden: boolean,
-  priorText: string,
-  modelId?: string,
-  samplerSnapshot?: SamplerBody,
-  role: ChatRole = "user",
-  endOfTurn = false,
-): TreeNode {
-  return {
-    id: nodeId(),
-    parentId,
-    text,
-    name: null,
-    source,
-    role,
-    endOfTurn,
-    hidden,
-    deleted: false,
-    starred: false,
-    createdAt: nowEpoch(),
-    priorContextHash: contextHash(priorText),
-    modelId,
-    samplerSnapshot,
-  };
-}
 
 function bodiesEqual(a: SamplerBody, b: SamplerBody): boolean {
   const keysA = Object.keys(a) as (keyof SamplerBody)[];
@@ -595,10 +554,6 @@ export default function App() {
     branchControls,
     abortRef,
     clearDeleteUndo,
-    branchNode,
-    formatError,
-    nowEpoch,
-    nodeId,
     resetRecordedSelectionToEnd,
   });
   useEffect(() => {

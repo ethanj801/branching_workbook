@@ -11,23 +11,18 @@ import {
   mutateNodes,
   streamChatCompletion,
   type ChatCompletionMessage,
-  type ChatRole,
   type ProjectInfo,
   type SamplerBody,
   type TabbyModel,
 } from "../api";
+import { formatError } from "../errors";
 import { mergePreset } from "../samplers/fields";
 import { useBranchControls } from "../generation/useBranchControls";
 import { useCandidates } from "../generation/useCandidates";
 import { contextHash } from "../tree/hash";
+import { branchNode, nodeId, nowEpoch } from "../tree/nodeFactory";
 import { mutationBatchFromTrees } from "../tree/persistence";
-import {
-  concatPathText,
-  pathFromRoot,
-  type NodeSource,
-  type Tree,
-  type TreeNode,
-} from "../tree/types";
+import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "../tree/types";
 import {
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
@@ -63,20 +58,6 @@ type ChatControllerDeps = {
   branchControls: ReturnType<typeof useBranchControls>;
   abortRef: MutableRefObject<AbortController | null>;
   clearDeleteUndo: () => void;
-  branchNode: (
-    parentId: string,
-    text: string,
-    source: NodeSource,
-    hidden: boolean,
-    priorText: string,
-    modelId?: string,
-    samplerSnapshot?: SamplerBody,
-    role?: ChatRole,
-    endOfTurn?: boolean,
-  ) => TreeNode;
-  formatError: (err: unknown) => string;
-  nowEpoch: () => number;
-  nodeId: () => string;
   resetRecordedSelectionToEnd: (nextBuffer: string) => void;
 };
 
@@ -113,10 +94,6 @@ export function useChatController(deps: ChatControllerDeps) {
     branchControls,
     abortRef,
     clearDeleteUndo,
-    branchNode,
-    formatError,
-    nowEpoch,
-    nodeId,
     resetRecordedSelectionToEnd,
   } = deps;
   const {
