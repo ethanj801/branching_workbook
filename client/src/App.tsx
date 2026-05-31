@@ -579,7 +579,9 @@ export default function App() {
       setBuffer(loadedBuffer);
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
-      setWorkspaceMode(info.kind === "chat" ? "compose" : "compose");
+      // Chat projects render their surface inside compose mode — there's no
+      // separate chat workspace mode — so every project opens in "compose".
+      setWorkspaceMode("compose");
       setChatUserDraft("");
       setChatTurnDrafts({});
       setChatSystemExpanded(false);
@@ -1369,11 +1371,10 @@ export default function App() {
     // with the user's typed prefix, only surface completions whose first
     // line picks up where the user is mid-word; show them only the part
     // *after* the partial, since the prefix is already in the buffer.
-    if (singleLine.length < partial.length) {
-      return singleLine.length === 0 || partial.startsWith(singleLine)
-        ? null // still streaming; not enough chars to judge
-        : null; // diverged from the user's prefix
-    }
+    // The candidate's first line is shorter than the prefix we already trimmed
+    // off the prompt — it's either still streaming (too few chars to judge yet)
+    // or it has diverged from the user's prefix. Neither is showable.
+    if (singleLine.length < partial.length) return null;
     if (!singleLine.startsWith(partial)) return null;
     const after = singleLine.slice(partial.length);
     if (!after) return null;
@@ -1522,17 +1523,9 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-      markKept(index, node.id);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => markKept(index, node.id),
+    });
   }
 
   const currentNode = tree && currentId ? (tree.nodes[currentId] ?? null) : null;
@@ -1666,16 +1659,7 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree);
   }
 
   async function onSetNodeHidden(nodeIdToUpdate: string, hidden: boolean) {
@@ -1695,21 +1679,15 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-      pendingDeleteUndoRef.current = null;
-      if (hidden && nodeIdToUpdate === currentId) {
-        setShowHidden(true);
-      }
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-      setTreeMenu(null);
-    }
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        pendingDeleteUndoRef.current = null;
+        if (hidden && nodeIdToUpdate === currentId) {
+          setShowHidden(true);
+        }
+      },
+      onSettled: () => setTreeMenu(null),
+    });
   }
 
   async function onSetNodeStarred(nodeIdToUpdate: string, starred: boolean) {
@@ -1725,20 +1703,45 @@ export default function App() {
       },
     };
 
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        pendingDeleteUndoRef.current = null;
+      },
+      onSettled: () => setTreeMenu(null),
+    });
+  }
+
+  // Persist a single-node metadata edit — rename, star, hide, keep-a-branch —
+  // that changes a field on some node but deliberately leaves the active
+  // selection untouched: currentId, the buffer, and the map selection all stay
+  // put, so the edit doesn't yank the user elsewhere. That's the deliberate
+  // contrast with persistTreeEdit below, which relocates the active node.
+  // `onSuccess` runs once the tree is committed; `onSettled` runs in `finally`
+  // (e.g. closing the tree context menu regardless of outcome).
+  async function persistTreeMutation(
+    beforeTree: Tree,
+    currentNodeId: string,
+    nextTree: Tree,
+    options: { onSuccess?: () => void; onSettled?: () => void } = {},
+  ) {
     setSaving(true);
     setError(null);
     try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
+      await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, currentNodeId));
       setTree(nextTree);
-      pendingDeleteUndoRef.current = null;
+      options.onSuccess?.();
     } catch (err) {
       setError(formatError(err));
     } finally {
       setSaving(false);
-      setTreeMenu(null);
+      options.onSettled?.();
     }
   }
 
+  // Persist a structural edit that RELOCATES the active node — delete, merge,
+  // undo. Moves currentId/buffer/map-selection to nextCurrentId/nextSelectedId
+  // and re-runs the map locate, where persistTreeMutation above leaves all of
+  // that untouched.
   async function persistTreeEdit(
     beforeTree: Tree,
     nextTree: Tree,
@@ -1993,16 +1996,7 @@ export default function App() {
     }
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree);
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
