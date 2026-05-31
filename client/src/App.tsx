@@ -272,14 +272,6 @@ export default function App() {
   // wrappers stay for the standalone / high-frequency / externally-handed-out
   // updates (editor typing, the async flags, the many error sites, and
   // NodeMapView's own selection setters).
-  const setTree = useCallback<Dispatch<SetStateAction<Tree | null>>>(
-    (value) => dispatchWorkspace({ type: "setTree", value }),
-    [],
-  );
-  const setCurrentId = useCallback<Dispatch<SetStateAction<string | null>>>(
-    (value) => dispatchWorkspace({ type: "setCurrentId", value }),
-    [],
-  );
   const setBuffer = useCallback<Dispatch<SetStateAction<string>>>(
     (value) => dispatchWorkspace({ type: "setBuffer", value }),
     [],
@@ -595,12 +587,7 @@ export default function App() {
     streaming,
     currentTabbyModel,
     draftBody,
-    setTree,
-    setCurrentId,
-    setBuffer,
-    setSaving,
-    setError,
-    setStreaming,
+    dispatch: dispatchWorkspace,
     candidates: candidatesApi,
     branchControls,
     abortRef,

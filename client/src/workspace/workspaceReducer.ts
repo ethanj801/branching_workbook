@@ -48,10 +48,9 @@ export type WorkspaceAction =
   // Per-field updates. These back the wrapper setters App still hands to
   // NodeMapView, the editor, and useModelLoader, so they carry a full
   // SetStateAction to preserve the functional-updater forms those callers use
-  // (e.g. `setMapLocateRequest((v) => v + 1)`). `project` has no per-field
-  // setter — it only ever changes via projectLoaded / projectClosed.
-  | { type: "setTree"; value: SetStateAction<Tree | null> }
-  | { type: "setCurrentId"; value: SetStateAction<string | null> }
+  // (e.g. `setMapLocateRequest((v) => v + 1)`). project, tree, and currentId
+  // have no per-field setter — they only ever change via the semantic
+  // transitions below.
   | { type: "setBuffer"; value: SetStateAction<string> }
   | { type: "setMapSelectedId"; value: SetStateAction<string | null> }
   | { type: "setMapSelectionIds"; value: SetStateAction<string[]> }
@@ -88,10 +87,6 @@ export function workspaceReducer(
   action: WorkspaceAction,
 ): WorkspaceState {
   switch (action.type) {
-    case "setTree":
-      return { ...state, tree: applyUpdate(action.value, state.tree) };
-    case "setCurrentId":
-      return { ...state, currentId: applyUpdate(action.value, state.currentId) };
     case "setBuffer":
       return { ...state, buffer: applyUpdate(action.value, state.buffer) };
     case "setMapSelectedId":

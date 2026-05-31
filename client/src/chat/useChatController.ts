@@ -6,7 +6,6 @@ import {
   useState,
   type Dispatch,
   type MutableRefObject,
-  type SetStateAction,
 } from "react";
 
 import {
@@ -24,6 +23,7 @@ import { useCandidates } from "../generation/useCandidates";
 import { contextHash } from "../tree/hash";
 import { branchNode, nodeId, nowEpoch } from "../tree/nodeFactory";
 import { mutationBatchFromTrees } from "../tree/persistence";
+import type { WorkspaceAction } from "../workspace/workspaceReducer";
 import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "../tree/types";
 import {
   canAddAssistantChunkFromTail,
@@ -44,12 +44,7 @@ type ChatControllerDeps = {
   streaming: boolean;
   currentTabbyModel: TabbyModel | null;
   draftBody: SamplerBody;
-  setTree: Dispatch<SetStateAction<Tree | null>>;
-  setCurrentId: Dispatch<SetStateAction<string | null>>;
-  setBuffer: Dispatch<SetStateAction<string>>;
-  setSaving: Dispatch<SetStateAction<boolean>>;
-  setError: Dispatch<SetStateAction<string | null>>;
-  setStreaming: Dispatch<SetStateAction<boolean>>;
+  dispatch: Dispatch<WorkspaceAction>;
   candidates: ReturnType<typeof useCandidates>;
   branchControls: ReturnType<typeof useBranchControls>;
   abortRef: MutableRefObject<AbortController | null>;
@@ -60,10 +55,11 @@ type ChatControllerDeps = {
 /**
  * The chat workspace controller: the per-turn derived state plus every
  * generate / send / use / keep / end-turn / add-chunk / delete action. App owns
- * the tree, selection, draft, and candidate state and passes them in; this hook
- * threads them through chat/turns.ts and the streaming/persistence APIs and
- * hands back the derived flags and action callbacks for ChatSurface. The pure
- * turn-folding and draft logic lives in chat/turns.ts.
+ * the tree/selection state in a reducer and passes the reads in with its
+ * dispatch; this hook threads them through chat/turns.ts and the
+ * streaming/persistence APIs and hands back the derived flags and action
+ * callbacks for ChatSurface. The pure turn-folding and draft logic lives in
+ * chat/turns.ts.
  */
 export function useChatController(deps: ChatControllerDeps) {
   const {
@@ -75,12 +71,7 @@ export function useChatController(deps: ChatControllerDeps) {
     streaming,
     currentTabbyModel,
     draftBody,
-    setTree,
-    setCurrentId,
-    setBuffer,
-    setSaving,
-    setError,
-    setStreaming,
+    dispatch,
     branchControls,
     abortRef,
     clearDeleteUndo,
@@ -100,6 +91,13 @@ export function useChatController(deps: ChatControllerDeps) {
     markKept,
     clearBranchPicker,
   } = deps.candidates;
+
+  // Thin adapters over the workspace dispatch for the per-field flag/error
+  // updates this hook makes; the coupled persist clusters below dispatch the
+  // semantic bufferReshaped / treeMutated actions directly.
+  const setSaving = (value: boolean) => dispatch({ type: "setSaving", value });
+  const setStreaming = (value: boolean) => dispatch({ type: "setStreaming", value });
+  const setError = (value: string | null) => dispatch({ type: "setError", value });
 
   const [chatSystemDraft, setChatSystemDraft] = useState("");
   const [chatUserDraft, setChatUserDraft] = useState("");
@@ -205,9 +203,12 @@ export function useChatController(deps: ChatControllerDeps) {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
-      setTree(nextTree);
-      setCurrentId(nextCurrentId);
-      setBuffer(nextBuffer);
+      dispatch({
+        type: "bufferReshaped",
+        tree: nextTree,
+        currentId: nextCurrentId,
+        buffer: nextBuffer,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
       clearDeleteUndo();
       return true;
@@ -279,9 +280,12 @@ export function useChatController(deps: ChatControllerDeps) {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(tree, result.tree, result.currentId));
-      setTree(result.tree);
-      setCurrentId(result.currentId);
-      setBuffer(concatPathText(pathFromRoot(result.tree, result.currentId)));
+      dispatch({
+        type: "bufferReshaped",
+        tree: result.tree,
+        currentId: result.currentId,
+        buffer: concatPathText(pathFromRoot(result.tree, result.currentId)),
+      });
       clearDeleteUndo();
       // Evict only the drafts we actually consumed. The wholesale
       // wipe used to drop any unsaved off-path / sibling-branch
@@ -592,7 +596,7 @@ export function useChatController(deps: ChatControllerDeps) {
       await mutateNodes(
         mutationBatchFromTrees(committed.tree, nextTree, committed.currentId),
       );
-      setTree(nextTree);
+      dispatch({ type: "treeMutated", tree: nextTree });
       markKept(index, node.id);
     } catch (err) {
       setError(formatError(err));
