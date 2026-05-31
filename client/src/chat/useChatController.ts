@@ -1,7 +1,9 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
+  useState,
   type Dispatch,
   type MutableRefObject,
   type SetStateAction,
@@ -42,18 +44,12 @@ type ChatControllerDeps = {
   streaming: boolean;
   currentTabbyModel: TabbyModel | null;
   draftBody: SamplerBody;
-  chatSystemDraft: string;
-  chatUserDraft: string;
-  chatTurnDrafts: Record<string, ChatTurnDraft>;
   setTree: Dispatch<SetStateAction<Tree | null>>;
   setCurrentId: Dispatch<SetStateAction<string | null>>;
   setBuffer: Dispatch<SetStateAction<string>>;
   setSaving: Dispatch<SetStateAction<boolean>>;
   setError: Dispatch<SetStateAction<string | null>>;
   setStreaming: Dispatch<SetStateAction<boolean>>;
-  setChatSystemDraft: Dispatch<SetStateAction<string>>;
-  setChatUserDraft: Dispatch<SetStateAction<string>>;
-  setChatTurnDrafts: Dispatch<SetStateAction<Record<string, ChatTurnDraft>>>;
   candidates: ReturnType<typeof useCandidates>;
   branchControls: ReturnType<typeof useBranchControls>;
   abortRef: MutableRefObject<AbortController | null>;
@@ -79,18 +75,12 @@ export function useChatController(deps: ChatControllerDeps) {
     streaming,
     currentTabbyModel,
     draftBody,
-    chatSystemDraft,
-    chatUserDraft,
-    chatTurnDrafts,
     setTree,
     setCurrentId,
     setBuffer,
     setSaving,
     setError,
     setStreaming,
-    setChatSystemDraft,
-    setChatUserDraft,
-    setChatTurnDrafts,
     branchControls,
     abortRef,
     clearDeleteUndo,
@@ -110,6 +100,25 @@ export function useChatController(deps: ChatControllerDeps) {
     markKept,
     clearBranchPicker,
   } = deps.candidates;
+
+  const [chatSystemDraft, setChatSystemDraft] = useState("");
+  const [chatUserDraft, setChatUserDraft] = useState("");
+  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, ChatTurnDraft>>(
+    {},
+  );
+  const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
+
+  // Clear every chat draft back to empty. Called when a project opens or
+  // closes. On a chat open the init effect below immediately re-initializes
+  // chatSystemDraft from the active system node; clearing it here first
+  // covers the close / prose-project cases where that effect's chat guard
+  // keeps it from running.
+  const resetChatDrafts = useCallback(() => {
+    setChatUserDraft("");
+    setChatTurnDrafts({});
+    setChatSystemExpanded(false);
+    setChatSystemDraft("");
+  }, []);
 
   const pendingChatFocusRef = useRef<string | null>(null);
 
@@ -142,10 +151,14 @@ export function useChatController(deps: ChatControllerDeps) {
     project?.kind === "chat" &&
     hasUnsavedChatDrafts(tree, chatSystemNode, chatSystemDraft, chatTurnDrafts);
 
+  // Initialize the editable system-prompt draft from the active system node.
+  // This is the single initializer for chatSystemDraft: it fires on chat open
+  // and whenever the active system node changes (e.g. switching branches).
+  // resetChatDrafts clears the draft for the close / prose-project cases.
   useEffect(() => {
     if (project?.kind !== "chat") return;
     setChatSystemDraft(chatSystemNode?.text ?? "");
-  }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind, setChatSystemDraft]);
+  }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind]);
 
   useEffect(() => {
     const id = pendingChatFocusRef.current;
@@ -660,6 +673,15 @@ export function useChatController(deps: ChatControllerDeps) {
     chatHasPendingUserDraft,
     chatCanSubmitOrGenerate,
     chatHasUnsavedDrafts,
+    chatSystemDraft,
+    setChatSystemDraft,
+    chatUserDraft,
+    setChatUserDraft,
+    chatTurnDrafts,
+    setChatTurnDrafts,
+    chatSystemExpanded,
+    setChatSystemExpanded,
+    resetChatDrafts,
     onSaveChatSystem,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,

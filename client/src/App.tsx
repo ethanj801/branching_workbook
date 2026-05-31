@@ -69,7 +69,6 @@ import {
   collectLinearChainDownward,
   collectSubtreeNodeIds,
 } from "./tree/merge";
-import { type ChatTurnDraft } from "./chat/turns";
 import {
   childrenOf,
   concatPathText,
@@ -315,12 +314,6 @@ export default function App() {
   );
   const [manualPathInput, setManualPathInput] = useState("");
   const [treeVisible, setTreeVisible] = useState(true);
-  const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
-  const [chatSystemDraft, setChatSystemDraft] = useState("");
-  const [chatUserDraft, setChatUserDraft] = useState("");
-  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, ChatTurnDraft>>(
-    {},
-  );
   const [treeWidth, setTreeWidth] = useState(288);
   const [mapLocateRequest, setMapLocateRequest] = useState(0);
   const [mapFitRequest, setMapFitRequest] = useState(0);
@@ -521,6 +514,15 @@ export default function App() {
     chatCanSubmitOrGenerate,
     chatHasPendingUserDraft,
     chatHasUnsavedDrafts,
+    chatSystemDraft,
+    setChatSystemDraft,
+    chatUserDraft,
+    setChatUserDraft,
+    chatTurnDrafts,
+    setChatTurnDrafts,
+    chatSystemExpanded,
+    setChatSystemExpanded,
+    resetChatDrafts,
     onSaveChatSystem,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,
@@ -539,18 +541,12 @@ export default function App() {
     streaming,
     currentTabbyModel,
     draftBody,
-    chatSystemDraft,
-    chatUserDraft,
-    chatTurnDrafts,
     setTree,
     setCurrentId,
     setBuffer,
     setSaving,
     setError,
     setStreaming,
-    setChatSystemDraft,
-    setChatUserDraft,
-    setChatTurnDrafts,
     candidates: candidatesApi,
     branchControls,
     abortRef,
@@ -583,14 +579,7 @@ export default function App() {
       // Chat projects render their surface inside compose mode — there's no
       // separate chat workspace mode — so every project opens in "compose".
       setWorkspaceMode("compose");
-      setChatUserDraft("");
-      setChatTurnDrafts({});
-      setChatSystemExpanded(false);
-      setChatSystemDraft(
-        pathFromRoot(loaded.tree, loaded.currentId).find(
-          (node) => node.role === "system",
-        )?.text ?? "",
-      );
+      resetChatDrafts();
       setComposeDisplayMode(settings.display_mode);
       hydrateBranchControls(settings);
       clearBranchPicker();
@@ -609,7 +598,13 @@ export default function App() {
         setError(formatError(err));
       }
     },
-    [applyActivePreset, hydrateBranchControls, clearBranchPicker, refreshPresets],
+    [
+      applyActivePreset,
+      hydrateBranchControls,
+      clearBranchPicker,
+      refreshPresets,
+      resetChatDrafts,
+    ],
   );
 
   useEffect(() => {
@@ -1102,10 +1097,7 @@ export default function App() {
       setBuffer("");
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
-      setChatUserDraft("");
-      setChatTurnDrafts({});
-      setChatSystemDraft("");
-      setChatSystemExpanded(false);
+      resetChatDrafts();
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
       // subsequent project open doesn't briefly show the wrong "active" name.
