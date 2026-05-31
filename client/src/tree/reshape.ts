@@ -97,8 +97,7 @@ export function reshape(
   let anchorId: string | null = null;
   let cumulative = 0;
 
-  for (let i = 0; i < path.length; i++) {
-    const node = path[i];
+  for (const node of path) {
     const nodeStart = cumulative;
     const nodeEnd = cumulative + node.text.length;
 
@@ -196,7 +195,7 @@ export function reshape(
     }
     return {
       tree: { nodes: nodesCopy, rootId: tree.rootId },
-      currentId: existingPath[existingPath.length - 1].id,
+      currentId: existingPath[existingPath.length - 1]!.id,
     };
   }
 

@@ -92,7 +92,7 @@ describe("tree persistence helpers", () => {
       { ...model("A", "root", "hello", true), name: "Opening" },
     ]);
 
-    expect(loaded.tree.nodes.A.name).toBe("Opening");
+    expect(loaded.tree.nodes.A!.name).toBe("Opening");
 
     const before = tree([node("root", null, ""), node("A", "root", "hello")]);
     const after = tree([

@@ -323,8 +323,8 @@ export default function TreeSidebar({
   function renderLinearChain(chain: LinearChain, depth = 0) {
     const key = linearChainKey(chain);
     const expanded = !!expandedChains[key];
-    const first = chain.nodes[0];
-    const last = chain.nodes[chain.nodes.length - 1];
+    const first = chain.nodes[0]!;
+    const last = chain.nodes[chain.nodes.length - 1]!;
     const destination = chain.successor ?? last;
     const visibleCount = chain.nodes.length + (chain.successor ? 1 : 0);
     const chainOnPath =

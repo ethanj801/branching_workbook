@@ -26,7 +26,7 @@ function makeNode(
 
 function makeTree(nodes: TreeNode[]): Tree {
   return {
-    rootId: nodes[0].id,
+    rootId: nodes[0]!.id,
     nodes: Object.fromEntries(nodes.map((node) => [node.id, node])),
   };
 }

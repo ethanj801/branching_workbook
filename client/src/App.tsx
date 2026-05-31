@@ -214,12 +214,12 @@ function trimAutocompletePromptSuffix(prompt: string): {
   partial: string;
 } {
   if (prompt.length === 0) return { trimmedPrompt: prompt, partial: "" };
-  const lastChar = prompt[prompt.length - 1];
+  const lastChar = prompt[prompt.length - 1]!;
   if (/\s/.test(lastChar)) return { trimmedPrompt: prompt, partial: "" };
   const start = Math.max(0, prompt.length - AUTOCOMPLETE_TRIM_WINDOW);
   let lastWsIdx = -1;
   for (let i = prompt.length - 1; i >= start; i--) {
-    if (/\s/.test(prompt[i])) {
+    if (/\s/.test(prompt[i]!)) {
       lastWsIdx = i;
       break;
     }
@@ -732,7 +732,7 @@ export default function App() {
             }
             partials[choice.index] += choice.text;
             const suggestion = normalizeAutocompleteSuggestion(
-              partials[choice.index],
+              partials[choice.index]!,
               partial,
             );
             if (!suggestion) continue;
@@ -741,7 +741,7 @@ export default function App() {
               if (current.phase === "idle") return current;
               const suggestions =
                 current.phase === "showing" ? [...current.suggestions] : [];
-              let slot = slotsByIndex[choice.index];
+              let slot = slotsByIndex[choice.index]!;
               if (slot < 0) {
                 const key = suggestion.trim().toLowerCase();
                 const exists = suggestions.some(
@@ -1535,7 +1535,7 @@ export default function App() {
     }
   }
 
-  const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const currentNode = tree && currentId ? (tree.nodes[currentId] ?? null) : null;
   const dirtyBuffer =
     project !== null &&
     tree !== null &&
@@ -1895,7 +1895,7 @@ export default function App() {
       return;
     }
 
-    const upstreamId = analysis.orderedIds[0];
+    const upstreamId = analysis.orderedIds[0]!;
     const deletedIds = new Set(analysis.orderedIds.slice(1));
     const nextCurrentId = deletedIds.has(committed.currentId)
       ? upstreamId
@@ -1933,7 +1933,7 @@ export default function App() {
     }
 
     let fallbackId = committed.tree.rootId;
-    const firstEligibleParent = committed.tree.nodes[eligible[0]]?.parentId;
+    const firstEligibleParent = committed.tree.nodes[eligible[0]!]?.parentId;
     if (firstEligibleParent && !subtreeSet.has(firstEligibleParent)) {
       fallbackId = firstEligibleParent;
     }
@@ -1945,7 +1945,7 @@ export default function App() {
     pendingDeleteUndoRef.current = {
       deletedIds: newlyDeletedIds,
       prevCurrentId: committed.currentId,
-      prevSelectedId: eligible[0],
+      prevSelectedId: eligible[0]!,
     };
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
       keepDeleteUndo: true,

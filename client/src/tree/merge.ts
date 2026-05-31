@@ -24,7 +24,7 @@ export function analyzeNodeMapMergeSelection(
 
   const selected = new Set(uniqueIds);
   const upstreamIds = uniqueIds.filter((id) => {
-    const parentId = tree.nodes[id]?.parentId;
+    const parentId = tree.nodes[id]!.parentId;
     return parentId === null || !selected.has(parentId);
   });
 
@@ -32,7 +32,7 @@ export function analyzeNodeMapMergeSelection(
     return { ok: false, reason: "Selection must be one linear parent-child run." };
   }
 
-  const upstream = tree.nodes[upstreamIds[0]];
+  const upstream = tree.nodes[upstreamIds[0]!];
   if (!upstream || upstream.parentId === null) {
     return { ok: false, reason: "Root cannot be merged." };
   }
@@ -70,7 +70,7 @@ export function collectLinearChainDownward(tree: Tree, startId: string): string[
     chain.push(cursor);
     const children = childrenOf(tree, cursor);
     if (children.length !== 1) break;
-    cursor = children[0].id;
+    cursor = children[0]!.id;
   }
   return chain;
 }
@@ -131,7 +131,7 @@ export function buildMergedSelectionTree(
   const analysis = analyzeNodeMapMergeSelection(baseTree, orderedIds);
   if (!analysis.ok) return null;
 
-  const orderedNodes = analysis.orderedIds.map((id) => baseTree.nodes[id]);
+  const orderedNodes = analysis.orderedIds.map((id) => baseTree.nodes[id]!);
   const upstream = orderedNodes[0];
   const downstream = orderedNodes[orderedNodes.length - 1];
   if (!upstream || !downstream) return null;

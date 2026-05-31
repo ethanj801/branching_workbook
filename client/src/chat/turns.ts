@@ -59,7 +59,7 @@ export function foldChainMatchingBaseText(
   }
 
   function walk(chain: TreeNode[], textSoFar: string): void {
-    const last = chain[chain.length - 1];
+    const last = chain[chain.length - 1]!;
     if (textSoFar === baseText) {
       const hasSameRoleContinuation =
         !last.endOfTurn && visibleSameRoleChildren(last.id, last.role).length > 0;
@@ -75,7 +75,7 @@ export function foldChainMatchingBaseText(
 
   walk([start], start.text);
 
-  return matches.length === 1 ? matches[0] : null;
+  return matches.length === 1 ? matches[0]! : null;
 }
 
 // Fold a chain of TreeNodes into ChatTurns. Adjacent same-role nodes are
@@ -353,7 +353,7 @@ export function commitChatDrafts(
     if (!firstNode || firstNode.parentId === null) continue;
     const chain = foldChainMatchingBaseText(working, firstId, draft.baseText);
     if (!chain || chain.length === 0) continue;
-    const last = chain[chain.length - 1];
+    const last = chain[chain.length - 1]!;
     const syntheticTurn: ChatTurn = {
       role: firstNode.role,
       nodes: chain,

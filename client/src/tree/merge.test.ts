@@ -34,7 +34,7 @@ function makeNode(
 function makeTree(nodes: TreeNode[]): Tree {
   const rec: Record<string, TreeNode> = {};
   for (const n of nodes) rec[n.id] = n;
-  return { nodes: rec, rootId: nodes[0].id };
+  return { nodes: rec, rootId: nodes[0]!.id };
 }
 
 // root → A → B → C (one linear run beneath the root)
@@ -52,9 +52,9 @@ describe("buildMergedTree", () => {
     const merged = buildMergedTree(linearTree(), "A", "B");
     expect(merged).not.toBeNull();
     expect(merged!.nodes.B).toBeUndefined();
-    expect(merged!.nodes.A.text).toBe("Hello world");
+    expect(merged!.nodes.A!.text).toBe("Hello world");
     // C followed B up to A
-    expect(merged!.nodes.C.parentId).toBe("A");
+    expect(merged!.nodes.C!.parentId).toBe("A");
   });
 
   it("marks the merged node 'composed' when the two sources differ", () => {
@@ -63,7 +63,7 @@ describe("buildMergedTree", () => {
       makeNode("A", "root", "a", "user_written"),
       makeNode("B", "A", "b", "generated"),
     ]);
-    expect(buildMergedTree(tree, "A", "B")!.nodes.A.source).toBe("composed");
+    expect(buildMergedTree(tree, "A", "B")!.nodes.A!.source).toBe("composed");
   });
 
   it("returns null when the parent has more than one child", () => {
@@ -117,7 +117,7 @@ describe("buildMergedSelectionTree", () => {
   it("concatenates a whole linear run into its first node", () => {
     const merged = buildMergedSelectionTree(linearTree(), ["A", "B", "C"]);
     expect(merged).not.toBeNull();
-    expect(merged!.nodes.A.text).toBe("Hello world!");
+    expect(merged!.nodes.A!.text).toBe("Hello world!");
     expect(merged!.nodes.B).toBeUndefined();
     expect(merged!.nodes.C).toBeUndefined();
   });
@@ -128,7 +128,7 @@ describe("buildMergedSelectionTree", () => {
       makeNode("A", "root", "a"),
       makeNode("B", "A", "b", "user_written", { starred: true }),
     ]);
-    expect(buildMergedSelectionTree(tree, ["A", "B"])!.nodes.A.starred).toBe(true);
+    expect(buildMergedSelectionTree(tree, ["A", "B"])!.nodes.A!.starred).toBe(true);
   });
 
   it("returns null for an invalid selection", () => {
