@@ -102,6 +102,10 @@ type AutocompleteState =
 // (off-macOS); the user types a project path into a fallback modal.
 type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "chat" };
 
+// Shallow structural equality for two sampler bodies: same key set, each value
+// JSON-equal. JSON.stringify is key-order-sensitive for nested objects, so this
+// assumes flat bodies (sampler params are scalars) — true today. Recomputed on
+// every draftDirty check (per keystroke), which is fine at this size.
 function bodiesEqual(a: SamplerBody, b: SamplerBody): boolean {
   const keysA = Object.keys(a) as (keyof SamplerBody)[];
   const keysB = Object.keys(b) as (keyof SamplerBody)[];
@@ -1682,9 +1686,6 @@ export default function App() {
     await persistTreeMutation(tree, currentId, nextTree, {
       onSuccess: () => {
         pendingDeleteUndoRef.current = null;
-        if (hidden && nodeIdToUpdate === currentId) {
-          setShowHidden(true);
-        }
       },
       onSettled: () => setTreeMenu(null),
     });
