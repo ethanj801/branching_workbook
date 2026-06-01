@@ -5,7 +5,6 @@ import {
   useRef,
   useState,
   type CSSProperties,
-  type FormEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
   type WheelEvent as ReactWheelEvent,
@@ -15,15 +14,12 @@ import {
   createProject,
   createPreset,
   currentProject,
-  currentModel,
   deletePreset,
   dialogPickNewProject,
   dialogPickProject,
-  downloadModel,
   encodeTokens,
   getActivePreset,
   getProjectSettings,
-  listModels,
   listNodes,
   listPresets,
   mutateNodes,
@@ -31,16 +27,12 @@ import {
   setActivePreset,
   streamChatCompletion,
   streamCompletion,
-  streamModelLoad,
-  unloadModel,
   updateProjectSettings,
   updatePreset,
   type ChatCompletionMessage,
   type ChatRole,
   type ComposeDisplayMode,
   type DialogResult,
-  type ModelLoadEvent,
-  type ModelLoadRequest,
   type ProjectInfo,
   type ProjectSettingsPatch,
   type SamplerBody,
@@ -55,9 +47,18 @@ import WorkbookEditor, {
 } from "./editor/WorkbookEditor";
 import SamplerDrawer from "./samplers/SamplerDrawer";
 import { mergePreset, neutralBody } from "./samplers/fields";
+import { useModelLoader } from "./models/useModelLoader";
+import ModelPanel from "./models/ModelPanel";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
+import {
+  analyzeNodeMapMergeSelection,
+  buildMergedSelectionTree,
+  buildMergedTree,
+  collectLinearChainDownward,
+  collectSubtreeNodeIds,
+} from "./tree/merge";
 import {
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
@@ -78,7 +79,6 @@ import {
   displayBranchText,
   nodeLabel,
   previewText,
-  sortedChildrenOf,
   type NodeMapLayout,
 } from "./nodeMapLayout";
 import {
@@ -124,10 +124,6 @@ type LinearChain = {
   successor: TreeNode | null;
 };
 
-type NodeMapMergeAnalysis =
-  | { ok: true; orderedIds: string[] }
-  | { ok: false; reason: string };
-
 type NodeMapDrag = {
   pointerId: number;
   startX: number;
@@ -161,29 +157,6 @@ type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "c
 
 function formatError(err: unknown): string {
   return err instanceof Error ? err.message : "Unexpected error";
-}
-
-function parseGpuSplitInput(input: string): number[] {
-  const trimmed = input.trim();
-  if (!trimmed) return [];
-
-  const values = trimmed.split(",").map((raw) => {
-    const part = raw.trim();
-    if (!part) {
-      throw new Error("GPU split must be a comma-separated list of GB values.");
-    }
-    const value = Number(part);
-    if (!Number.isFinite(value) || value < 0) {
-      throw new Error("GPU split values must be non-negative numbers.");
-    }
-    return value;
-  });
-
-  if (!values.some((value) => value > 0)) {
-    throw new Error("GPU split must reserve VRAM on at least one GPU.");
-  }
-
-  return values;
 }
 
 function nodeId(): string {
@@ -249,86 +222,6 @@ function formatModelLabel(model: TabbyModel | null): string {
     .filter(Boolean)
     .join(" / ");
   return suffix ? `${model.id} (${suffix})` : model.id;
-}
-
-function formatLoadEvent(event: ModelLoadEvent | null): string {
-  if (!event) return "";
-  return `${event.status} ${event.module}/${event.modules}`;
-}
-
-function analyzeNodeMapMergeSelection(
-  tree: Tree,
-  selectedIds: string[],
-): NodeMapMergeAnalysis {
-  const uniqueIds = [...new Set(selectedIds)].filter((id) => tree.nodes[id]);
-  if (uniqueIds.length < 2) {
-    return { ok: false, reason: "Select at least two connected nodes." };
-  }
-
-  const selected = new Set(uniqueIds);
-  const upstreamIds = uniqueIds.filter((id) => {
-    const parentId = tree.nodes[id]?.parentId;
-    return parentId === null || !selected.has(parentId);
-  });
-
-  if (upstreamIds.length !== 1) {
-    return { ok: false, reason: "Selection must be one linear parent-child run." };
-  }
-
-  const upstream = tree.nodes[upstreamIds[0]];
-  if (!upstream || upstream.parentId === null) {
-    return { ok: false, reason: "Root cannot be merged." };
-  }
-
-  const orderedIds: string[] = [];
-  let current: TreeNode | undefined = upstream;
-  while (current && selected.has(current.id)) {
-    orderedIds.push(current.id);
-    const allChildren = sortedChildrenOf(tree, current.id);
-    const selectedChildren = allChildren.filter((child) => selected.has(child.id));
-    if (selectedChildren.length === 0) break;
-    if (selectedChildren.length > 1 || allChildren.length !== 1) {
-      return {
-        ok: false,
-        reason: "Cannot merge through a node with multiple children.",
-      };
-    }
-    current = selectedChildren[0];
-  }
-
-  if (orderedIds.length !== uniqueIds.length) {
-    return { ok: false, reason: "Selection must be one linear parent-child run." };
-  }
-
-  return { ok: true, orderedIds };
-}
-
-function collectLinearChainDownward(tree: Tree, startId: string): string[] {
-  const chain: string[] = [];
-  let cursor: string | null = startId;
-  while (cursor) {
-    const node = tree.nodes[cursor];
-    if (!node) break;
-    chain.push(cursor);
-    const children = childrenOf(tree, cursor);
-    if (children.length !== 1) break;
-    cursor = children[0].id;
-  }
-  return chain;
-}
-
-function collectSubtreeNodeIds(tree: Tree, nodeIdToCollect: string): string[] {
-  const collected: string[] = [];
-  const stack = [nodeIdToCollect];
-  while (stack.length > 0) {
-    const nodeIdFromStack = stack.pop()!;
-    if (!tree.nodes[nodeIdFromStack]) continue;
-    collected.push(nodeIdFromStack);
-    for (const child of childrenOf(tree, nodeIdFromStack)) {
-      stack.push(child.id);
-    }
-  }
-  return collected;
 }
 
 function clampNodeMapScale(scale: number): number {
@@ -434,8 +327,6 @@ const DEFAULT_BRANCH_LIMIT = 12;
 const MAX_BRANCH_UI_LIMIT = 12;
 const DEFAULT_TOKENS_PER_SUGGESTION = 2;
 const AUTOCOMPLETE_POOL_TARGET = 10;
-const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
-const COMMON_CONTEXT_SIZES = "8192  |  16384  |  32768  |  65536  |  131072";
 const COLLAPSED_RAIL_WIDTH = 40;
 const SINGLE_ROW_BRANCH_PANE_RATIO = 0.5;
 const TWO_ROW_BRANCH_PANE_RATIO = 0.65;
@@ -519,6 +410,17 @@ function branchPaneRatioForCount(count: number): number {
   return MANY_ROW_BRANCH_PANE_RATIO;
 }
 
+/**
+ * Mirrors the latest value into a stable ref. Lets an effect register a global
+ * listener once (with the ref in its deps) while the handler still reads
+ * fresh values, instead of re-subscribing on every render.
+ */
+function useLatestRef<T>(value: T) {
+  const ref = useRef(value);
+  ref.current = value;
+  return ref;
+}
+
 export default function App() {
   const [project, setProject] = useState<ProjectInfo | null>(null);
   const [tree, setTree] = useState<Tree | null>(null);
@@ -546,30 +448,20 @@ export default function App() {
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
   const [loadingProject, setLoadingProject] = useState(true);
-  const [currentTabbyModel, setCurrentTabbyModel] = useState<TabbyModel | null>(null);
-  const [availableModels, setAvailableModels] = useState<TabbyModel[]>([]);
-  const [loadingModels, setLoadingModels] = useState(true);
   const [modelPanelOpen, setModelPanelOpen] = useState(false);
-  const [modelBusy, setModelBusy] = useState(false);
-  const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(null);
-  const [selectedModelName, setSelectedModelName] = useState("");
-  const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(DEFAULT_LOAD_MAX_SEQ_LEN);
-  const [loadCacheMode, setLoadCacheMode] = useState("Q6");
-  const [loadTensorParallel, setLoadTensorParallel] = useState(false);
-  const [loadTensorParallelBackend, setLoadTensorParallelBackend] = useState<
-    "native" | "nccl"
-  >("native");
-  const [loadGpuSplit, setLoadGpuSplit] = useState("");
-  const [downloadRepoId, setDownloadRepoId] = useState(
-    "lucyknada/google_gemma-3-270m-exl3",
-  );
-  const [downloadRevision, setDownloadRevision] = useState("6.0bpw");
-  const [downloadFolder, setDownloadFolder] = useState("");
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [starredOnly, setStarredOnly] = useState(false);
   const [treeSearch, setTreeSearch] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  const models = useModelLoader({
+    setError,
+    formatError,
+    onModelUnloaded: () => setTokenCount(null),
+  });
+  // App itself only needs these few; the model panel consumes the rest.
+  const { currentTabbyModel, loadingModels, refreshModels } = models;
   const [presets, setPresets] = useState<SamplerPreset[]>([]);
   const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
   const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
@@ -852,23 +744,6 @@ export default function App() {
     },
     [],
   );
-
-  const refreshModels = useCallback(async () => {
-    setLoadingModels(true);
-    try {
-      const [current, models] = await Promise.all([currentModel(), listModels()]);
-      setCurrentTabbyModel(current);
-      setAvailableModels(models.data);
-      setSelectedModelName((existing) => {
-        if (existing) return existing;
-        return current?.id ?? models.data[0]?.id ?? "";
-      });
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setLoadingModels(false);
-    }
-  }, []);
 
   function applyProjectSettings(settings: {
     display_mode: ComposeDisplayMode;
@@ -1395,9 +1270,17 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [maxBranches]);
 
+  // Map keyboard shortcuts (zoom/fit and undo) live on `window`. We read live
+  // state through refs so these listeners register once instead of re-binding
+  // on every render. zoomNodeMap/onUndoLastDelete are hoisted function
+  // declarations defined further down in this component.
+  const workspaceModeRef = useLatestRef(workspaceMode);
+  const zoomNodeMapRef = useLatestRef(zoomNodeMap);
+  const onUndoLastDeleteRef = useLatestRef(onUndoLastDelete);
+
   useEffect(() => {
     function onMapKeyDown(event: KeyboardEvent) {
-      if (workspaceMode !== "map") return;
+      if (workspaceModeRef.current !== "map") return;
       if (!(event.metaKey || event.ctrlKey)) return;
 
       if (event.key === "0") {
@@ -1405,32 +1288,32 @@ export default function App() {
         setMapFitRequest((value) => value + 1);
       } else if (event.key === "+" || event.key === "=") {
         event.preventDefault();
-        zoomNodeMap(1.12);
+        zoomNodeMapRef.current(1.12);
       } else if (event.key === "-" || event.key === "_") {
         event.preventDefault();
-        zoomNodeMap(1 / 1.12);
+        zoomNodeMapRef.current(1 / 1.12);
       }
     }
 
     window.addEventListener("keydown", onMapKeyDown);
     return () => window.removeEventListener("keydown", onMapKeyDown);
-  });
+  }, [workspaceModeRef, zoomNodeMapRef]);
 
   // cmd/ctrl+Z restores the most recent map-delete. Scoped to the node-map
   // workspace so it doesn't fight CodeMirror's own undo stack in the editor.
   useEffect(() => {
     function onUndoKeyDown(event: KeyboardEvent) {
-      if (workspaceMode !== "map") return;
+      if (workspaceModeRef.current !== "map") return;
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.shiftKey || event.altKey) return;
       if (event.key !== "z" && event.key !== "Z") return;
       if (!pendingDeleteUndoRef.current) return;
       event.preventDefault();
-      void onUndoLastDelete();
+      void onUndoLastDeleteRef.current();
     }
     window.addEventListener("keydown", onUndoKeyDown);
     return () => window.removeEventListener("keydown", onUndoKeyDown);
-  });
+  }, [workspaceModeRef, onUndoLastDeleteRef]);
 
   useEffect(() => {
     setVisibleCandidateIndex((current) =>
@@ -1725,89 +1608,6 @@ export default function App() {
       return;
     }
     await commitBuffer();
-  }
-
-  async function onRefreshModels() {
-    setError(null);
-    await refreshModels();
-  }
-
-  async function onLoadModel(modelName = selectedModelName) {
-    const trimmedModelName = modelName.trim();
-    if (!trimmedModelName || modelBusy) return;
-
-    setModelBusy(true);
-    setModelLoadEvent(null);
-    setError(null);
-    try {
-      const gpuSplit = parseGpuSplitInput(loadGpuSplit);
-      const loadRequest: ModelLoadRequest = {
-        model_name: trimmedModelName,
-        max_seq_len: Math.max(
-          256,
-          Math.trunc(loadMaxSeqLen) || DEFAULT_LOAD_MAX_SEQ_LEN,
-        ),
-        cache_mode: loadCacheMode,
-      };
-
-      if (loadTensorParallel) {
-        loadRequest.tensor_parallel = true;
-        loadRequest.tensor_parallel_backend = loadTensorParallelBackend;
-      }
-
-      if (gpuSplit.length > 0) {
-        loadRequest.gpu_split = gpuSplit;
-        loadRequest.gpu_split_auto = false;
-      }
-
-      await streamModelLoad(loadRequest, setModelLoadEvent);
-      await refreshModels();
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setModelBusy(false);
-    }
-  }
-
-  async function onUnloadModel() {
-    if (modelBusy || !currentTabbyModel) return;
-
-    setModelBusy(true);
-    setModelLoadEvent(null);
-    setError(null);
-    try {
-      await unloadModel();
-      setCurrentTabbyModel(null);
-      setTokenCount(null);
-      await refreshModels();
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setModelBusy(false);
-    }
-  }
-
-  async function onDownloadModel(event: FormEvent) {
-    event.preventDefault();
-    const repoId = downloadRepoId.trim();
-    if (!repoId || modelBusy) return;
-
-    setModelBusy(true);
-    setModelLoadEvent(null);
-    setError(null);
-    try {
-      await downloadModel({
-        repo_id: repoId,
-        revision: downloadRevision.trim() || undefined,
-        folder_name: downloadFolder.trim() || undefined,
-      });
-      await refreshModels();
-      setSelectedModelName(downloadFolder.trim() || repoId.split("/").at(-1) || "");
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setModelBusy(false);
-    }
   }
 
   async function onSelectNode(nodeIdToSelect: string) {
@@ -3161,73 +2961,6 @@ export default function App() {
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
       keepDeleteUndo: true,
     });
-  }
-
-  function buildMergedTree(
-    baseTree: Tree,
-    upstreamId: string,
-    downstreamId: string,
-  ): Tree | null {
-    const upstream = baseTree.nodes[upstreamId];
-    const downstream = baseTree.nodes[downstreamId];
-    if (!upstream || !downstream || downstream.parentId !== upstream.id) return null;
-    if (upstream.parentId === null) return null;
-    if (childrenOf(baseTree, upstream.id).length !== 1) return null;
-
-    const nextNodes = { ...baseTree.nodes };
-    const merged: TreeNode = {
-      ...upstream,
-      text: `${upstream.text}${downstream.text}`,
-      name: upstream.name ?? downstream.name ?? null,
-      source: upstream.source === downstream.source ? upstream.source : "composed",
-      starred: upstream.starred || downstream.starred,
-    };
-
-    for (const child of childrenOf(baseTree, downstream.id)) {
-      nextNodes[child.id] = { ...child, parentId: upstream.id };
-    }
-    nextNodes[upstream.id] = merged;
-    delete nextNodes[downstream.id];
-
-    return {
-      rootId: baseTree.rootId,
-      nodes: nextNodes,
-    };
-  }
-
-  function buildMergedSelectionTree(baseTree: Tree, orderedIds: string[]): Tree | null {
-    const analysis = analyzeNodeMapMergeSelection(baseTree, orderedIds);
-    if (!analysis.ok) return null;
-
-    const orderedNodes = analysis.orderedIds.map((id) => baseTree.nodes[id]);
-    const upstream = orderedNodes[0];
-    const downstream = orderedNodes[orderedNodes.length - 1];
-    if (!upstream || !downstream) return null;
-
-    const nextNodes = { ...baseTree.nodes };
-    const firstSource = upstream.source;
-    const sameSource = orderedNodes.every((node) => node.source === firstSource);
-    const merged: TreeNode = {
-      ...upstream,
-      text: orderedNodes.map((node) => node.text).join(""),
-      name: orderedNodes.find((node) => node.name?.trim())?.name ?? null,
-      source: sameSource ? firstSource : "composed",
-      starred: orderedNodes.some((node) => node.starred),
-      hidden: orderedNodes.every((node) => node.hidden),
-    };
-
-    for (const child of childrenOf(baseTree, downstream.id)) {
-      nextNodes[child.id] = { ...child, parentId: upstream.id };
-    }
-    nextNodes[upstream.id] = merged;
-    for (const node of orderedNodes.slice(1)) {
-      delete nextNodes[node.id];
-    }
-
-    return {
-      rootId: baseTree.rootId,
-      nodes: nextNodes,
-    };
   }
 
   async function onMergeNodeIntoParent(nodeIdToMerge: string) {
@@ -5036,206 +4769,12 @@ export default function App() {
       />
 
       {modelPanelOpen && (
-        <div
-          className="bw-modal-backdrop"
-          role="dialog"
-          aria-label="Model management"
-          onMouseDown={() => setModelPanelOpen(false)}
-        >
-          <section
-            className="bw-modal"
-            onMouseDown={(event) => event.stopPropagation()}
-          >
-            <div className="bw-modal-head">
-              <div>
-                <div className="bw-kicker">TabbyAPI</div>
-                <div className="mt-1 font-serif text-xl">
-                  {formatModelLabel(currentTabbyModel)}
-                </div>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => void onRefreshModels()}
-                  disabled={loadingModels || modelBusy}
-                  className="bw-button"
-                >
-                  Refresh
-                </button>
-                <button
-                  type="button"
-                  onClick={() => void onUnloadModel()}
-                  disabled={!currentTabbyModel || modelBusy || streaming}
-                  className="bw-button"
-                >
-                  Unload
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setModelPanelOpen(false)}
-                  className="bw-button bw-button-quiet"
-                >
-                  Close
-                </button>
-              </div>
-            </div>
-            <div className="bw-modal-body">
-              <div className="bw-form-grid two">
-                <section className="bw-panel">
-                  <div className="bw-kicker">Load local model</div>
-                  <div className="mt-3 grid gap-2">
-                    <select
-                      value={selectedModelName}
-                      onChange={(event) => setSelectedModelName(event.target.value)}
-                      disabled={loadingModels || modelBusy}
-                      className="bw-select w-full"
-                    >
-                      {availableModels.length === 0 && (
-                        <option value="">No local models found</option>
-                      )}
-                      {availableModels.map((model) => (
-                        <option key={model.id} value={model.id}>
-                          {model.id}
-                        </option>
-                      ))}
-                    </select>
-                    <div className="flex flex-wrap items-end gap-2">
-                      <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
-                        Context length
-                        <input
-                          type="text"
-                          inputMode="numeric"
-                          value={loadMaxSeqLen ? loadMaxSeqLen.toLocaleString() : ""}
-                          onChange={(event) => {
-                            const digits = event.target.value.replace(/[^\d]/g, "");
-                            setLoadMaxSeqLen(digits ? Number(digits) : 0);
-                          }}
-                          disabled={modelBusy}
-                          className="bw-input w-32"
-                          title="max_seq_len"
-                        />
-                      </label>
-                      <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
-                        Cache (K/V)
-                        <select
-                          value={loadCacheMode}
-                          onChange={(event) => setLoadCacheMode(event.target.value)}
-                          disabled={modelBusy}
-                          className="bw-select w-28"
-                          title="K/V cache quantization"
-                        >
-                          <option value="Q4">Q4</option>
-                          <option value="Q6">Q6</option>
-                          <option value="Q8">Q8</option>
-                          <option value="FP16">FP16</option>
-                        </select>
-                      </label>
-                      <label className="bw-hidden-toggle">
-                        <input
-                          type="checkbox"
-                          checked={loadTensorParallel}
-                          onChange={(event) =>
-                            setLoadTensorParallel(event.target.checked)
-                          }
-                          disabled={modelBusy}
-                        />
-                        <span>Tensor parallel</span>
-                      </label>
-                      <button
-                        type="button"
-                        onClick={() => void onLoadModel()}
-                        disabled={!selectedModelName || modelBusy || streaming}
-                        className="bw-button bw-button-primary"
-                      >
-                        {modelBusy && modelLoadEvent
-                          ? formatLoadEvent(modelLoadEvent)
-                          : "Load"}
-                      </button>
-                    </div>
-                    <div className="text-xs text-[color:var(--ink-muted)]">
-                      {COMMON_CONTEXT_SIZES}
-                    </div>
-                    <div className="grid gap-2 border-t border-[color:var(--line)] pt-3">
-                      <div className="bw-kicker">Advanced</div>
-                      <div className="flex flex-wrap items-end gap-2">
-                        <label className="flex flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
-                          TP backend
-                          <select
-                            value={loadTensorParallelBackend}
-                            onChange={(event) =>
-                              setLoadTensorParallelBackend(
-                                event.target.value as "native" | "nccl",
-                              )
-                            }
-                            disabled={modelBusy || !loadTensorParallel}
-                            className="bw-select w-28"
-                            title="tensor_parallel_backend"
-                          >
-                            <option value="native">native</option>
-                            <option value="nccl">nccl</option>
-                          </select>
-                        </label>
-                        <label className="flex min-w-52 flex-1 flex-col gap-1 text-[11px] text-[color:var(--ink-muted)]">
-                          GPU split
-                          <input
-                            value={loadGpuSplit}
-                            onChange={(event) => setLoadGpuSplit(event.target.value)}
-                            disabled={modelBusy}
-                            placeholder="20, 25"
-                            className="bw-input w-full"
-                            title="gpu_split in GB per GPU"
-                          />
-                        </label>
-                      </div>
-                    </div>
-                  </div>
-                </section>
-
-                <form
-                  onSubmit={(event) => void onDownloadModel(event)}
-                  className="bw-panel"
-                >
-                  <div className="bw-kicker">Download from Hugging Face</div>
-                  <div className="mt-3 grid gap-2">
-                    <input
-                      value={downloadRepoId}
-                      onChange={(event) => setDownloadRepoId(event.target.value)}
-                      disabled={modelBusy}
-                      placeholder="repo_id"
-                      className="bw-input w-full"
-                    />
-                    <div className="flex flex-wrap gap-2">
-                      <input
-                        value={downloadRevision}
-                        onChange={(event) => setDownloadRevision(event.target.value)}
-                        disabled={modelBusy}
-                        placeholder="revision"
-                        className="bw-input w-32"
-                      />
-                      <input
-                        value={downloadFolder}
-                        onChange={(event) => setDownloadFolder(event.target.value)}
-                        disabled={modelBusy}
-                        placeholder="folder"
-                        className="bw-input min-w-36 flex-1"
-                      />
-                      <button
-                        type="submit"
-                        disabled={!downloadRepoId.trim() || modelBusy || streaming}
-                        className="bw-button"
-                      >
-                        {modelBusy && !modelLoadEvent ? "Working" : "Download"}
-                      </button>
-                    </div>
-                    <div className="text-xs text-[color:var(--ink-muted)]">
-                      Keep the request open until Tabby finishes.
-                    </div>
-                  </div>
-                </form>
-              </div>
-            </div>
-          </section>
-        </div>
+        <ModelPanel
+          models={models}
+          streaming={streaming}
+          modelLabel={formatModelLabel(currentTabbyModel)}
+          onClose={() => setModelPanelOpen(false)}
+        />
       )}
 
       {!project && (
