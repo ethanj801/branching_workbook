@@ -26,6 +26,11 @@ AGENTS.md
 # Project artifacts (to be confirmed once implemented)
 *.bwbk
 
+# Generated test fixtures — rebuilt by fixtures/seed_fixtures.py, not committed.
+# Only the seed script is tracked; the .db files and docs are derived from it.
+fixtures/*.db
+fixtures/*.md
+
 # UI iteration screenshots — generated on demand, not source
 client/screenshots/
 *.log
