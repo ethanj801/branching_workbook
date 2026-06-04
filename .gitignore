@@ -36,3 +36,5 @@ client/screenshots/
 *.log
 *.yml
 *.png
+TESTING_PLAYBOOK.md
+fixtures/seed_fixtures.py
