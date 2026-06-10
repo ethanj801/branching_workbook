@@ -59,9 +59,11 @@ type NodeMapViewProps = {
   mapSelectedId: string | null;
   mapSelectionIds: string[];
   mapLocateRequest: number;
+  mapFitRequest: number;
   setMapSelectedId: Dispatch<SetStateAction<string | null>>;
   setMapSelectionIds: Dispatch<SetStateAction<string[]>>;
   setMapLocateRequest: Dispatch<SetStateAction<number>>;
+  setMapFitRequest: Dispatch<SetStateAction<number>>;
   setWorkspaceMode: (mode: WorkspaceMode) => void;
   openTreeMenu: (nodeId: string, x: number, y: number) => void;
   onSelectNode: (nodeId: string) => void | Promise<void>;
@@ -75,6 +77,7 @@ type NodeMapViewProps = {
   onMergeNodeIntoParent: (nodeId: string) => void | Promise<void>;
   onMergeNodeWithOnlyChild: (nodeId: string) => void | Promise<void>;
   onUndoLastDelete: () => void | Promise<void>;
+  canUndoLastDelete: () => boolean;
 };
 
 /**
@@ -95,9 +98,11 @@ export default function NodeMapView({
   mapSelectedId,
   mapSelectionIds,
   mapLocateRequest,
+  mapFitRequest,
   setMapSelectedId,
   setMapSelectionIds,
   setMapLocateRequest,
+  setMapFitRequest,
   setWorkspaceMode,
   openTreeMenu,
   onSelectNode,
@@ -111,11 +116,11 @@ export default function NodeMapView({
   onMergeNodeIntoParent,
   onMergeNodeWithOnlyChild,
   onUndoLastDelete,
+  canUndoLastDelete,
 }: NodeMapViewProps) {
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
   const [mapScale, setMapScale] = useState(1);
   const [mapDragging, setMapDragging] = useState(false);
-  const [mapFitRequest, setMapFitRequest] = useState(0);
   const [mapViewportSize, setMapViewportSize] = useState({ width: 0, height: 0 });
   const [mapTooltip, setMapTooltip] = useState<MapTooltip | null>(null);
   const [mapShowHidden, setMapShowHidden] = useState(false);
@@ -519,7 +524,7 @@ export default function NodeMapView({
   // Fit on first mount so the tree is framed when the map opens.
   useEffect(() => {
     setMapFitRequest((value) => value + 1);
-  }, []);
+  }, [setMapFitRequest]);
 
   // Map zoom/fit keyboard shortcuts. Registered once; zoomNodeMap read via ref.
   const zoomNodeMapRef = useLatestRef(zoomNodeMap);
@@ -539,22 +544,25 @@ export default function NodeMapView({
     }
     window.addEventListener("keydown", onMapKeyDown);
     return () => window.removeEventListener("keydown", onMapKeyDown);
-  }, [zoomNodeMapRef]);
+  }, [zoomNodeMapRef, setMapFitRequest]);
 
-  // cmd/ctrl+Z restores the most recent map delete. onUndoLastDelete no-ops when
-  // there is nothing to restore.
+  // cmd/ctrl+Z restores the most recent map delete. Only swallow the keystroke
+  // when a map delete is actually pending — otherwise native undo (e.g. in an
+  // input layered over the map, like the model panel) must keep working.
   const onUndoLastDeleteRef = useLatestRef(onUndoLastDelete);
+  const canUndoLastDeleteRef = useLatestRef(canUndoLastDelete);
   useEffect(() => {
     function onUndoKeyDown(event: KeyboardEvent) {
       if (!(event.metaKey || event.ctrlKey)) return;
       if (event.shiftKey || event.altKey) return;
       if (event.key !== "z" && event.key !== "Z") return;
+      if (!canUndoLastDeleteRef.current()) return;
       event.preventDefault();
       void onUndoLastDeleteRef.current();
     }
     window.addEventListener("keydown", onUndoKeyDown);
     return () => window.removeEventListener("keydown", onUndoKeyDown);
-  }, [onUndoLastDeleteRef]);
+  }, [onUndoLastDeleteRef, canUndoLastDeleteRef]);
 
   if (!tree || !currentId || !currentNode || !nodeMapLayout) return null;
 

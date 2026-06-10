@@ -374,6 +374,7 @@ export default function App() {
   );
   const [treeWidth, setTreeWidth] = useState(288);
   const [mapLocateRequest, setMapLocateRequest] = useState(0);
+  const [mapFitRequest, setMapFitRequest] = useState(0);
   const [mapSelectedId, setMapSelectedId] = useState<string | null>(null);
   const [mapSelectionIds, setMapSelectionIds] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
@@ -3377,7 +3378,12 @@ export default function App() {
                     clearAutocomplete();
                     setWorkspaceMode("map");
                     if (dirtyBuffer) {
-                      void commitBuffer();
+                      // The map mounts and fits against the current tree; once
+                      // the dirty buffer commits and reshapes the tree, re-fit
+                      // so the newly committed node stays framed.
+                      void commitBuffer().finally(() =>
+                        setMapFitRequest((value) => value + 1),
+                      );
                     }
                   }}
                   disabled={streaming || saving}
@@ -3462,9 +3468,11 @@ export default function App() {
                   mapSelectedId={mapSelectedId}
                   mapSelectionIds={mapSelectionIds}
                   mapLocateRequest={mapLocateRequest}
+                  mapFitRequest={mapFitRequest}
                   setMapSelectedId={setMapSelectedId}
                   setMapSelectionIds={setMapSelectionIds}
                   setMapLocateRequest={setMapLocateRequest}
+                  setMapFitRequest={setMapFitRequest}
                   setWorkspaceMode={setWorkspaceMode}
                   openTreeMenu={openTreeMenu}
                   onSelectNode={onSelectNode}
@@ -3478,6 +3486,7 @@ export default function App() {
                   onMergeNodeIntoParent={onMergeNodeIntoParent}
                   onMergeNodeWithOnlyChild={onMergeNodeWithOnlyChild}
                   onUndoLastDelete={onUndoLastDelete}
+                  canUndoLastDelete={() => pendingDeleteUndoRef.current !== null}
                 />
               ) : (
                 <>
