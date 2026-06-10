@@ -49,6 +49,13 @@ import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
 import { applyChoice, emptyCandidates, type Candidate } from "./candidates";
 import { approxTokenCount } from "./tokens";
+import {
+  MAX_BRANCH_UI_LIMIT,
+  branchGridColumns,
+  maxBranchesForModel,
+  resolveTokensPerSuggestion,
+} from "./generation/branchControls";
+import { useBranchControls } from "./generation/useBranchControls";
 import ChatSurface from "./chat/ChatSurface";
 import { contextHash } from "./tree/hash";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
@@ -250,20 +257,11 @@ function NodeNameEditor({
   );
 }
 
-const DEFAULT_MAX_TOKENS = 256;
-const DEFAULT_BRANCH_COUNT = 3;
-const DEFAULT_BRANCH_LIMIT = 12;
-const MAX_BRANCH_UI_LIMIT = 12;
-const DEFAULT_TOKENS_PER_SUGGESTION = 2;
 const AUTOCOMPLETE_POOL_TARGET = 10;
 const COLLAPSED_RAIL_WIDTH = 40;
 const SINGLE_ROW_BRANCH_PANE_RATIO = 0.5;
 const TWO_ROW_BRANCH_PANE_RATIO = 0.65;
 const MANY_ROW_BRANCH_PANE_RATIO = 0.75;
-
-function clampNumber(value: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, value));
-}
 
 // Trim a partial trailing word off the prompt before sending it to the model.
 // BPE tokenizers fold a leading space into each word ("Hello", " world"), so a
@@ -295,41 +293,6 @@ function trimAutocompletePromptSuffix(prompt: string): {
   };
 }
 
-function parsePositiveInt(text: string, fallback: number): number {
-  const parsed = Number.parseInt(text, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-}
-
-function maxBranchesForModel(model: TabbyModel | null): number {
-  const maxBatchSize = model?.parameters?.max_batch_size;
-  if (typeof maxBatchSize !== "number" || !Number.isFinite(maxBatchSize)) {
-    return DEFAULT_BRANCH_LIMIT;
-  }
-  return clampNumber(Math.trunc(maxBatchSize), 1, MAX_BRANCH_UI_LIMIT);
-}
-
-function parseBranchCountInput(text: string): number | null {
-  const trimmed = text.trim();
-  if (!/^\d+$/.test(trimmed)) return null;
-  const parsed = Number.parseInt(trimmed, 10);
-  return parsed > 0 ? parsed : null;
-}
-
-function branchGridColumns(count: number): number | null {
-  const lookup: Record<number, number> = {
-    1: 1,
-    2: 2,
-    3: 3,
-    4: 2,
-    5: 3,
-    6: 3,
-    7: 4,
-    8: 4,
-    9: 3,
-  };
-  return lookup[count] ?? null;
-}
-
 function branchPaneRatioForCount(count: number): number {
   const columns = branchGridColumns(count);
   if (columns === null) return MANY_ROW_BRANCH_PANE_RATIO;
@@ -353,15 +316,6 @@ export default function App() {
     useState<SamplerBody | null>(null);
   const [savedCandidateIds, setSavedCandidateIds] = useState<Record<number, string>>(
     {},
-  );
-  const [branchCountText, setBranchCountText] = useState(String(DEFAULT_BRANCH_COUNT));
-  const [branchLimitHint, setBranchLimitHint] = useState(false);
-  const [branchCountError, setBranchCountError] = useState<string | null>(null);
-  const [maxTokensText, setMaxTokensText] = useState(String(DEFAULT_MAX_TOKENS));
-  const [maxTokensError, setMaxTokensError] = useState<string | null>(null);
-  const [maxTokensLimitHint, setMaxTokensLimitHint] = useState(false);
-  const [tokensPerSuggestionText, setTokensPerSuggestionText] = useState(
-    String(DEFAULT_TOKENS_PER_SUGGESTION),
   );
   const [streaming, setStreaming] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -444,6 +398,14 @@ export default function App() {
   const branchPickerOpen = candidatePrompt !== null;
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
+  const branchControls = useBranchControls({
+    maxBranches,
+    contextMax,
+    saveProjectSettings,
+  });
+  // hydrate is stable (the only branch-control function used inside a memoized
+  // callback's deps); pull it out so loadProject can depend on a bare ref.
+  const { hydrate: hydrateBranchControls } = branchControls;
   const branchLimitMessage =
     maxBranches >= MAX_BRANCH_UI_LIMIT
       ? `capped at ${MAX_BRANCH_UI_LIMIT} for readable layouts`
@@ -625,20 +587,6 @@ export default function App() {
     [],
   );
 
-  function applyProjectSettings(settings: {
-    display_mode: ComposeDisplayMode;
-    branch_count: number;
-    max_tokens: number;
-    tokens_per_suggestion: number;
-  }) {
-    setComposeDisplayMode(settings.display_mode);
-    setBranchCountText(String(settings.branch_count));
-    setMaxTokensText(String(settings.max_tokens));
-    setTokensPerSuggestionText(String(settings.tokens_per_suggestion));
-    setBranchLimitHint(false);
-    setBranchCountError(null);
-  }
-
   function saveProjectSettings(patch: ProjectSettingsPatch) {
     if (!project) return;
     void updateProjectSettings(patch)
@@ -688,7 +636,8 @@ export default function App() {
           (node) => node.role === "system",
         )?.text ?? "",
       );
-      applyProjectSettings(settings);
+      setComposeDisplayMode(settings.display_mode);
+      hydrateBranchControls(settings);
       clearBranchPicker();
 
       // Pull the project's active preset (lives in its project_meta) and
@@ -705,7 +654,7 @@ export default function App() {
         setError(formatError(err));
       }
     },
-    [applyActivePreset, clearBranchPicker, refreshPresets],
+    [applyActivePreset, hydrateBranchControls, clearBranchPicker, refreshPresets],
   );
 
   useEffect(() => {
@@ -796,10 +745,8 @@ export default function App() {
       return;
     }
 
-    const tokensPerSuggestion = clampNumber(
-      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
-      1,
-      8,
+    const tokensPerSuggestion = resolveTokensPerSuggestion(
+      branchControls.tokensPerSuggestionText,
     );
     const { trimmedPrompt, partial } = trimAutocompletePromptSuffix(buffer);
     const samplerSnapshot = mergePreset(draftBody);
@@ -898,7 +845,7 @@ export default function App() {
     draftBody,
     saving,
     streaming,
-    tokensPerSuggestionText,
+    branchControls.tokensPerSuggestionText,
     workspaceMode,
   ]);
 
@@ -1024,21 +971,6 @@ export default function App() {
     setMapSelectedId(fallbackId);
     setMapSelectionIds([fallbackId]);
   }, [currentId, mapSelectedId, mapSelectionIds, tree]);
-
-  useEffect(() => {
-    if (branchCountText.trim() === "") return;
-    const parsed = parseBranchCountInput(branchCountText);
-    if (parsed === null) return;
-    const clamped = clampNumber(parsed, 1, maxBranches);
-    if (clamped !== parsed) {
-      setBranchCountText(String(clamped));
-      setBranchLimitHint(true);
-      setBranchCountError(null);
-    }
-    // Only normalize when the loaded model changes the allowed ceiling.
-    // Normalizing on every keystroke would reintroduce the leading-zero bug.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [maxBranches]);
 
   useEffect(() => {
     setVisibleCandidateIndex((current) =>
@@ -1374,57 +1306,6 @@ export default function App() {
     }
   }
 
-  function normalizeBranchCount(): number | null {
-    const parsed = parseBranchCountInput(branchCountText);
-    if (parsed === null) {
-      setBranchLimitHint(false);
-      setBranchCountError(`Enter 1-${maxBranches} branches.`);
-      return null;
-    }
-    const clamped = clampNumber(parsed, 1, maxBranches);
-    setBranchCountText(String(clamped));
-    setBranchLimitHint(parsed > maxBranches);
-    setBranchCountError(null);
-    saveProjectSettings({ branch_count: clamped });
-    return clamped;
-  }
-
-  function normalizeMaxTokens(): number {
-    const trimmed = maxTokensText.trim();
-    const parsed = /^\d+$/.test(trimmed) ? Number.parseInt(trimmed, 10) : NaN;
-    // The visual cap mirrors the loaded model's context length when known so
-    // a typo like 999999 doesn't ship a request the backend will silently
-    // truncate or reject. With no model loaded, fall back to a generous but
-    // sane upper bound rather than letting unbounded values through.
-    const ceiling = contextMax ?? 32768;
-    if (!Number.isFinite(parsed) || parsed < 1) {
-      // Empty/garbage: snap to default and flag, mirroring the Branches input
-      // pattern so the user sees what value will actually be sent.
-      setMaxTokensText(String(DEFAULT_MAX_TOKENS));
-      setMaxTokensError(`Enter 1-${ceiling.toLocaleString()} tokens.`);
-      setMaxTokensLimitHint(false);
-      saveProjectSettings({ max_tokens: DEFAULT_MAX_TOKENS });
-      return DEFAULT_MAX_TOKENS;
-    }
-    const clamped = Math.min(parsed, ceiling);
-    setMaxTokensText(String(clamped));
-    setMaxTokensLimitHint(parsed > ceiling);
-    setMaxTokensError(null);
-    saveProjectSettings({ max_tokens: clamped });
-    return clamped;
-  }
-
-  function normalizeTokensPerSuggestion(): number {
-    const normalized = clampNumber(
-      parsePositiveInt(tokensPerSuggestionText, DEFAULT_TOKENS_PER_SUGGESTION),
-      1,
-      8,
-    );
-    setTokensPerSuggestionText(String(normalized));
-    saveProjectSettings({ tokens_per_suggestion: normalized });
-    return normalized;
-  }
-
   async function onGenerate() {
     if (streaming || saving) return;
     if (!currentTabbyModel) {
@@ -1435,9 +1316,9 @@ export default function App() {
     const committed = await commitBuffer(buffer, "user_written");
     if (!committed) return;
 
-    const n = normalizeBranchCount();
+    const n = branchControls.normalizeBranchCount();
     if (n === null) return;
-    const resolvedMaxTokens = normalizeMaxTokens();
+    const resolvedMaxTokens = branchControls.normalizeMaxTokens();
     const promptSnapshot = committed.buffer;
     // Resolve the sampler snapshot *now* so a user tweaking the drawer
     // mid-stream doesn't retroactively change what a persisted node says
@@ -1932,9 +1813,9 @@ export default function App() {
       return;
     }
 
-    const n = normalizeBranchCount();
+    const n = branchControls.normalizeBranchCount();
     if (n === null) return;
-    const resolvedMaxTokens = normalizeMaxTokens();
+    const resolvedMaxTokens = branchControls.normalizeMaxTokens();
     const samplerSnapshot = mergePreset(draftBody);
     const promptSnapshot = concatPathText(basePath);
     const { messages, responsePrefix } = buildChatPayload(basePath);
@@ -4075,37 +3956,25 @@ export default function App() {
                       pattern="[0-9]*"
                       min={1}
                       max={maxBranches}
-                      value={branchCountText}
-                      onChange={(event) => {
-                        const next = event.target.value;
-                        setBranchCountText(next);
-                        setBranchLimitHint(false);
-                        // Real-time validation: a non-empty, non-digit value
-                        // (e.g. "abc") used to silently sit there until blur
-                        // or Generate. Surface it immediately so the user
-                        // doesn't think a bogus value was accepted. Empty
-                        // strings stay error-free as a transient mid-edit
-                        // state — the blur handler covers that case.
-                        if (next.trim() === "" || /^\d+$/.test(next.trim())) {
-                          setBranchCountError(null);
-                        } else {
-                          setBranchCountError(`Enter 1-${maxBranches} branches.`);
-                        }
-                      }}
+                      value={branchControls.branchCountText}
+                      onChange={(event) =>
+                        branchControls.onBranchCountChange(event.target.value)
+                      }
                       onBlur={() => {
-                        normalizeBranchCount();
+                        branchControls.normalizeBranchCount();
                       }}
-                      aria-invalid={branchCountError !== null}
+                      aria-invalid={branchControls.branchCountError !== null}
                       disabled={streaming || saving}
                       className="bw-input w-16"
                       title={branchLimitMessage}
                     />
-                    {(branchCountError || branchLimitHint) && (
+                    {(branchControls.branchCountError ||
+                      branchControls.branchLimitHint) && (
                       <span
                         className="bw-field-note"
-                        data-error={branchCountError !== null}
+                        data-error={branchControls.branchCountError !== null}
                       >
-                        {branchCountError ?? branchLimitMessage}
+                        {branchControls.branchCountError ?? branchLimitMessage}
                       </span>
                     )}
                   </label>
@@ -4117,16 +3986,14 @@ export default function App() {
                       pattern="[0-9]*"
                       min={1}
                       max={contextMax ?? undefined}
-                      value={maxTokensText}
-                      onChange={(event) => {
-                        setMaxTokensText(event.target.value);
-                        setMaxTokensError(null);
-                        setMaxTokensLimitHint(false);
-                      }}
+                      value={branchControls.maxTokensText}
+                      onChange={(event) =>
+                        branchControls.onMaxTokensChange(event.target.value)
+                      }
                       onBlur={() => {
-                        normalizeMaxTokens();
+                        branchControls.normalizeMaxTokens();
                       }}
-                      aria-invalid={maxTokensError !== null}
+                      aria-invalid={branchControls.maxTokensError !== null}
                       disabled={streaming || saving}
                       className="bw-input w-24"
                       title={
@@ -4135,12 +4002,13 @@ export default function App() {
                           : undefined
                       }
                     />
-                    {(maxTokensError || maxTokensLimitHint) && (
+                    {(branchControls.maxTokensError ||
+                      branchControls.maxTokensLimitHint) && (
                       <span
                         className="bw-field-note"
-                        data-error={maxTokensError !== null}
+                        data-error={branchControls.maxTokensError !== null}
                       >
-                        {maxTokensError ??
+                        {branchControls.maxTokensError ??
                           (contextMax
                             ? `capped at ${contextMax.toLocaleString()} (loaded context)`
                             : "capped at the loaded context length")}
@@ -4180,10 +4048,12 @@ export default function App() {
                     type="number"
                     min={1}
                     max={8}
-                    value={tokensPerSuggestionText}
-                    onChange={(event) => setTokensPerSuggestionText(event.target.value)}
+                    value={branchControls.tokensPerSuggestionText}
+                    onChange={(event) =>
+                      branchControls.onTokensPerSuggestionChange(event.target.value)
+                    }
                     onBlur={() => {
-                      normalizeTokensPerSuggestion();
+                      branchControls.normalizeTokensPerSuggestion();
                     }}
                     disabled={saving}
                     className="bw-input w-16"
