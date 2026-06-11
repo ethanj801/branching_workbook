@@ -102,11 +102,14 @@ export function foldChatTurns(nodes: readonly TreeNode[]): ChatTurn[] {
   return turns;
 }
 
+// Any user or assistant tail can generate. A finalized assistant tail
+// (endOfTurn=true) is included: Generate there means "continue this turn
+// after all" — the controller re-opens it (clears endOfTurn) before
+// streaming, so the continuation folds into the same turn instead of
+// starting a spurious second assistant message.
 export function canGenerateAssistantFromTail(tail: TreeNode | null): boolean {
   if (!tail) return false;
-  if (tail.role === "user") return true;
-  if (tail.role === "assistant" && !tail.endOfTurn) return true;
-  return false;
+  return tail.role === "user" || tail.role === "assistant";
 }
 
 // Stricter than canGenerateAssistantFromTail: only allow appending a
@@ -303,7 +306,11 @@ export function commitChatDrafts(
       name: null,
       source: turn.role === "assistant" ? "composed" : "user_written",
       role: turn.role,
-      endOfTurn: turn.role === "user",
+      // Editing preserves the turn's finality (in-place commits below keep
+      // the node's own flag; the fork keeps the folded turn's). Re-opening
+      // a finished assistant turn is Generate's job, not a side effect of
+      // rewording it.
+      endOfTurn: turn.role === "user" ? true : turn.endOfTurn,
       hidden: false,
       deleted: false,
       starred: false,

@@ -313,8 +313,8 @@ export default function ChatSurface({
                       {displayBranchText(turn.text)}
                     </div>
                   )}
-                  {isActiveAssistant && !branchPickerOpen && (
-                    <div className="bw-chat-turn-actions">
+                  <div className="bw-chat-turn-actions">
+                    {isActiveAssistant && !branchPickerOpen && (
                       <button
                         type="button"
                         className="bw-button"
@@ -323,21 +323,27 @@ export default function ChatSurface({
                       >
                         End turn
                       </button>
-                    </div>
-                  )}
-                  {!isActiveAssistant && (
-                    <div className="bw-chat-turn-actions">
-                      <button
-                        type="button"
-                        className="bw-button"
-                        onClick={() => void onDeleteChatTurn(turn)}
-                        disabled={saving || streaming}
-                        title="Hide this turn and any later turns on the active path"
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  )}
+                    )}
+                    {/* Every turn is deletable, including the in-progress
+                        assistant tail — that's often exactly the block the
+                        user wants gone (an abandoned generation or an empty
+                        "Add assistant" chunk). */}
+                    <button
+                      type="button"
+                      className="bw-button"
+                      onClick={() => {
+                        // Deleting under an open picker closes it (the
+                        // candidates are stale); pin the scroll like the
+                        // pane's own Use/Clear so the view doesn't jump.
+                        if (chatPickerOpen) armScrollPin();
+                        void onDeleteChatTurn(turn);
+                      }}
+                      disabled={saving || streaming}
+                      title="Hide this turn and any later turns on the active path"
+                    >
+                      Delete
+                    </button>
+                  </div>
                 </section>
               );
             })}

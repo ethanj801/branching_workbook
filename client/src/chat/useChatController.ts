@@ -318,14 +318,31 @@ export function useChatController(deps: ChatControllerDeps) {
       return;
     }
 
-    const basePath = pathFromRoot(baseTree, baseId);
+    let workingTree = baseTree;
+    let basePath = pathFromRoot(workingTree, baseId);
     const tail = basePath[basePath.length - 1] ?? null;
-    if (
-      !tail ||
-      (tail.role !== "user" && !(tail.role === "assistant" && !tail.endOfTurn))
-    ) {
+    if (!tail || (tail.role !== "user" && tail.role !== "assistant")) {
       setError("Submit a user turn before generating an assistant response.");
       return;
+    }
+
+    // Generating from a finalized assistant tail means "continue this turn
+    // after all": re-open it (persist endOfTurn=false) before building the
+    // payload, so the prompt treats the turn text as a response prefix and
+    // the accepted chunk folds into the same turn rather than starting a
+    // second assistant message.
+    if (tail.role === "assistant" && tail.endOfTurn) {
+      const reopenedTree: Tree = {
+        rootId: workingTree.rootId,
+        nodes: {
+          ...workingTree.nodes,
+          [tail.id]: { ...tail, endOfTurn: false },
+        },
+      };
+      const saved = await persistChatTree(workingTree, reopenedTree, baseId);
+      if (!saved) return;
+      workingTree = reopenedTree;
+      basePath = pathFromRoot(workingTree, baseId);
     }
 
     const n = branchControls.normalizeBranchCount();
@@ -465,7 +482,11 @@ export function useChatController(deps: ChatControllerDeps) {
       for (const node of toHide) delete next[node.id];
       return next;
     });
-    await persistChatTree(tree, nextTree, firstNode.parentId);
+    const saved = await persistChatTree(tree, nextTree, firstNode.parentId);
+    // Any open candidates were generated against a path that just lost a
+    // turn — stale either way, so close the picker rather than letting a
+    // later Use attach to a hidden node and bail with a confusing error.
+    if (saved) clearBranchPicker();
   }
 
   async function onUseChatCandidate(index: number) {
