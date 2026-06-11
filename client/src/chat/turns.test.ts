@@ -45,8 +45,8 @@ describe("foldChatTurns", () => {
       makeNode("a2", "a1", "assistant", "world."),
     ]);
     expect(turns).toHaveLength(1);
-    expect(turns[0].text).toBe("Hello world.");
-    expect(turns[0].nodes.map((n) => n.id)).toEqual(["a1", "a2"]);
+    expect(turns[0]!.text).toBe("Hello world.");
+    expect(turns[0]!.nodes.map((n) => n.id)).toEqual(["a1", "a2"]);
   });
 
   it("starts a new turn when endOfTurn is set on the prior chunk", () => {
@@ -55,8 +55,8 @@ describe("foldChatTurns", () => {
       makeNode("u2", "u1", "user", "Are you there?", true),
     ]);
     expect(turns).toHaveLength(2);
-    expect(turns[0].text).toBe("Hi");
-    expect(turns[1].text).toBe("Are you there?");
+    expect(turns[0]!.text).toBe("Hi");
+    expect(turns[1]!.text).toBe("Are you there?");
   });
 
   it("starts a new turn when role changes", () => {
@@ -65,8 +65,8 @@ describe("foldChatTurns", () => {
       makeNode("a1", "u1", "assistant", "Hello"),
     ]);
     expect(turns).toHaveLength(2);
-    expect(turns[0].role).toBe("user");
-    expect(turns[1].role).toBe("assistant");
+    expect(turns[0]!.role).toBe("user");
+    expect(turns[1]!.role).toBe("assistant");
   });
 
   it("preserves an empty hand-added assistant chunk as its own turn", () => {
@@ -78,9 +78,9 @@ describe("foldChatTurns", () => {
       makeNode("a-new", "u1", "assistant", ""),
     ]);
     expect(turns).toHaveLength(2);
-    expect(turns[1].role).toBe("assistant");
-    expect(turns[1].text).toBe("");
-    expect(turns[1].endOfTurn).toBe(false);
+    expect(turns[1]!.role).toBe("assistant");
+    expect(turns[1]!.text).toBe("");
+    expect(turns[1]!.endOfTurn).toBe(false);
   });
 
   it("inherits endOfTurn from the last chunk of a merged turn", () => {
@@ -89,7 +89,7 @@ describe("foldChatTurns", () => {
       makeNode("a2", "a1", "assistant", "part two", true),
     ]);
     expect(turns).toHaveLength(1);
-    expect(turns[0].endOfTurn).toBe(true);
+    expect(turns[0]!.endOfTurn).toBe(true);
   });
 });
 
@@ -310,7 +310,7 @@ describe("canAddAssistantChunkFromTail", () => {
 
 function makeTree(...nodes: ReturnType<typeof makeNode>[]): Tree {
   return {
-    rootId: nodes[0].id,
+    rootId: nodes[0]!.id,
     nodes: Object.fromEntries(nodes.map((n) => [n.id, n])),
   };
 }
@@ -327,12 +327,12 @@ describe("applyChatTurnEditFork", () => {
     const turn = foldChatTurns([user])[0];
     const fork = makeNode("u-fork", "root", "user", "hi (edited)", true);
 
-    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn!, fork);
     expect(movedChildIds).toEqual(["a1"]);
-    expect(next.nodes["a1"].parentId).toBe("u-fork");
+    expect(next.nodes["a1"]!.parentId).toBe("u-fork");
     // Original user node is preserved as a now-childless sibling.
-    expect(next.nodes["u1"].text).toBe("hi");
-    expect(next.nodes["u1"].parentId).toBe("root");
+    expect(next.nodes["u1"]!.text).toBe("hi");
+    expect(next.nodes["u1"]!.parentId).toBe("root");
     expect(Object.values(next.nodes).filter((n) => n.parentId === "u1")).toHaveLength(
       0,
     );
@@ -352,12 +352,12 @@ describe("applyChatTurnEditFork", () => {
     const turn = foldChatTurns([a1, a2, a3])[0];
     const fork = makeNode("a-fork", "root", "assistant", "rewritten", false);
 
-    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn!, fork);
     expect(movedChildIds).toEqual(["u1"]);
-    expect(next.nodes["u1"].parentId).toBe("a-fork");
-    expect(next.nodes["a1"].parentId).toBe("root");
-    expect(next.nodes["a2"].parentId).toBe("a1");
-    expect(next.nodes["a3"].parentId).toBe("a2");
+    expect(next.nodes["u1"]!.parentId).toBe("a-fork");
+    expect(next.nodes["a1"]!.parentId).toBe("root");
+    expect(next.nodes["a2"]!.parentId).toBe("a1");
+    expect(next.nodes["a3"]!.parentId).toBe("a2");
   });
 
   it("moves every immediate child when the edited turn has alternative branches", () => {
@@ -372,10 +372,10 @@ describe("applyChatTurnEditFork", () => {
     const turn = foldChatTurns([u1])[0];
     const fork = makeNode("u-fork", "root", "user", "howdy", true);
 
-    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn!, fork);
     expect(movedChildIds.sort()).toEqual(["a", "a-alt"]);
-    expect(next.nodes["a"].parentId).toBe("u-fork");
-    expect(next.nodes["a-alt"].parentId).toBe("u-fork");
+    expect(next.nodes["a"]!.parentId).toBe("u-fork");
+    expect(next.nodes["a-alt"]!.parentId).toBe("u-fork");
     expect(Object.values(next.nodes).filter((n) => n.parentId === "u1")).toHaveLength(
       0,
     );
@@ -390,12 +390,12 @@ describe("applyChatTurnEditFork", () => {
     const turn = foldChatTurns([a1, a2])[0];
     const fork = makeNode("a-fork", "root", "assistant", "rewritten", false);
 
-    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn, fork);
+    const { tree: next, movedChildIds } = applyChatTurnEditFork(tree, turn!, fork);
     expect(movedChildIds).toEqual([]);
     expect(next.nodes["a-fork"]).toBe(fork);
     // Original chain still intact.
-    expect(next.nodes["a1"].parentId).toBe("root");
-    expect(next.nodes["a2"].parentId).toBe("a1");
+    expect(next.nodes["a1"]!.parentId).toBe("root");
+    expect(next.nodes["a2"]!.parentId).toBe("a1");
   });
 });
 
@@ -448,7 +448,7 @@ describe("commitChatDrafts", () => {
     expect(result.consumedTurnDraftIds).toEqual(["a1"]);
     // No fork created — a1 is single-node leaf.
     expect(Object.keys(result.tree.nodes).sort()).toEqual(["a1", "root", "u1"]);
-    expect(result.tree.nodes["a1"].text).toBe("hello there");
+    expect(result.tree.nodes["a1"]!.text).toBe("hello there");
     expect(result.currentId).toBe("a1");
   });
 
@@ -469,10 +469,10 @@ describe("commitChatDrafts", () => {
     );
     expect(result.consumedTurnDraftIds).toEqual(["u1"]);
     expect(result.currentId).toBe("a1"); // still the leaf, reparented under fork
-    expect(result.tree.nodes["fork-1"].text).toBe("hi (edited)");
-    expect(result.tree.nodes["a1"].parentId).toBe("fork-1");
+    expect(result.tree.nodes["fork-1"]!.text).toBe("hi (edited)");
+    expect(result.tree.nodes["a1"]!.parentId).toBe("fork-1");
     // Original u1 preserved as a childless sibling.
-    expect(result.tree.nodes["u1"].text).toBe("hi");
+    expect(result.tree.nodes["u1"]!.text).toBe("hi");
     expect(
       Object.values(result.tree.nodes).filter((n) => n.parentId === "u1"),
     ).toHaveLength(0);
@@ -550,7 +550,7 @@ describe("commitChatDrafts", () => {
       makeStubDeps(),
     );
     expect(result.systemDraftCommitted).toBe(true);
-    expect(result.tree.nodes["sys"].text).toBe("be helpful");
+    expect(result.tree.nodes["sys"]!.text).toBe("be helpful");
     expect(result.consumedTurnDraftIds).toEqual([]);
   });
 
@@ -569,7 +569,7 @@ describe("commitChatDrafts", () => {
       makeStubDeps(),
     );
     expect(result.consumedTurnDraftIds).toEqual([]);
-    expect(result.tree.nodes["u1"].text).toBe("hi");
+    expect(result.tree.nodes["u1"]!.text).toBe("hi");
   });
 
   it("commits an empty save on a turn that was already empty (newly added chunk)", () => {
@@ -618,7 +618,7 @@ describe("commitChatDrafts", () => {
     );
     expect(result.consumedTurnDraftIds).toEqual(["u_a"]);
     // u_a is a single-node leaf — in-place update, no fork.
-    expect(result.tree.nodes["u_a"].text).toBe("branch A question (edited)");
+    expect(result.tree.nodes["u_a"]!.text).toBe("branch A question (edited)");
     // Active path tail unchanged.
     expect(result.currentId).toBe("u_b");
   });
@@ -653,16 +653,16 @@ describe("commitChatDrafts", () => {
     );
     expect(result.consumedTurnDraftIds).toEqual(["a1"]);
     // Fork carries the edit and took over a2's downstream (u2).
-    const fork = result.tree.nodes["fork-1"];
+    const fork = result.tree.nodes["fork-1"]!;
     expect(fork.text).toBe("Hello world. (revised)");
-    expect(result.tree.nodes["u2"].parentId).toBe("fork-1");
+    expect(result.tree.nodes["u2"]!.parentId).toBe("fork-1");
     // a2 is preserved as a now-childless sibling under a1.
-    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    expect(result.tree.nodes["a2"]!.parentId).toBe("a1");
     expect(
       Object.values(result.tree.nodes).filter((n) => n.parentId === "a2"),
     ).toHaveLength(0);
     // a2_alt is untouched (still a sibling of a2 under a1).
-    expect(result.tree.nodes["a2_alt"].parentId).toBe("a1");
+    expect(result.tree.nodes["a2_alt"]!.parentId).toBe("a1");
   });
 
   it("bails on an ambiguous off-path multi-chunk draft instead of guessing", () => {
@@ -724,15 +724,15 @@ describe("commitChatDrafts", () => {
     expect(result.consumedTurnDraftIds).toEqual(["a1"]);
     // The fork's only persisted text is the user's draft — no
     // "world." dangling underneath.
-    const fork = result.tree.nodes["fork-1"];
+    const fork = result.tree.nodes["fork-1"]!;
     expect(fork.text).toBe("Goodbye.");
     const forkChildren = Object.values(result.tree.nodes).filter(
       (n) => n.parentId === "fork-1",
     );
     expect(forkChildren).toEqual([]);
     // Original chain intact as a sibling history branch.
-    expect(result.tree.nodes["a1"].parentId).toBe("u_a");
-    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    expect(result.tree.nodes["a1"]!.parentId).toBe("u_a");
+    expect(result.tree.nodes["a2"]!.parentId).toBe("a1");
     // Active path tail unchanged.
     expect(result.currentId).toBe("u_b");
   });
@@ -825,9 +825,9 @@ describe("commitChatDrafts", () => {
     expect(result.consumedTurnDraftIds).toEqual(["a1"]);
     // Multi-chunk turn forks; original a1→a2 chain preserved as a
     // childless-sibling branch and the fork takes over the main path.
-    expect(result.tree.nodes["fork-1"].text).toBe("Hello ");
-    expect(result.tree.nodes["a1"].parentId).toBe("root");
-    expect(result.tree.nodes["a2"].parentId).toBe("a1");
+    expect(result.tree.nodes["fork-1"]!.text).toBe("Hello ");
+    expect(result.tree.nodes["a1"]!.parentId).toBe("root");
+    expect(result.tree.nodes["a2"]!.parentId).toBe("a1");
     expect(result.currentId).toBe("fork-1");
   });
 });

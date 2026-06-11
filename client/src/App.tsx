@@ -2,9 +2,12 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useReducer,
   useRef,
   useState,
+  type Dispatch,
   type MouseEvent as ReactMouseEvent,
+  type SetStateAction,
 } from "react";
 import {
   closeProject as closeProjectApi,
@@ -25,7 +28,6 @@ import {
   streamCompletion,
   updateProjectSettings,
   updatePreset,
-  type ChatRole,
   type ComposeDisplayMode,
   type DialogResult,
   type ProjectInfo,
@@ -56,10 +58,12 @@ import { useCandidates } from "./generation/useCandidates";
 import BranchPicker from "./generation/BranchPicker";
 import InlineCandidateControls from "./generation/InlineCandidateControls";
 import { useLatestRef } from "./useLatestRef";
+import { formatError } from "./errors";
+import { initialWorkspaceState, workspaceReducer } from "./workspace/workspaceReducer";
 import ChatSurface from "./chat/ChatSurface";
 import { useChatController } from "./chat/useChatController";
 import TreeSidebar from "./sidebar/TreeSidebar";
-import { contextHash } from "./tree/hash";
+import { branchNode, nodeId, nowEpoch } from "./tree/nodeFactory";
 import { loadedTreeFromModels, mutationBatchFromTrees } from "./tree/persistence";
 import { reshape } from "./tree/reshape";
 import {
@@ -69,7 +73,6 @@ import {
   collectLinearChainDownward,
   collectSubtreeNodeIds,
 } from "./tree/merge";
-import { type ChatTurnDraft } from "./chat/turns";
 import {
   childrenOf,
   concatPathText,
@@ -102,47 +105,10 @@ type AutocompleteState =
 // (off-macOS); the user types a project path into a fallback modal.
 type ManualPathRequest = { mode: "open" } | { mode: "create"; kind: "prose" | "chat" };
 
-function formatError(err: unknown): string {
-  return err instanceof Error ? err.message : "Unexpected error";
-}
-
-function nodeId(): string {
-  return crypto.randomUUID();
-}
-
-function nowEpoch(): number {
-  return Math.floor(Date.now() / 1000);
-}
-
-function branchNode(
-  parentId: string,
-  text: string,
-  source: NodeSource,
-  hidden: boolean,
-  priorText: string,
-  modelId?: string,
-  samplerSnapshot?: SamplerBody,
-  role: ChatRole = "user",
-  endOfTurn = false,
-): TreeNode {
-  return {
-    id: nodeId(),
-    parentId,
-    text,
-    name: null,
-    source,
-    role,
-    endOfTurn,
-    hidden,
-    deleted: false,
-    starred: false,
-    createdAt: nowEpoch(),
-    priorContextHash: contextHash(priorText),
-    modelId,
-    samplerSnapshot,
-  };
-}
-
+// Shallow structural equality for two sampler bodies: same key set, each value
+// JSON-equal. JSON.stringify is key-order-sensitive for nested objects, so this
+// assumes flat bodies (sampler params are scalars) — true today. Recomputed on
+// every draftDirty check (per keystroke), which is fine at this size.
 function bodiesEqual(a: SamplerBody, b: SamplerBody): boolean {
   const keysA = Object.keys(a) as (keyof SamplerBody)[];
   const keysB = Object.keys(b) as (keyof SamplerBody)[];
@@ -255,12 +221,12 @@ function trimAutocompletePromptSuffix(prompt: string): {
   partial: string;
 } {
   if (prompt.length === 0) return { trimmedPrompt: prompt, partial: "" };
-  const lastChar = prompt[prompt.length - 1];
+  const lastChar = prompt[prompt.length - 1]!;
   if (/\s/.test(lastChar)) return { trimmedPrompt: prompt, partial: "" };
   const start = Math.max(0, prompt.length - AUTOCOMPLETE_TRIM_WINDOW);
   let lastWsIdx = -1;
   for (let i = prompt.length - 1; i >= start; i--) {
-    if (/\s/.test(prompt[i])) {
+    if (/\s/.test(prompt[i]!)) {
       lastWsIdx = i;
       break;
     }
@@ -282,19 +248,64 @@ function branchPaneRatioForCount(count: number): number {
 }
 
 export default function App() {
-  const [project, setProject] = useState<ProjectInfo | null>(null);
-  const [tree, setTree] = useState<Tree | null>(null);
-  const [currentId, setCurrentId] = useState<string | null>(null);
-  const [buffer, setBuffer] = useState("");
-  const [streaming, setStreaming] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [workspace, dispatchWorkspace] = useReducer(
+    workspaceReducer,
+    initialWorkspaceState,
+  );
+  const {
+    project,
+    tree,
+    currentId,
+    buffer,
+    mapSelectedId,
+    mapSelectionIds,
+    mapLocateRequest,
+    streaming,
+    saving,
+    error,
+  } = workspace;
+  // Thin wrapper setters keep every existing call site unchanged while the
+  // state lives in one reducer. `dispatchWorkspace` is stable, so wrapping each
+  // in useCallback reproduces the stable identity useState setters had (some
+  // are listed in effect/callback dependency arrays). Stage B replaces the
+  // coupled multi-setter handlers with single semantic dispatches; these
+  // wrappers stay for the standalone / high-frequency / externally-handed-out
+  // updates (editor typing, the async flags, the many error sites, and
+  // NodeMapView's own selection setters).
+  const setBuffer = useCallback<Dispatch<SetStateAction<string>>>(
+    (value) => dispatchWorkspace({ type: "setBuffer", value }),
+    [],
+  );
+  const setMapSelectedId = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => dispatchWorkspace({ type: "setMapSelectedId", value }),
+    [],
+  );
+  const setMapSelectionIds = useCallback<Dispatch<SetStateAction<string[]>>>(
+    (value) => dispatchWorkspace({ type: "setMapSelectionIds", value }),
+    [],
+  );
+  const setMapLocateRequest = useCallback<Dispatch<SetStateAction<number>>>(
+    (value) => dispatchWorkspace({ type: "setMapLocateRequest", value }),
+    [],
+  );
+  const setStreaming = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (value) => dispatchWorkspace({ type: "setStreaming", value }),
+    [],
+  );
+  const setSaving = useCallback<Dispatch<SetStateAction<boolean>>>(
+    (value) => dispatchWorkspace({ type: "setSaving", value }),
+    [],
+  );
+  const setError = useCallback<Dispatch<SetStateAction<string | null>>>(
+    (value) => dispatchWorkspace({ type: "setError", value }),
+    [],
+  );
   const [loadingProject, setLoadingProject] = useState(true);
   const [modelPanelOpen, setModelPanelOpen] = useState(false);
   const [tokenCount, setTokenCount] = useState<number | null>(null);
   const [showHidden, setShowHidden] = useState(false);
   const [starredOnly, setStarredOnly] = useState(false);
   const [treeSearch, setTreeSearch] = useState("");
-  const [error, setError] = useState<string | null>(null);
 
   const candidatesApi = useCandidates({ streaming, saving });
   const {
@@ -352,20 +363,12 @@ export default function App() {
   );
   const [manualPathInput, setManualPathInput] = useState("");
   const [treeVisible, setTreeVisible] = useState(true);
-  const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
-  const [chatSystemDraft, setChatSystemDraft] = useState("");
-  const [chatUserDraft, setChatUserDraft] = useState("");
-  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, ChatTurnDraft>>(
-    {},
-  );
   const [treeWidth, setTreeWidth] = useState(288);
-  const [mapLocateRequest, setMapLocateRequest] = useState(0);
   const [mapFitRequest, setMapFitRequest] = useState(0);
-  const [mapSelectedId, setMapSelectedId] = useState<string | null>(null);
-  const [mapSelectionIds, setMapSelectionIds] = useState<string[]>([]);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
+  const manuscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
@@ -441,9 +444,7 @@ export default function App() {
   // caret-into-view can yank the scroll container to the top. Snapshot before
   // the state mutation, restore across two animation frames.
   function pinManuscriptScroll(): () => void {
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     if (!scrollContainer) return () => {};
     const distanceFromBottom =
       scrollContainer.scrollHeight -
@@ -481,9 +482,7 @@ export default function App() {
   // Two RAFs to outlast the candidate-pane resize and any contenteditable
   // caret-into-view that fires when state updates settle.
   function scrollManuscriptToEnd(): void {
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     if (!scrollContainer) return;
     const apply = () => {
       const lines = scrollContainer.querySelectorAll(".cm-line");
@@ -513,7 +512,7 @@ export default function App() {
       setError(formatError(err));
       return [];
     }
-  }, []);
+  }, [setError]);
 
   const applyActivePreset = useCallback(
     (presetsList: SamplerPreset[], nextActiveId: string | null) => {
@@ -561,6 +560,15 @@ export default function App() {
     chatCanSubmitOrGenerate,
     chatHasPendingUserDraft,
     chatHasUnsavedDrafts,
+    chatSystemDraft,
+    setChatSystemDraft,
+    chatUserDraft,
+    setChatUserDraft,
+    chatTurnDrafts,
+    setChatTurnDrafts,
+    chatSystemExpanded,
+    setChatSystemExpanded,
+    resetChatDrafts,
     onSaveChatSystem,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,
@@ -579,26 +587,11 @@ export default function App() {
     streaming,
     currentTabbyModel,
     draftBody,
-    chatSystemDraft,
-    chatUserDraft,
-    chatTurnDrafts,
-    setTree,
-    setCurrentId,
-    setBuffer,
-    setSaving,
-    setError,
-    setStreaming,
-    setChatSystemDraft,
-    setChatUserDraft,
-    setChatTurnDrafts,
+    dispatch: dispatchWorkspace,
     candidates: candidatesApi,
     branchControls,
     abortRef,
     clearDeleteUndo,
-    branchNode,
-    formatError,
-    nowEpoch,
-    nodeId,
     resetRecordedSelectionToEnd,
   });
   useEffect(() => {
@@ -618,21 +611,19 @@ export default function App() {
       const [nodes, settings] = await Promise.all([listNodes(), getProjectSettings()]);
       const loaded = loadedTreeFromModels(nodes);
       const loadedBuffer = concatPathText(pathFromRoot(loaded.tree, loaded.currentId));
-      setProject(info);
-      setTree(loaded.tree);
-      setCurrentId(loaded.currentId);
-      setBuffer(loadedBuffer);
+      dispatchWorkspace({
+        type: "projectLoaded",
+        project: info,
+        tree: loaded.tree,
+        currentId: loaded.currentId,
+        buffer: loadedBuffer,
+      });
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
-      setWorkspaceMode(info.kind === "chat" ? "compose" : "compose");
-      setChatUserDraft("");
-      setChatTurnDrafts({});
-      setChatSystemExpanded(false);
-      setChatSystemDraft(
-        pathFromRoot(loaded.tree, loaded.currentId).find(
-          (node) => node.role === "system",
-        )?.text ?? "",
-      );
+      // Chat projects render their surface inside compose mode — there's no
+      // separate chat workspace mode — so every project opens in "compose".
+      setWorkspaceMode("compose");
+      resetChatDrafts();
       setComposeDisplayMode(settings.display_mode);
       hydrateBranchControls(settings);
       clearBranchPicker();
@@ -651,7 +642,14 @@ export default function App() {
         setError(formatError(err));
       }
     },
-    [applyActivePreset, hydrateBranchControls, clearBranchPicker, refreshPresets],
+    [
+      applyActivePreset,
+      hydrateBranchControls,
+      clearBranchPicker,
+      refreshPresets,
+      resetChatDrafts,
+      setError,
+    ],
   );
 
   useEffect(() => {
@@ -676,7 +674,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [loadProject]);
+  }, [loadProject, setError]);
 
   useEffect(() => {
     void refreshModels();
@@ -777,7 +775,7 @@ export default function App() {
             }
             partials[choice.index] += choice.text;
             const suggestion = normalizeAutocompleteSuggestion(
-              partials[choice.index],
+              partials[choice.index]!,
               partial,
             );
             if (!suggestion) continue;
@@ -786,7 +784,7 @@ export default function App() {
               if (current.phase === "idle") return current;
               const suggestions =
                 current.phase === "showing" ? [...current.suggestions] : [];
-              let slot = slotsByIndex[choice.index];
+              let slot = slotsByIndex[choice.index]!;
               if (slot < 0) {
                 const key = suggestion.trim().toLowerCase();
                 const exists = suggestions.some(
@@ -871,9 +869,12 @@ export default function App() {
         const batch = mutationBatchFromTrees(tree, reshaped.tree, reshaped.currentId);
 
         await mutateNodes(batch);
-        setTree(reshaped.tree);
-        setCurrentId(reshaped.currentId);
-        setBuffer(nextBuffer);
+        dispatchWorkspace({
+          type: "bufferReshaped",
+          tree: reshaped.tree,
+          currentId: reshaped.currentId,
+          buffer: nextBuffer,
+        });
         // commitBuffer fires on any non-trivial buffer reshape; if there
         // were edits to flush, the previous delete-undo is no longer the
         // last thing the user did.
@@ -891,7 +892,7 @@ export default function App() {
         setSaving(false);
       }
     },
-    [buffer, currentId, project, saving, streaming, tree],
+    [buffer, currentId, project, saving, setError, setSaving, streaming, tree],
   );
 
   const onGenerateRef = useLatestRef(onGenerate);
@@ -968,7 +969,14 @@ export default function App() {
     const fallbackId = validSelectedId ?? currentId;
     setMapSelectedId(fallbackId);
     setMapSelectionIds([fallbackId]);
-  }, [currentId, mapSelectedId, mapSelectionIds, tree]);
+  }, [
+    currentId,
+    mapSelectedId,
+    mapSelectionIds,
+    setMapSelectedId,
+    setMapSelectionIds,
+    tree,
+  ]);
 
   useEffect(() => {
     setVisibleCandidateIndex((current) =>
@@ -1138,16 +1146,10 @@ export default function App() {
     setCloseConfirmOpen(false);
     try {
       await closeProjectApi();
-      setProject(null);
-      setTree(null);
-      setCurrentId(null);
-      setBuffer("");
+      dispatchWorkspace({ type: "projectClosed" });
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
-      setChatUserDraft("");
-      setChatTurnDrafts({});
-      setChatSystemDraft("");
-      setChatSystemExpanded(false);
+      resetChatDrafts();
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
       // subsequent project open doesn't briefly show the wrong "active" name.
@@ -1293,9 +1295,12 @@ export default function App() {
     setError(null);
     try {
       await mutateNodes({ main_path: path.map((node) => node.id) });
-      setTree(committed.tree);
-      setCurrentId(targetId);
-      setBuffer(nextBuffer);
+      dispatchWorkspace({
+        type: "nodeSelected",
+        tree: committed.tree,
+        currentId: targetId,
+        buffer: nextBuffer,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
     } catch (err) {
       setError(formatError(err));
@@ -1414,11 +1419,10 @@ export default function App() {
     // with the user's typed prefix, only surface completions whose first
     // line picks up where the user is mid-word; show them only the part
     // *after* the partial, since the prefix is already in the buffer.
-    if (singleLine.length < partial.length) {
-      return singleLine.length === 0 || partial.startsWith(singleLine)
-        ? null // still streaming; not enough chars to judge
-        : null; // diverged from the user's prefix
-    }
+    // The candidate's first line is shorter than the prefix we already trimmed
+    // off the prompt — it's either still streaming (too few chars to judge yet)
+    // or it has diverged from the user's prefix. Neither is showable.
+    if (singleLine.length < partial.length) return null;
     if (!singleLine.startsWith(partial)) return null;
     const after = singleLine.slice(partial.length);
     if (!after) return null;
@@ -1493,9 +1497,7 @@ export default function App() {
     // and the contenteditable's caret-into-view behavior yanks the scroll
     // container to the top. Snapshot scrollTop here and restore it after the
     // dispatch settles.
-    const scrollContainer = document.querySelector(
-      ".bw-manuscript-scroll",
-    ) as HTMLElement | null;
+    const scrollContainer = manuscriptScrollRef.current;
     const scrollTopBefore = scrollContainer?.scrollTop ?? null;
 
     preserveUsedRangeForBufferRef.current = nextBuffer;
@@ -1567,20 +1569,12 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-      markKept(index, node.id);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => markKept(index, node.id),
+    });
   }
 
-  const currentNode = tree && currentId ? tree.nodes[currentId] : null;
+  const currentNode = tree && currentId ? (tree.nodes[currentId] ?? null) : null;
   const dirtyBuffer =
     project !== null &&
     tree !== null &&
@@ -1711,16 +1705,7 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree);
   }
 
   async function onSetNodeHidden(nodeIdToUpdate: string, hidden: boolean) {
@@ -1740,21 +1725,12 @@ export default function App() {
       },
     };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-      pendingDeleteUndoRef.current = null;
-      if (hidden && nodeIdToUpdate === currentId) {
-        setShowHidden(true);
-      }
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-      setTreeMenu(null);
-    }
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        pendingDeleteUndoRef.current = null;
+      },
+      onSettled: () => setTreeMenu(null),
+    });
   }
 
   async function onSetNodeStarred(nodeIdToUpdate: string, starred: boolean) {
@@ -1770,20 +1746,45 @@ export default function App() {
       },
     };
 
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        pendingDeleteUndoRef.current = null;
+      },
+      onSettled: () => setTreeMenu(null),
+    });
+  }
+
+  // Persist a single-node metadata edit — rename, star, hide, keep-a-branch —
+  // that changes a field on some node but deliberately leaves the active
+  // selection untouched: currentId, the buffer, and the map selection all stay
+  // put, so the edit doesn't yank the user elsewhere. That's the deliberate
+  // contrast with persistTreeEdit below, which relocates the active node.
+  // `onSuccess` runs once the tree is committed; `onSettled` runs in `finally`
+  // (e.g. closing the tree context menu regardless of outcome).
+  async function persistTreeMutation(
+    beforeTree: Tree,
+    currentNodeId: string,
+    nextTree: Tree,
+    options: { onSuccess?: () => void; onSettled?: () => void } = {},
+  ) {
     setSaving(true);
     setError(null);
     try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-      pendingDeleteUndoRef.current = null;
+      await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, currentNodeId));
+      dispatchWorkspace({ type: "treeMutated", tree: nextTree });
+      options.onSuccess?.();
     } catch (err) {
       setError(formatError(err));
     } finally {
       setSaving(false);
-      setTreeMenu(null);
+      options.onSettled?.();
     }
   }
 
+  // Persist a structural edit that RELOCATES the active node — delete, merge,
+  // undo. Moves currentId/buffer/map-selection to nextCurrentId/nextSelectedId
+  // and re-runs the map locate, where persistTreeMutation above leaves all of
+  // that untouched.
   async function persistTreeEdit(
     beforeTree: Tree,
     nextTree: Tree,
@@ -1798,13 +1799,14 @@ export default function App() {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
-      setTree(nextTree);
-      setCurrentId(nextCurrentId);
-      setMapSelectedId(nextSelectedId);
-      setMapSelectionIds([nextSelectedId]);
-      setBuffer(nextBuffer);
+      dispatchWorkspace({
+        type: "editPersisted",
+        tree: nextTree,
+        currentId: nextCurrentId,
+        buffer: nextBuffer,
+        selectedId: nextSelectedId,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
-      setMapLocateRequest((value) => value + 1);
       if (!options.keepDeleteUndo) pendingDeleteUndoRef.current = null;
     } catch (err) {
       setError(formatError(err));
@@ -1940,7 +1942,7 @@ export default function App() {
       return;
     }
 
-    const upstreamId = analysis.orderedIds[0];
+    const upstreamId = analysis.orderedIds[0]!;
     const deletedIds = new Set(analysis.orderedIds.slice(1));
     const nextCurrentId = deletedIds.has(committed.currentId)
       ? upstreamId
@@ -1978,7 +1980,7 @@ export default function App() {
     }
 
     let fallbackId = committed.tree.rootId;
-    const firstEligibleParent = committed.tree.nodes[eligible[0]]?.parentId;
+    const firstEligibleParent = committed.tree.nodes[eligible[0]!]?.parentId;
     if (firstEligibleParent && !subtreeSet.has(firstEligibleParent)) {
       fallbackId = firstEligibleParent;
     }
@@ -1990,7 +1992,7 @@ export default function App() {
     pendingDeleteUndoRef.current = {
       deletedIds: newlyDeletedIds,
       prevCurrentId: committed.currentId,
-      prevSelectedId: eligible[0],
+      prevSelectedId: eligible[0]!,
     };
     await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
       keepDeleteUndo: true,
@@ -2038,16 +2040,7 @@ export default function App() {
     }
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
-    setSaving(true);
-    setError(null);
-    try {
-      await mutateNodes(mutationBatchFromTrees(tree, nextTree, currentId));
-      setTree(nextTree);
-    } catch (err) {
-      setError(formatError(err));
-    } finally {
-      setSaving(false);
-    }
+    await persistTreeMutation(tree, currentId, nextTree);
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2546,7 +2539,7 @@ export default function App() {
                 />
               ) : (
                 <>
-                  <div className="bw-manuscript-scroll">
+                  <div className="bw-manuscript-scroll" ref={manuscriptScrollRef}>
                     <section className="bw-manuscript">
                       {currentNode && (
                         <div className="bw-manuscript-head mb-4">

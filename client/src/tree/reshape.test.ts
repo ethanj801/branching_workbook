@@ -41,7 +41,7 @@ function makeNode(
 function makeTree(nodes: TreeNode[]): Tree {
   const rec: Record<string, TreeNode> = {};
   for (const n of nodes) rec[n.id] = n;
-  return { nodes: rec, rootId: nodes[0].id };
+  return { nodes: rec, rootId: nodes[0]!.id };
 }
 
 describe("reshape — §3.1 buffer-authoritative tree split", () => {
@@ -57,7 +57,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const path = pathFromRoot(out.tree, out.currentId);
     expect(concatPathText(path)).toBe(buffer);
 
-    const current = out.tree.nodes[out.currentId];
+    const current = out.tree.nodes[out.currentId]!;
     expect(current.parentId).toBe("B");
     expect(current.text).toBe(" Goodbye.");
     expect(current.source).toBe("user_written");
@@ -77,11 +77,11 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const path = pathFromRoot(out.tree, out.currentId);
     expect(concatPathText(path)).toBe(buffer);
 
-    const current = out.tree.nodes[out.currentId];
+    const current = out.tree.nodes[out.currentId]!;
     expect(current.text).toBe("chair, then yawned.");
     expect(current.source).toBe("user_written");
 
-    const parent = out.tree.nodes[current.parentId!];
+    const parent = out.tree.nodes[current.parentId!]!;
     expect(parent.text).toBe("The cat sat on the ");
     expect(parent.source).toBe("user_written");
 
@@ -89,8 +89,8 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
       (n) => n.parentId === parent.id && n.id !== current.id,
     );
     expect(siblings).toHaveLength(1);
-    expect(siblings[0].text).toBe("mat and purred.");
-    expect(siblings[0].source).toBe("generated");
+    expect(siblings[0]!.text).toBe("mat and purred.");
+    expect(siblings[0]!.source).toBe("generated");
   });
 
   it("test_delete_into_ancestor: prefix-shorter buffer splits with no new user node", () => {
@@ -106,7 +106,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const path = pathFromRoot(out.tree, out.currentId);
     expect(concatPathText(path)).toBe(buffer);
 
-    const current = out.tree.nodes[out.currentId];
+    const current = out.tree.nodes[out.currentId]!;
     expect(current.text).toBe("b");
     expect(current.source).toBe("user_written");
 
@@ -114,7 +114,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
       (n) => n.parentId === current.id,
     );
     expect(siblings).toHaveLength(1);
-    const bSecond = siblings[0];
+    const bSecond = siblings[0]!;
     expect(bSecond.text).toBe("bb");
     expect(bSecond.source).toBe("generated");
 
@@ -136,10 +136,10 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const out = reshape(tree, "B", buffer, { newId: nid, now });
 
     expect(out.currentId).toBe("H");
-    expect(out.tree.nodes["H"].hidden).toBe(false);
+    expect(out.tree.nodes["H"]!.hidden).toBe(false);
     // B is still in the tree, untouched
     expect(out.tree.nodes["B"]).toBeDefined();
-    expect(out.tree.nodes["B"].text).toBe("world");
+    expect(out.tree.nodes["B"]!.text).toBe("world");
   });
 
   it("reattaches to a matching multi-node branch instead of duplicating it", () => {
@@ -155,8 +155,8 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
 
     expect(out.currentId).toBe("H2");
     expect(Object.keys(out.tree.nodes).sort()).toEqual(["A", "B", "H1", "H2", "root"]);
-    expect(out.tree.nodes["H1"].hidden).toBe(false);
-    expect(out.tree.nodes["H2"].hidden).toBe(false);
+    expect(out.tree.nodes["H1"]!.hidden).toBe(false);
+    expect(out.tree.nodes["H2"]!.hidden).toBe(false);
     expect(concatPathText(pathFromRoot(out.tree, out.currentId))).toBe(buffer);
   });
 
@@ -171,13 +171,13 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
     const path = pathFromRoot(out.tree, out.currentId);
     expect(concatPathText(path)).toBe(buffer);
 
-    const current = out.tree.nodes[out.currentId];
+    const current = out.tree.nodes[out.currentId]!;
     expect(current.parentId).toBe("root");
     expect(current.text).toBe("completely different text");
     expect(current.source).toBe("user_written");
 
     expect(out.tree.nodes["A"]).toBeDefined();
-    expect(out.tree.nodes["A"].parentId).toBe("root");
+    expect(out.tree.nodes["A"]!.parentId).toBe("root");
   });
 
   it("test_no_op_edit: buffer matches active path exactly — tree returned unchanged", () => {
@@ -191,7 +191,7 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
 
     expect(out.currentId).toBe("B");
     expect(Object.keys(out.tree.nodes).sort()).toEqual(["A", "B", "root"]);
-    expect(out.tree.nodes["B"].text).toBe("world");
+    expect(out.tree.nodes["B"]!.text).toBe("world");
     expect(out.tree).toBe(tree);
   });
 
@@ -207,6 +207,6 @@ describe("reshape — §3.1 buffer-authoritative tree split", () => {
       source: "composed",
     });
 
-    expect(out.tree.nodes[out.currentId].source).toBe("composed");
+    expect(out.tree.nodes[out.currentId]!.source).toBe("composed");
   });
 });

@@ -256,7 +256,7 @@ export default function NodeMapView({
       if (merged.length > 0) {
         setMapSelectionIds(merged);
         if (!seen.has(mapSelectedId ?? "")) {
-          setMapSelectedId(merged[merged.length - 1]);
+          setMapSelectedId(merged[merged.length - 1]!);
         }
       }
       mapMarqueeRef.current = null;
@@ -596,7 +596,9 @@ export default function NodeMapView({
       : currentNode;
 
   const childNodes = childrenOf(tree, selectedNode.id);
-  const parentNode = selectedNode.parentId ? tree.nodes[selectedNode.parentId] : null;
+  const parentNode = selectedNode.parentId
+    ? (tree.nodes[selectedNode.parentId] ?? null)
+    : null;
   const parentChildCount = parentNode ? childrenOf(tree, parentNode.id).length : 0;
   const actionDisabled = saving || streaming;
   const canDelete = selectedNode.parentId !== null && !actionDisabled;

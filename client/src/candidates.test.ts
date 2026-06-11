@@ -17,8 +17,8 @@ describe("emptyCandidates", () => {
     expect(list.every((c) => c.text === "" && !c.done && c.finishReason === null)).toBe(
       true,
     );
-    list[0].text = "mutated";
-    expect(list[1].text).toBe(""); // not the same object reference
+    list[0]!.text = "mutated";
+    expect(list[1]!.text).toBe(""); // not the same object reference
   });
 });
 
@@ -26,8 +26,8 @@ describe("applyChoice", () => {
   it("appends a chunk's text to its slot", () => {
     const after = applyChoice(emptyCandidates(1), choice(0, "Hello"), 1);
     const more = applyChoice(after, choice(0, " world"), 1);
-    expect(more[0].text).toBe("Hello world");
-    expect(more[0].done).toBe(false);
+    expect(more[0]!.text).toBe("Hello world");
+    expect(more[0]!.done).toBe(false);
   });
 
   it("marks the slot done and records the finish reason", () => {
@@ -44,7 +44,7 @@ describe("applyChoice", () => {
   it("grows a shorter list to n slots before applying", () => {
     const after = applyChoice([], choice(1, "y"), 3);
     expect(after).toHaveLength(3);
-    expect(after[1].text).toBe("y");
-    expect(after[0].text).toBe("");
+    expect(after[1]!.text).toBe("y");
+    expect(after[0]!.text).toBe("");
   });
 });

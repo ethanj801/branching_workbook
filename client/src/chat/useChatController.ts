@@ -1,33 +1,30 @@
 import {
+  useCallback,
   useEffect,
   useMemo,
   useRef,
+  useState,
   type Dispatch,
   type MutableRefObject,
-  type SetStateAction,
 } from "react";
 
 import {
   mutateNodes,
   streamChatCompletion,
   type ChatCompletionMessage,
-  type ChatRole,
   type ProjectInfo,
   type SamplerBody,
   type TabbyModel,
 } from "../api";
+import { formatError } from "../errors";
 import { mergePreset } from "../samplers/fields";
 import { useBranchControls } from "../generation/useBranchControls";
 import { useCandidates } from "../generation/useCandidates";
 import { contextHash } from "../tree/hash";
+import { branchNode, nodeId, nowEpoch } from "../tree/nodeFactory";
 import { mutationBatchFromTrees } from "../tree/persistence";
-import {
-  concatPathText,
-  pathFromRoot,
-  type NodeSource,
-  type Tree,
-  type TreeNode,
-} from "../tree/types";
+import type { WorkspaceAction } from "../workspace/workspaceReducer";
+import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "../tree/types";
 import {
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
@@ -47,46 +44,22 @@ type ChatControllerDeps = {
   streaming: boolean;
   currentTabbyModel: TabbyModel | null;
   draftBody: SamplerBody;
-  chatSystemDraft: string;
-  chatUserDraft: string;
-  chatTurnDrafts: Record<string, ChatTurnDraft>;
-  setTree: Dispatch<SetStateAction<Tree | null>>;
-  setCurrentId: Dispatch<SetStateAction<string | null>>;
-  setBuffer: Dispatch<SetStateAction<string>>;
-  setSaving: Dispatch<SetStateAction<boolean>>;
-  setError: Dispatch<SetStateAction<string | null>>;
-  setStreaming: Dispatch<SetStateAction<boolean>>;
-  setChatSystemDraft: Dispatch<SetStateAction<string>>;
-  setChatUserDraft: Dispatch<SetStateAction<string>>;
-  setChatTurnDrafts: Dispatch<SetStateAction<Record<string, ChatTurnDraft>>>;
+  dispatch: Dispatch<WorkspaceAction>;
   candidates: ReturnType<typeof useCandidates>;
   branchControls: ReturnType<typeof useBranchControls>;
   abortRef: MutableRefObject<AbortController | null>;
   clearDeleteUndo: () => void;
-  branchNode: (
-    parentId: string,
-    text: string,
-    source: NodeSource,
-    hidden: boolean,
-    priorText: string,
-    modelId?: string,
-    samplerSnapshot?: SamplerBody,
-    role?: ChatRole,
-    endOfTurn?: boolean,
-  ) => TreeNode;
-  formatError: (err: unknown) => string;
-  nowEpoch: () => number;
-  nodeId: () => string;
   resetRecordedSelectionToEnd: (nextBuffer: string) => void;
 };
 
 /**
  * The chat workspace controller: the per-turn derived state plus every
  * generate / send / use / keep / end-turn / add-chunk / delete action. App owns
- * the tree, selection, draft, and candidate state and passes them in; this hook
- * threads them through chat/turns.ts and the streaming/persistence APIs and
- * hands back the derived flags and action callbacks for ChatSurface. The pure
- * turn-folding and draft logic lives in chat/turns.ts.
+ * the tree/selection state in a reducer and passes the reads in with its
+ * dispatch; this hook threads them through chat/turns.ts and the
+ * streaming/persistence APIs and hands back the derived flags and action
+ * callbacks for ChatSurface. The pure turn-folding and draft logic lives in
+ * chat/turns.ts.
  */
 export function useChatController(deps: ChatControllerDeps) {
   const {
@@ -98,25 +71,10 @@ export function useChatController(deps: ChatControllerDeps) {
     streaming,
     currentTabbyModel,
     draftBody,
-    chatSystemDraft,
-    chatUserDraft,
-    chatTurnDrafts,
-    setTree,
-    setCurrentId,
-    setBuffer,
-    setSaving,
-    setError,
-    setStreaming,
-    setChatSystemDraft,
-    setChatUserDraft,
-    setChatTurnDrafts,
+    dispatch,
     branchControls,
     abortRef,
     clearDeleteUndo,
-    branchNode,
-    formatError,
-    nowEpoch,
-    nodeId,
     resetRecordedSelectionToEnd,
   } = deps;
   const {
@@ -133,6 +91,32 @@ export function useChatController(deps: ChatControllerDeps) {
     markKept,
     clearBranchPicker,
   } = deps.candidates;
+
+  // Thin adapters over the workspace dispatch for the per-field flag/error
+  // updates this hook makes; the coupled persist clusters below dispatch the
+  // semantic bufferReshaped / treeMutated actions directly.
+  const setSaving = (value: boolean) => dispatch({ type: "setSaving", value });
+  const setStreaming = (value: boolean) => dispatch({ type: "setStreaming", value });
+  const setError = (value: string | null) => dispatch({ type: "setError", value });
+
+  const [chatSystemDraft, setChatSystemDraft] = useState("");
+  const [chatUserDraft, setChatUserDraft] = useState("");
+  const [chatTurnDrafts, setChatTurnDrafts] = useState<Record<string, ChatTurnDraft>>(
+    {},
+  );
+  const [chatSystemExpanded, setChatSystemExpanded] = useState(false);
+
+  // Clear every chat draft back to empty. Called when a project opens or
+  // closes. On a chat open the init effect below immediately re-initializes
+  // chatSystemDraft from the active system node; clearing it here first
+  // covers the close / prose-project cases where that effect's chat guard
+  // keeps it from running.
+  const resetChatDrafts = useCallback(() => {
+    setChatUserDraft("");
+    setChatTurnDrafts({});
+    setChatSystemExpanded(false);
+    setChatSystemDraft("");
+  }, []);
 
   const pendingChatFocusRef = useRef<string | null>(null);
 
@@ -165,10 +149,14 @@ export function useChatController(deps: ChatControllerDeps) {
     project?.kind === "chat" &&
     hasUnsavedChatDrafts(tree, chatSystemNode, chatSystemDraft, chatTurnDrafts);
 
+  // Initialize the editable system-prompt draft from the active system node.
+  // This is the single initializer for chatSystemDraft: it fires on chat open
+  // and whenever the active system node changes (e.g. switching branches).
+  // resetChatDrafts clears the draft for the close / prose-project cases.
   useEffect(() => {
     if (project?.kind !== "chat") return;
     setChatSystemDraft(chatSystemNode?.text ?? "");
-  }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind, setChatSystemDraft]);
+  }, [chatSystemNode?.id, chatSystemNode?.text, project?.kind]);
 
   useEffect(() => {
     const id = pendingChatFocusRef.current;
@@ -215,9 +203,12 @@ export function useChatController(deps: ChatControllerDeps) {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, nextCurrentId));
-      setTree(nextTree);
-      setCurrentId(nextCurrentId);
-      setBuffer(nextBuffer);
+      dispatch({
+        type: "bufferReshaped",
+        tree: nextTree,
+        currentId: nextCurrentId,
+        buffer: nextBuffer,
+      });
       resetRecordedSelectionToEnd(nextBuffer);
       clearDeleteUndo();
       return true;
@@ -289,9 +280,12 @@ export function useChatController(deps: ChatControllerDeps) {
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(tree, result.tree, result.currentId));
-      setTree(result.tree);
-      setCurrentId(result.currentId);
-      setBuffer(concatPathText(pathFromRoot(result.tree, result.currentId)));
+      dispatch({
+        type: "bufferReshaped",
+        tree: result.tree,
+        currentId: result.currentId,
+        buffer: concatPathText(pathFromRoot(result.tree, result.currentId)),
+      });
       clearDeleteUndo();
       // Evict only the drafts we actually consumed. The wholesale
       // wipe used to drop any unsaved off-path / sibling-branch
@@ -602,7 +596,7 @@ export function useChatController(deps: ChatControllerDeps) {
       await mutateNodes(
         mutationBatchFromTrees(committed.tree, nextTree, committed.currentId),
       );
-      setTree(nextTree);
+      dispatch({ type: "treeMutated", tree: nextTree });
       markKept(index, node.id);
     } catch (err) {
       setError(formatError(err));
@@ -683,6 +677,15 @@ export function useChatController(deps: ChatControllerDeps) {
     chatHasPendingUserDraft,
     chatCanSubmitOrGenerate,
     chatHasUnsavedDrafts,
+    chatSystemDraft,
+    setChatSystemDraft,
+    chatUserDraft,
+    setChatUserDraft,
+    chatTurnDrafts,
+    setChatTurnDrafts,
+    chatSystemExpanded,
+    setChatSystemExpanded,
+    resetChatDrafts,
     onSaveChatSystem,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,
