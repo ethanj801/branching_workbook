@@ -1,4 +1,4 @@
-import { type Dispatch, type SetStateAction } from "react";
+import { useLayoutEffect, useRef, type Dispatch, type SetStateAction } from "react";
 
 import AutoGrowTextarea from "../AutoGrowTextarea";
 import type { Candidate } from "../candidates";
@@ -76,6 +76,61 @@ export default function ChatSurface({
   onKeepCandidate,
   clearBranchPicker,
 }: ChatSurfaceProps) {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  // Closing the candidate picker (Use / Clear) removes the candidate grid
+  // from below the active turn, shrinking the transcript by the grid's
+  // height. The user is scrolled to the bottom reading candidates when they
+  // click, so the browser clamps scrollTop upward by that whole height —
+  // with a long turn the view lands somewhere inside the block, far from
+  // the text they just accepted. (Browsers can make it worse: a focused
+  // turn editor's caret-into-view, or the AutoGrowTextarea re-measure in
+  // engines without field-sizing, can yank all the way to the top of the
+  // block.) Same family of bugs as the prose-side pinManuscriptScroll.
+  //
+  // Anchor on distance-from-bottom instead: snapshot it when a click is
+  // about to close the picker, and restore it on the render where the
+  // picker is gone — so the view stays pinned to the end of the transcript,
+  // where the accepted text landed. null = no restore pending.
+  const pinnedScrollBottomRef = useRef<number | null>(null);
+  const chatPickerOpen = branchPickerOpen && candidateContext === "chat";
+
+  function armScrollPin() {
+    const el = scrollRef.current;
+    if (!el) return;
+    pinnedScrollBottomRef.current = el.scrollHeight - el.clientHeight - el.scrollTop;
+  }
+
+  useLayoutEffect(() => {
+    if (chatPickerOpen) {
+      // A fresh picker session: drop any pin left armed by a close that
+      // never happened (e.g. the Use click's save failed).
+      pinnedScrollBottomRef.current = null;
+      return;
+    }
+    const distanceFromBottom = pinnedScrollBottomRef.current;
+    pinnedScrollBottomRef.current = null;
+    if (distanceFromBottom === null) return;
+    const el = scrollRef.current;
+    if (!el) return;
+    const restore = () => {
+      const target = Math.max(
+        0,
+        el.scrollHeight - el.clientHeight - distanceFromBottom,
+      );
+      if (Math.abs(el.scrollTop - target) > 0.5) {
+        el.scrollTop = target;
+      }
+    };
+    // Once before paint, then re-assert across two animation frames to
+    // outlast any focus / caret-into-view scrolling the browser dispatches
+    // after the state updates settle (the prose pin does the same).
+    restore();
+    window.requestAnimationFrame(() => {
+      restore();
+      window.requestAnimationFrame(restore);
+    });
+  }, [chatPickerOpen]);
+
   const candidateCards = (
     <ChatCandidateCards
       candidates={candidates}
@@ -85,14 +140,20 @@ export default function ChatSurface({
       pickedCandidateIndex={pickedCandidateIndex}
       branchPickerOpen={branchPickerOpen}
       candidateContext={candidateContext}
-      onUseCandidate={onUseCandidate}
+      onUseCandidate={(index) => {
+        armScrollPin();
+        onUseCandidate(index);
+      }}
       onKeepCandidate={onKeepCandidate}
-      clearBranchPicker={clearBranchPicker}
+      clearBranchPicker={() => {
+        armScrollPin();
+        clearBranchPicker();
+      }}
     />
   );
 
   return (
-    <div className="bw-chat-scroll">
+    <div className="bw-chat-scroll" ref={scrollRef}>
       <section className="bw-chat-transcript" aria-label="Chat transcript">
         <section className="bw-chat-system" data-expanded={chatSystemExpanded}>
           <button
