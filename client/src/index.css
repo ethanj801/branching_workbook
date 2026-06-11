@@ -826,10 +826,38 @@ textarea:disabled {
   font-size: 0.74rem;
 }
 
+.bw-chat-workspace {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+}
+
 .bw-chat-scroll {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* The "next chunk" candidate pane: a fixed pane hung from the bottom of the
+   chat workspace while the picker is open (flex-basis set inline from the
+   splitter ratio), so the candidates and the end of the conversation stay
+   visible together. Chat counterpart of .bw-branch-comparison. */
+.bw-chat-branch-pane {
+  flex: 0 0 auto;
+  min-height: 7.75rem;
+  max-height: 75%;
+  overflow: auto;
+  background: var(--rail);
+  padding: 0.75rem 1.25rem 1rem;
+}
+
+/* Inside the pane the candidate area no longer needs the separator it used
+   when it rendered inline inside the active transcript turn. */
+.bw-chat-branch-pane .bw-chat-candidate-area {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
 
 .bw-chat-transcript {
