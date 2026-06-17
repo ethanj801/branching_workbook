@@ -1,11 +1,24 @@
 import type { ModelLoadEvent } from "../api";
-import type { ModelLoader } from "./useModelLoader";
+import type { ModelDownloadJob, ModelLoader } from "./useModelLoader";
 
 const COMMON_CONTEXT_SIZES = "8192  |  16384  |  32768  |  65536  |  131072";
 
 function formatLoadEvent(event: ModelLoadEvent | null): string {
   if (!event) return "";
   return `${event.status} ${event.module}/${event.modules}`;
+}
+
+function formatDownloadStatus(job: ModelDownloadJob): string {
+  switch (job.phase) {
+    case "downloading":
+      return `Downloading ${job.modelName}`;
+    case "completed":
+      return `Downloaded ${job.modelName}`;
+    case "failed":
+      return `Download failed: ${job.message}`;
+    case "idle":
+      return "";
+  }
 }
 
 type ModelPanelProps = {
@@ -35,6 +48,8 @@ export default function ModelPanel({
     loadingModels,
     modelBusy,
     modelLoadEvent,
+    downloadBusy,
+    downloadJob,
     selectedModelName,
     setSelectedModelName,
     loadMaxSeqLen,
@@ -57,6 +72,7 @@ export default function ModelPanel({
     onLoadModel,
     onUnloadModel,
     onDownloadModel,
+    clearDownloadJob,
   } = models;
 
   return (
@@ -209,7 +225,10 @@ export default function ModelPanel({
             </section>
 
             <form
-              onSubmit={(event) => void onDownloadModel(event)}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void onDownloadModel();
+              }}
               className="bw-panel"
             >
               <div className="bw-kicker">Download from Hugging Face</div>
@@ -217,7 +236,7 @@ export default function ModelPanel({
                 <input
                   value={downloadRepoId}
                   onChange={(event) => setDownloadRepoId(event.target.value)}
-                  disabled={modelBusy}
+                  disabled={downloadBusy}
                   placeholder="repo_id"
                   className="bw-input w-full"
                 />
@@ -225,28 +244,43 @@ export default function ModelPanel({
                   <input
                     value={downloadRevision}
                     onChange={(event) => setDownloadRevision(event.target.value)}
-                    disabled={modelBusy}
+                    disabled={downloadBusy}
                     placeholder="revision"
                     className="bw-input w-32"
                   />
                   <input
                     value={downloadFolder}
                     onChange={(event) => setDownloadFolder(event.target.value)}
-                    disabled={modelBusy}
+                    disabled={downloadBusy}
                     placeholder="folder"
                     className="bw-input min-w-36 flex-1"
                   />
                   <button
                     type="submit"
-                    disabled={!downloadRepoId.trim() || modelBusy || streaming}
+                    disabled={!downloadRepoId.trim() || downloadBusy || streaming}
                     className="bw-button"
                   >
-                    {modelBusy && !modelLoadEvent ? "Working" : "Download"}
+                    {downloadBusy ? "Downloading" : "Download"}
                   </button>
                 </div>
-                <div className="text-xs text-[color:var(--ink-muted)]">
-                  Keep the request open until Tabby finishes.
-                </div>
+                {downloadJob.phase !== "idle" && (
+                  <div
+                    className="bw-download-panel-status"
+                    data-phase={downloadJob.phase}
+                    role={downloadJob.phase === "failed" ? "alert" : "status"}
+                  >
+                    <span>{formatDownloadStatus(downloadJob)}</span>
+                    {downloadJob.phase !== "downloading" && (
+                      <button
+                        type="button"
+                        className="bw-link-button"
+                        onClick={clearDownloadJob}
+                      >
+                        Dismiss
+                      </button>
+                    )}
+                  </div>
+                )}
               </div>
             </form>
           </div>

@@ -149,6 +149,83 @@ textarea:disabled {
   color: var(--warn);
 }
 
+.bw-download-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(24rem, 42vw);
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid var(--state-edge);
+  border-radius: 999px;
+  background: rgba(251, 250, 245, 0.86);
+  color: var(--ink-muted);
+}
+
+.bw-download-chip[data-phase="completed"] {
+  border-color: rgba(4, 120, 87, 0.26);
+}
+
+.bw-download-chip[data-phase="failed"] {
+  border-color: rgba(161, 98, 7, 0.34);
+  background: #fff7ed;
+}
+
+.bw-download-chip-main,
+.bw-download-chip-dismiss {
+  border: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.bw-download-chip-main {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.38rem;
+  padding: 0.16rem 0.54rem 0.18rem 0.56rem;
+}
+
+.bw-download-chip-main:hover,
+.bw-download-chip-dismiss:hover {
+  color: var(--ink);
+}
+
+.bw-download-chip-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bw-download-chip-dot {
+  width: 0.42rem;
+  height: 0.42rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--state);
+}
+
+.bw-download-chip[data-phase="downloading"] .bw-download-chip-dot {
+  animation: bw-pulse 900ms ease-in-out infinite alternate;
+}
+
+.bw-download-chip[data-phase="completed"] .bw-download-chip-dot {
+  background: var(--green);
+}
+
+.bw-download-chip[data-phase="failed"] .bw-download-chip-dot {
+  background: var(--warn);
+}
+
+.bw-download-chip-dismiss {
+  flex: 0 0 auto;
+  align-self: stretch;
+  border-left: 1px solid rgba(214, 205, 187, 0.72);
+  padding: 0 0.46rem;
+  font-size: 0.64rem;
+  text-transform: uppercase;
+}
+
 .bw-link-button {
   border: 0;
   border-bottom: 1px solid transparent;
@@ -2238,6 +2315,31 @@ textarea:disabled {
   border-radius: 0.24rem;
   background: rgba(251, 247, 236, 0.76);
   padding: 0.85rem;
+}
+
+.bw-download-panel-status {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  border-top: 1px solid var(--line);
+  color: var(--ink-muted);
+  padding-top: 0.55rem;
+  font-size: 0.76rem;
+}
+
+.bw-download-panel-status[data-phase="completed"] {
+  color: var(--green);
+}
+
+.bw-download-panel-status[data-phase="failed"] {
+  color: var(--warn);
+}
+
+.bw-download-panel-status span {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 /* Welcome / no-project frontispiece. Vertically centered, larger title,

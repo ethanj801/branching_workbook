@@ -1,4 +1,10 @@
-import { useCallback, useState, type FormEvent } from "react";
+import {
+  useCallback,
+  useRef,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from "react";
 
 import {
   currentModel,
@@ -12,6 +18,61 @@ import {
 } from "../api";
 
 export const DEFAULT_LOAD_MAX_SEQ_LEN = 65536;
+
+export type ModelDownloadJob =
+  | { phase: "idle" }
+  | {
+      phase: "downloading";
+      repoId: string;
+      modelName: string;
+      startedAt: number;
+    }
+  | {
+      phase: "completed";
+      repoId: string;
+      modelName: string;
+      downloadPath: string;
+    }
+  | {
+      phase: "failed";
+      repoId: string;
+      modelName: string;
+      message: string;
+    };
+
+export function modelNameFromDownload(repoId: string, folderName: string): string {
+  const explicitFolder = folderName.trim();
+  if (explicitFolder) return explicitFolder;
+
+  const repoLeaf = repoId
+    .split("/")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .at(-1);
+  return repoLeaf || repoId.trim();
+}
+
+export function selectedModelNameAfterDownload({
+  currentSelection,
+  selectionAtDownloadStart,
+  downloadedModelName,
+  selectionChangedDuringDownload,
+}: {
+  currentSelection: string;
+  selectionAtDownloadStart: string;
+  downloadedModelName: string;
+  selectionChangedDuringDownload: boolean;
+}): string {
+  if (
+    !currentSelection ||
+    currentSelection === selectionAtDownloadStart ||
+    (selectionAtDownloadStart === "" && !selectionChangedDuringDownload)
+  ) {
+    return downloadedModelName;
+  }
+
+  return currentSelection;
+}
 
 /** Parse a comma-separated GPU split like "20,20" into GB-per-GPU numbers. */
 function parseGpuSplitInput(input: string): number[] {
@@ -65,7 +126,26 @@ export function useModelLoader({
   const [loadingModels, setLoadingModels] = useState(true);
   const [modelBusy, setModelBusy] = useState(false);
   const [modelLoadEvent, setModelLoadEvent] = useState<ModelLoadEvent | null>(null);
+  const [downloadBusy, setDownloadBusy] = useState(false);
+  const [downloadJob, setDownloadJob] = useState<ModelDownloadJob>({ phase: "idle" });
   const [selectedModelName, setSelectedModelName] = useState("");
+  const downloadBusyRef = useRef(false);
+  const selectionChangedDuringDownloadRef = useRef(false);
+  const setUserSelectedModelName = useCallback<Dispatch<SetStateAction<string>>>(
+    (value) => {
+      setSelectedModelName((current) => {
+        const next =
+          typeof value === "function"
+            ? (value as (previous: string) => string)(current)
+            : value;
+        if (downloadBusyRef.current && next !== current) {
+          selectionChangedDuringDownloadRef.current = true;
+        }
+        return next;
+      });
+    },
+    [],
+  );
   const [loadMaxSeqLen, setLoadMaxSeqLen] = useState(DEFAULT_LOAD_MAX_SEQ_LEN);
   const [loadCacheMode, setLoadCacheMode] = useState("Q6");
   const [loadTensorParallel, setLoadTensorParallel] = useState(false);
@@ -156,27 +236,62 @@ export function useModelLoader({
     }
   }
 
-  async function onDownloadModel(event: FormEvent) {
-    event.preventDefault();
+  async function onDownloadModel() {
     const repoId = downloadRepoId.trim();
-    if (!repoId || modelBusy) return;
+    if (!repoId || downloadBusy) return;
 
-    setModelBusy(true);
-    setModelLoadEvent(null);
+    const revision = downloadRevision.trim();
+    const folderName = downloadFolder.trim();
+    const modelName = modelNameFromDownload(repoId, folderName);
+    const selectedModelNameAtStart = selectedModelName;
+    downloadBusyRef.current = true;
+    selectionChangedDuringDownloadRef.current = false;
+    setDownloadBusy(true);
+    setDownloadJob({
+      phase: "downloading",
+      repoId,
+      modelName,
+      startedAt: Date.now(),
+    });
     setError(null);
     try {
-      await downloadModel({
+      const response = await downloadModel({
         repo_id: repoId,
-        revision: downloadRevision.trim() || undefined,
-        folder_name: downloadFolder.trim() || undefined,
+        revision: revision || undefined,
+        folder_name: folderName || undefined,
       });
       await refreshModels();
-      setSelectedModelName(downloadFolder.trim() || repoId.split("/").at(-1) || "");
+      setSelectedModelName((current) =>
+        selectedModelNameAfterDownload({
+          currentSelection: current,
+          selectionAtDownloadStart: selectedModelNameAtStart,
+          downloadedModelName: modelName,
+          selectionChangedDuringDownload: selectionChangedDuringDownloadRef.current,
+        }),
+      );
+      setDownloadJob({
+        phase: "completed",
+        repoId,
+        modelName,
+        downloadPath: response.download_path,
+      });
     } catch (err) {
-      setError(formatError(err));
+      const message = formatError(err);
+      setError(message);
+      setDownloadJob({
+        phase: "failed",
+        repoId,
+        modelName,
+        message,
+      });
     } finally {
-      setModelBusy(false);
+      downloadBusyRef.current = false;
+      setDownloadBusy(false);
     }
+  }
+
+  function clearDownloadJob() {
+    if (!downloadBusy) setDownloadJob({ phase: "idle" });
   }
 
   return {
@@ -185,8 +300,10 @@ export function useModelLoader({
     loadingModels,
     modelBusy,
     modelLoadEvent,
+    downloadBusy,
+    downloadJob,
     selectedModelName,
-    setSelectedModelName,
+    setSelectedModelName: setUserSelectedModelName,
     loadMaxSeqLen,
     setLoadMaxSeqLen,
     loadCacheMode,
@@ -208,6 +325,7 @@ export function useModelLoader({
     onLoadModel,
     onUnloadModel,
     onDownloadModel,
+    clearDownloadJob,
   };
 }
 

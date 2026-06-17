@@ -43,7 +43,7 @@ import WorkbookEditor, {
 } from "./editor/WorkbookEditor";
 import SamplerDrawer from "./samplers/SamplerDrawer";
 import { mergePreset, neutralBody } from "./samplers/fields";
-import { useModelLoader } from "./models/useModelLoader";
+import { useModelLoader, type ModelDownloadJob } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
 import { applyChoice } from "./candidates";
@@ -131,6 +131,32 @@ function formatModelLabel(model: TabbyModel | null): string {
     .filter(Boolean)
     .join(" / ");
   return suffix ? `${model.id} (${suffix})` : model.id;
+}
+
+function formatModelDownloadStatus(job: ModelDownloadJob): string {
+  switch (job.phase) {
+    case "downloading":
+      return `Downloading ${job.modelName}`;
+    case "completed":
+      return `Downloaded ${job.modelName}`;
+    case "failed":
+      return `Download failed for ${job.modelName}`;
+    case "idle":
+      return "";
+  }
+}
+
+function formatModelDownloadTitle(job: ModelDownloadJob): string {
+  switch (job.phase) {
+    case "downloading":
+      return `${job.repoId} is downloading in the background`;
+    case "completed":
+      return `Downloaded ${job.repoId} to ${job.downloadPath}`;
+    case "failed":
+      return `${job.repoId}: ${job.message}`;
+    case "idle":
+      return "";
+  }
 }
 
 function NodeNameEditor({
@@ -340,7 +366,13 @@ export default function App() {
     onModelUnloaded: () => setTokenCount(null),
   });
   // App itself only needs these few; the model panel consumes the rest.
-  const { currentTabbyModel, loadingModels, refreshModels } = models;
+  const {
+    currentTabbyModel,
+    loadingModels,
+    refreshModels,
+    downloadJob,
+    clearDownloadJob,
+  } = models;
   const [presets, setPresets] = useState<SamplerPreset[]>([]);
   const [activePresetId, setActivePresetIdState] = useState<string | null>(null);
   const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
@@ -412,6 +444,8 @@ export default function App() {
     : currentTabbyModel
       ? "Model loaded and idle"
       : "No model loaded";
+  const downloadStatusLabel = formatModelDownloadStatus(downloadJob);
+  const downloadStatusTitle = formatModelDownloadTitle(downloadJob);
   const currentPath = useMemo(
     () => (tree && currentId ? pathFromRoot(tree, currentId) : []),
     [tree, currentId],
@@ -2129,6 +2163,31 @@ export default function App() {
           >
             {loadingModels ? "checking model" : formatModelLabel(currentTabbyModel)}
           </button>
+          {downloadJob.phase !== "idle" && (
+            <span className="bw-download-chip" data-phase={downloadJob.phase}>
+              <button
+                type="button"
+                className="bw-download-chip-main"
+                onClick={() => setModelPanelOpen(true)}
+                aria-label={downloadStatusLabel}
+                title={downloadStatusTitle}
+              >
+                <span className="bw-download-chip-dot" aria-hidden="true" />
+                <span className="bw-download-chip-text">{downloadStatusLabel}</span>
+              </button>
+              {downloadJob.phase !== "downloading" && (
+                <button
+                  type="button"
+                  className="bw-download-chip-dismiss"
+                  onClick={clearDownloadJob}
+                  aria-label="Dismiss download status"
+                  title="Dismiss download status"
+                >
+                  x
+                </button>
+              )}
+            </span>
+          )}
           {project && (
             <>
               <span
