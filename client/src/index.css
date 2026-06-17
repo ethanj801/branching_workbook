@@ -553,6 +553,79 @@ textarea:disabled {
   color: var(--ink);
 }
 
+.bw-tree-starred-quick {
+  border-bottom: 1px solid rgba(231, 224, 209, 0.85);
+  padding: 0.45rem 0.5rem 0.55rem;
+}
+
+.bw-tree-starred-quick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--ink-muted);
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.bw-tree-starred-quick-head span + span {
+  color: var(--ink-faint);
+  font-weight: 600;
+  letter-spacing: 0;
+}
+
+.bw-tree-starred-quick-list {
+  display: grid;
+  gap: 0.12rem;
+  max-height: 8.8rem;
+  margin-top: 0.35rem;
+  overflow: auto;
+}
+
+.bw-tree-starred-quick-item {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 1rem minmax(0, 1fr);
+  align-items: center;
+  gap: 0.3rem;
+  border: 0;
+  border-radius: 0.18rem;
+  background: transparent;
+  color: var(--ink-muted);
+  padding: 0.32rem 0.38rem;
+  text-align: left;
+  font-size: 0.76rem;
+}
+
+.bw-tree-starred-quick-item:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.03);
+  color: var(--ink);
+}
+
+.bw-tree-starred-quick-item[data-current="true"] {
+  background: var(--state-soft);
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.bw-tree-starred-quick-item[data-hidden="true"] {
+  opacity: 0.52;
+  font-style: italic;
+}
+
+.bw-tree-starred-quick-item span:first-child {
+  color: #c89934;
+  line-height: 1;
+}
+
+.bw-tree-starred-quick-item span:last-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bw-tree-star {
   flex: 0 0 0.95rem;
   width: 0.95rem;

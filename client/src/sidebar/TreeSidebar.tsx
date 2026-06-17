@@ -8,7 +8,9 @@ import {
 
 import { nodeLabel, previewText } from "../nodeMapLayout";
 import { expandLineage } from "../tree/lineage";
+import { starredNavigationNodes } from "../tree/starred";
 import { childrenOf, type Tree, type TreeNode } from "../tree/types";
+import StarredNodeList from "./StarredNodeList";
 
 type WorkspaceMode = "compose" | "autocomplete" | "map";
 
@@ -112,6 +114,10 @@ export default function TreeSidebar({
     if (starredIds.length === 0) return null;
     return expandLineage(tree, starredIds);
   }, [tree]);
+  const quickStarredNodes = useMemo(
+    () => (tree ? starredNavigationNodes(tree) : []),
+    [tree],
+  );
 
   // Search lineage: nodes worth showing when a search query is active. A
   // node passes if its label (name or text preview) contains the query, or
@@ -442,6 +448,12 @@ export default function TreeSidebar({
               </button>
             )}
           </div>
+          <StarredNodeList
+            nodes={quickStarredNodes}
+            currentId={currentId}
+            disabled={saving || streaming}
+            onSelectNode={onSelectNode}
+          />
           <div className="bw-tree-list">
             {treeFilterNote && (
               <div className="bw-tree-filter-note">{treeFilterNote}</div>
