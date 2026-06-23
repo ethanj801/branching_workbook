@@ -61,6 +61,11 @@ import { useLatestRef } from "./useLatestRef";
 import { formatError } from "./errors";
 import { initialWorkspaceState, workspaceReducer } from "./workspace/workspaceReducer";
 import ChatSurface from "./chat/ChatSurface";
+import {
+  buildChatTranscriptWithDrafts,
+  chatTranscriptFilename,
+  downloadTextFile,
+} from "./chat/exportTranscript";
 import { useChatController } from "./chat/useChatController";
 import TreeSidebar from "./sidebar/TreeSidebar";
 import { branchNode, nodeId, nowEpoch } from "./tree/nodeFactory";
@@ -2945,6 +2950,28 @@ export default function App() {
                     onClick={() => void onSetChatConversationStarred(!chatPathStarred)}
                   >
                     {chatPathStarred ? "★" : "☆"}
+                  </button>
+                )}
+                {isChatProject && (
+                  <button
+                    type="button"
+                    className="bw-button"
+                    onClick={() => {
+                      const text = buildChatTranscriptWithDrafts(
+                        chatSystemDraft,
+                        chatTurns,
+                        chatTurnDrafts,
+                      );
+                      downloadTextFile(chatTranscriptFilename(projectTitle), text);
+                    }}
+                    disabled={chatConversationNodes.length === 0}
+                    title={
+                      chatConversationNodes.length === 0
+                        ? "Nothing to export yet — send a message first"
+                        : "Export this conversation as a .txt file"
+                    }
+                  >
+                    Export .txt
                   </button>
                 )}
                 <button
