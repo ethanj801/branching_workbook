@@ -20,7 +20,7 @@ type Props = {
   onNeutralize: () => void;
 };
 
-type DraftValue = string | number | boolean;
+type DraftValue = string | number | boolean | string[];
 
 type SectionOpenState = Record<string, boolean>;
 
@@ -91,6 +91,60 @@ function SliderControl({
           placeholder={field.info}
           className="bw-input w-full text-xs"
         />
+      </div>
+    );
+  }
+
+  if (field.kind === "list") {
+    // One row per break sequence. A per-entry editor lets a sequence contain a
+    // comma, which a single comma-separated input cannot represent. Each row
+    // stores the text the user typed, for example the two characters backslash
+    // n. sanitizeSamplerBody turns that into a real newline before the request.
+    const entries = Array.isArray(value)
+      ? value
+      : typeof value === "string" && value
+        ? [value]
+        : [];
+    return (
+      <div>
+        <div className="mb-1 flex items-baseline justify-between gap-2">
+          <FieldLabel field={field} />
+        </div>
+        <div className="flex flex-col gap-1">
+          {entries.map((entry, i) => (
+            <div key={i} className="flex items-center gap-1">
+              <input
+                type="text"
+                value={entry}
+                onChange={(event) => {
+                  const next = [...entries];
+                  next[i] = event.target.value;
+                  onChange(next);
+                }}
+                disabled={disabled}
+                placeholder={field.info}
+                className="bw-input w-full text-xs"
+              />
+              <button
+                type="button"
+                onClick={() => onChange(entries.filter((_, j) => j !== i))}
+                disabled={disabled}
+                aria-label="Remove entry"
+                className="bw-button text-xs"
+              >
+                ×
+              </button>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => onChange([...entries, ""])}
+            disabled={disabled}
+            className="bw-button self-start text-xs"
+          >
+            Add
+          </button>
+        </div>
       </div>
     );
   }

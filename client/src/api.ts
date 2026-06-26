@@ -1,9 +1,20 @@
 import type { NodeSource } from "./tree/types";
 
+// Per-position logprobs as TabbyAPI's completion endpoint returns them.
+// `top_logprobs[i]` maps each candidate token string at position `i` to its
+// logprob. Seeding reads `top_logprobs[0]` to rank the possible first tokens.
+export type CompletionLogprobs = {
+  tokens?: string[];
+  token_logprobs?: number[];
+  top_logprobs?: Array<Record<string, number> | null>;
+  text_offset?: number[];
+};
+
 export type CompletionChoice = {
   index: number;
   text: string;
   finish_reason: string | null;
+  logprobs?: CompletionLogprobs | null;
 };
 
 export type CompletionChunk = {
@@ -27,10 +38,29 @@ export type ChatCompletionDelta = {
   reasoning_content?: string;
 };
 
+// Per-token logprobs as TabbyAPI's chat endpoint returns them. The chat shape
+// nests differently from the completion shape. Here `content[i].top_logprobs` is a
+// ranked list of `{ token, logprob }` rather than a token-to-logprob map.
+export type ChatCompletionLogprobLeaf = {
+  token: string;
+  logprob: number;
+};
+
+export type ChatCompletionTokenLogprob = {
+  token: string;
+  logprob: number;
+  top_logprobs?: ChatCompletionLogprobLeaf[];
+};
+
+export type ChatCompletionLogprobs = {
+  content?: ChatCompletionTokenLogprob[];
+};
+
 export type ChatCompletionChoice = {
   index: number;
   delta: ChatCompletionDelta;
   finish_reason: string | null;
+  logprobs?: ChatCompletionLogprobs | null;
 };
 
 export type ChatCompletionChunk = {
@@ -76,7 +106,13 @@ export type CompletionRequestBody = {
   max_temp?: number;
   temp_exponent?: number;
   stop?: string[];
+  banned_strings?: string[];
   ban_eos_token?: boolean;
+  // Seeding asks for the first token's distribution. TabbyAPI populates the
+  // response top_logprobs only when both are positive. top_logprobs sets how
+  // many candidates to return, logprobs gates the per-token logprob collection.
+  logprobs?: number;
+  top_logprobs?: number;
 };
 
 export type SamplerBody = Omit<CompletionRequestBody, "prompt" | "n">;
@@ -116,6 +152,9 @@ export type ProjectSettings = {
   branch_count: number;
   max_tokens: number;
   tokens_per_suggestion: number;
+  seeded_branches: boolean;
+  banned_strings: string[];
+  banned_strings_enabled: boolean;
 };
 
 export type ProjectSettingsPatch = Partial<ProjectSettings>;

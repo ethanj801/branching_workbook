@@ -1,4 +1,4 @@
-import type { Candidate } from "../candidates";
+import { isCandidateUsable, type Candidate } from "../candidates";
 import { approxTokenCount } from "../tokens";
 
 type InlineCandidateControlsProps = {
@@ -31,11 +31,10 @@ export default function InlineCandidateControls({
   onKeepCandidate,
   clearBranchPicker,
 }: InlineCandidateControlsProps) {
+  const usable = isCandidateUsable(visibleCandidate);
+  const isStreaming = streaming && !visibleCandidate.done;
   return (
-    <div
-      className="bw-inline-controls"
-      data-streaming={streaming && !visibleCandidate.done}
-    >
+    <div className="bw-inline-controls" data-streaming={isStreaming}>
       {candidatesLength > 1 && (
         <div className="bw-inline-cycler" aria-label="Cycle branches">
           <button
@@ -57,16 +56,22 @@ export default function InlineCandidateControls({
       <button
         type="button"
         onClick={() => onUseCandidate(visibleCandidateIndex)}
-        disabled={!visibleCandidate.text || streaming || saving}
+        disabled={!usable || streaming || saving}
         className="bw-button bw-button-primary"
       >
         Use
       </button>
+      {/*
+        Block Keep only while this branch's own stream is live (isStreaming).
+        Keeping a branch whose tokens are still arriving would freeze an
+        arbitrary prefix while it kept growing past it. A finished branch stays
+        keepable. Same rule as the grid cards in BranchCard.
+      */}
       <button
         type="button"
         onClick={() => void onKeepCandidate(visibleCandidateIndex)}
         disabled={
-          !visibleCandidate.text || saving || !!savedCandidateIds[visibleCandidateIndex]
+          !usable || saving || isStreaming || !!savedCandidateIds[visibleCandidateIndex]
         }
         title={
           savedCandidateIds[visibleCandidateIndex] ? "Already kept" : "Keep branch"
@@ -87,11 +92,11 @@ export default function InlineCandidateControls({
       <span className="bw-inline-meta">
         Branch {visibleCandidateIndex + 1}
         {candidatesLength > 1 ? ` of ${candidatesLength}` : ""}
-        {visibleCandidate.text
-          ? ` · ${approxTokenCount(visibleCandidate.text)} tok`
-          : ""}
-        {" · Tab accept · Ctrl+] / [ cycle · Esc clear"}
-        {streaming && !visibleCandidate.done && " · streaming"}
+        {usable ? ` · ${approxTokenCount(visibleCandidate.text)} tok` : ""}
+        {visibleCandidate.failed
+          ? " · generation failed"
+          : " · Tab accept · Ctrl+] / [ cycle · Esc clear"}
+        {isStreaming && " · streaming"}
       </span>
     </div>
   );

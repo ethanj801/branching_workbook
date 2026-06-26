@@ -14,6 +14,7 @@ type BranchControlSettings = {
   branch_count: number;
   max_tokens: number;
   tokens_per_suggestion: number;
+  seeded_branches: boolean;
 };
 
 type UseBranchControlsArgs = {
@@ -46,6 +47,7 @@ export function useBranchControls({
   const [tokensPerSuggestionText, setTokensPerSuggestionText] = useState(
     String(DEFAULT_TOKENS_PER_SUGGESTION),
   );
+  const [seededBranches, setSeededBranches] = useState(false);
 
   // Re-clamp the branch count only when the loaded model changes the allowed
   // ceiling. Normalizing on every keystroke would reintroduce the leading-zero
@@ -119,6 +121,14 @@ export function useBranchControls({
     return normalized;
   }
 
+  function onToggleSeededBranches() {
+    // Persist outside a setState updater. Updaters double-invoke under
+    // StrictMode, which would fire two concurrent settings writes.
+    const next = !seededBranches;
+    setSeededBranches(next);
+    saveProjectSettings({ seeded_branches: next });
+  }
+
   // Hydrate the inputs from saved project settings on project load. Stable
   // (setters only) so callers can list it in effect/callback deps without
   // churning their identity every render.
@@ -126,6 +136,7 @@ export function useBranchControls({
     setBranchCountText(String(settings.branch_count));
     setMaxTokensText(String(settings.max_tokens));
     setTokensPerSuggestionText(String(settings.tokens_per_suggestion));
+    setSeededBranches(settings.seeded_branches);
     setBranchLimitHint(false);
     setBranchCountError(null);
   }, []);
@@ -144,6 +155,8 @@ export function useBranchControls({
     normalizeBranchCount,
     normalizeMaxTokens,
     normalizeTokensPerSuggestion,
+    seededBranches,
+    onToggleSeededBranches,
     hydrate,
   };
 }

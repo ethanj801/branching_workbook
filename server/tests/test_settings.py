@@ -59,6 +59,9 @@ async def test_settings_defaults_and_round_trip(
         "branch_count": 3,
         "max_tokens": 256,
         "tokens_per_suggestion": 2,
+        "seeded_branches": False,
+        "banned_strings": [],
+        "banned_strings_enabled": True,
     }
 
     updated = await client.put(
@@ -68,6 +71,9 @@ async def test_settings_defaults_and_round_trip(
             "branch_count": 5,
             "max_tokens": 512,
             "tokens_per_suggestion": 4,
+            "seeded_branches": True,
+            "banned_strings": ["suddenly", "a shiver ran down her spine"],
+            "banned_strings_enabled": False,
         },
     )
     assert updated.status_code == 200
@@ -76,6 +82,9 @@ async def test_settings_defaults_and_round_trip(
         "branch_count": 5,
         "max_tokens": 512,
         "tokens_per_suggestion": 4,
+        "seeded_branches": True,
+        "banned_strings": ["suddenly", "a shiver ran down her spine"],
+        "banned_strings_enabled": False,
     }
 
     await client.post("/api/projects/close")

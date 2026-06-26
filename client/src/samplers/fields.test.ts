@@ -47,6 +47,35 @@ describe("sanitizeSamplerBody", () => {
     const enabled: SamplerBody = { temperature_last: true };
     expect(sanitizeSamplerBody(enabled)).toEqual({ temperature_last: true });
   });
+
+  it("drops empty list fields and blank lines within them", () => {
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: [] })).toEqual({});
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: ["", ""] })).toEqual({});
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: ["foo", "", "bar"] })).toEqual({
+      dry_sequence_breakers: ["foo", "bar"],
+    });
+  });
+
+  it("preserves whitespace inside a list entry", () => {
+    // A space-bearing entry is intentional and must survive verbatim.
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: [" the "] })).toEqual({
+      dry_sequence_breakers: [" the "],
+    });
+  });
+
+  it("turns a typed backslash escape into the real control character", () => {
+    // "\\n" is the two characters backslash and n. It must reach TabbyAPI as a
+    // single newline so the break actually fires on line ends.
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: ["\\n", "."] })).toEqual({
+      dry_sequence_breakers: ["\n", "."],
+    });
+  });
+
+  it("coerces a stray string list value to a single entry", () => {
+    expect(sanitizeSamplerBody({ dry_sequence_breakers: "." })).toEqual({
+      dry_sequence_breakers: ["."],
+    });
+  });
 });
 
 describe("mergePreset", () => {

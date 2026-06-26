@@ -13,6 +13,7 @@ from __future__ import annotations
 import datetime as _dt
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Literal
 
@@ -20,6 +21,15 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 router = APIRouter()
+
+# Serialize every write across all worker threads. FastAPI runs the sync
+# handlers on a threadpool that shares one connection per database, and two
+# threads entering a with conn block at once interleave on that single
+# connection so the second transaction fails. Every write to a shared
+# connection here and in settings.py and samplers.py takes this lock so the
+# writes never overlap. A plain Lock is enough because no write path runs
+# nested inside another.
+WRITE_LOCK = threading.Lock()
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS project_meta (
@@ -58,10 +68,10 @@ CREATE INDEX IF NOT EXISTS idx_nodes_main
 
 
 def open_db(path: str | Path) -> sqlite3.Connection:
-    # check_same_thread=False: FastAPI runs sync handlers on a threadpool, so
-    # the connection must be usable from any worker thread. Single-user local
-    # tool, so we don't need cross-thread write serialization beyond what
-    # SQLite already does.
+    # FastAPI runs sync handlers on a threadpool, so the connection must be
+    # usable from any worker thread, which is why check_same_thread is False.
+    # Writes go through WRITE_LOCK because two threads sharing this one
+    # connection would otherwise interleave their transactions.
     conn = sqlite3.connect(str(path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
@@ -392,7 +402,7 @@ def list_nodes(request: Request) -> list[NodeModel]:
 def batch_mutate(data: MutationBatch, request: Request) -> dict[str, int]:
     conn = _require_conn(request)
     try:
-        with conn:
+        with WRITE_LOCK, conn:
             # Defer FK checks so creates can forward-reference each other
             conn.execute("PRAGMA defer_foreign_keys = ON")
             for n in data.creates:

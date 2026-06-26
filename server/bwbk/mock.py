@@ -78,6 +78,8 @@ class CompletionRequest(BaseModel):
     temperature: float = 1.0
     top_p: float = 1.0
     stop: list[str] = Field(default_factory=list)
+    logprobs: int = 0
+    top_logprobs: int = 0
 
 
 class ChatMessage(BaseModel):
@@ -94,6 +96,8 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int = 128
     temperature: float = 1.0
     top_p: float = 1.0
+    logprobs: int = 0
+    top_logprobs: int = 0
 
 
 class ModelLoadRequest(BaseModel):
@@ -120,6 +124,49 @@ class TokenEncodeRequest(BaseModel):
     encode_special_tokens: bool = True
 
 
+# Distinct first-token candidates the mock returns as top_logprobs, ranked by
+# descending logprob. Seeding reads these to start each branch from a different
+# opening. Real backends derive them from the model. The mock uses a fixed set
+# so the seeded path has deterministic local coverage.
+OPENING_TOKENS = [
+    " The",
+    " She",
+    " There",
+    " He",
+    " It",
+    " A",
+    " They",
+    " Outside",
+    " Rain",
+    " Nobody",
+    " Somewhere",
+    " When",
+]
+
+
+def _top_logprobs_map(k: int) -> dict[str, float]:
+    """A ranked token-to-logprob map of up to k distinct opening tokens."""
+    count = max(1, min(k, len(OPENING_TOKENS)))
+    return {OPENING_TOKENS[i]: -(0.2 + 0.35 * i) for i in range(count)}
+
+
+def _logprobs_request(
+    data: CompletionRequest | ChatCompletionRequest,
+) -> tuple[bool, int]:
+    """Whether to attach the opening distribution, and how many tokens to send.
+    top_logprobs and logprobs both gate it. top_logprobs sets the count on the
+    exllamav3 path and logprobs on the exllamav2 path, so the mock honors
+    whichever a client sets. Shared so both endpoints keep one gating rule."""
+    want = data.top_logprobs > 0 or data.logprobs > 0
+    return want, max(data.top_logprobs, data.logprobs)
+
+
+def _continuation_start(text: str) -> int:
+    """Stable offset into the canned continuations derived from the prompt, so
+    different prompts (and so different seeds) pick different continuations."""
+    return sum(ord(ch) for ch in text)
+
+
 def _chunk_envelope(request_id: str, choices: list[dict], model: str = "mock") -> str:
     """Match TabbyAPI's CompletionResponse streaming envelope shape."""
     return json.dumps(
@@ -140,13 +187,16 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
     branch_count = max(1, data.n)
     char_budget = data.max_tokens * 4  # rough char-to-token conversion
 
+    start = _continuation_start(data.prompt)
     texts = [
-        SAMPLE_CONTINUATIONS[index % len(SAMPLE_CONTINUATIONS)]
+        SAMPLE_CONTINUATIONS[(start + index) % len(SAMPLE_CONTINUATIONS)]
         for index in range(branch_count)
     ]
     offsets = [0 for _ in range(branch_count)]
     emitted = [0 for _ in range(branch_count)]
     finished = [False for _ in range(branch_count)]
+    want_logprobs, top_k = _logprobs_request(data)
+    logprobs_sent = [False for _ in range(branch_count)]
 
     # Emit 3-8 char slices per branch to approximate token-sized chunks.
     while not all(finished):
@@ -169,10 +219,19 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
             delta = text[offsets[index] : offsets[index] + n_chars]
             offsets[index] += n_chars
             emitted[index] += len(delta)
-            yield _chunk_envelope(
-                request_id,
-                [{"index": index, "text": delta, "finish_reason": None}],
-            )
+            choice = {"index": index, "text": delta, "finish_reason": None}
+            # Attach the first token's distribution once per branch, matching
+            # TabbyAPI's completion logprobs shape (top_logprobs is a list of
+            # token-to-logprob maps, one per position).
+            if want_logprobs and not logprobs_sent[index]:
+                logprobs_sent[index] = True
+                choice["logprobs"] = {
+                    "tokens": [delta],
+                    "token_logprobs": [-0.2],
+                    "top_logprobs": [_top_logprobs_map(top_k)],
+                    "text_offset": [0],
+                }
+            yield _chunk_envelope(request_id, [choice])
             await asyncio.sleep(chunk_delay)
 
     yield "[DONE]"
@@ -185,13 +244,18 @@ async def _stream_mock_chat_completion(request: Request, data: ChatCompletionReq
     char_budget = data.max_tokens * 4
     prefix = data.response_prefix or ""
 
+    start = _continuation_start(
+        prefix + "".join(message.content or "" for message in data.messages)
+    )
     texts = [
-        f"{prefix}{SAMPLE_CONTINUATIONS[index % len(SAMPLE_CONTINUATIONS)]}"
+        f"{prefix}{SAMPLE_CONTINUATIONS[(start + index) % len(SAMPLE_CONTINUATIONS)]}"
         for index in range(branch_count)
     ]
     offsets = [len(prefix) for _ in range(branch_count)]
     emitted = [0 for _ in range(branch_count)]
     finished = [False for _ in range(branch_count)]
+    want_logprobs, top_k = _logprobs_request(data)
+    logprobs_sent = [False for _ in range(branch_count)]
 
     while not all(finished):
         for index, text in enumerate(texts):
@@ -223,16 +287,32 @@ async def _stream_mock_chat_completion(request: Request, data: ChatCompletionReq
             delta = text[offsets[index] : offsets[index] + n_chars]
             offsets[index] += n_chars
             emitted[index] += len(delta)
+            choice = {
+                "index": index,
+                "delta": {"content": delta},
+                "finish_reason": None,
+            }
+            # Attach the first token's distribution once per branch, matching
+            # TabbyAPI's chat logprobs shape (content[i].top_logprobs is a ranked
+            # list of token/logprob leaves).
+            if want_logprobs and not logprobs_sent[index]:
+                logprobs_sent[index] = True
+                choice["logprobs"] = {
+                    "content": [
+                        {
+                            "token": delta,
+                            "logprob": -0.2,
+                            "top_logprobs": [
+                                {"token": token, "logprob": logprob}
+                                for token, logprob in _top_logprobs_map(top_k).items()
+                            ],
+                        }
+                    ]
+                }
             yield json.dumps(
                 {
                     "id": f"chatcmpl-{request_id}",
-                    "choices": [
-                        {
-                            "index": index,
-                            "delta": {"content": delta},
-                            "finish_reason": None,
-                        }
-                    ],
+                    "choices": [choice],
                     "model_name": MOCK_MODEL_ID,
                 },
                 ensure_ascii=False,

@@ -17,7 +17,19 @@ import {
   type TabbyModel,
 } from "../api";
 import { formatError } from "../errors";
-import { mergePreset } from "../samplers/fields";
+import {
+  appendToCandidate,
+  foldChunk,
+  seededCandidates,
+  usableCandidateText,
+} from "../candidates";
+import {
+  buildSamplerSnapshot,
+  clampMinTokens,
+  fetchChatOpenings,
+  runSeededFanOut,
+  SEEDED_BRANCH_CAP,
+} from "../generation/seeding";
 import { useBranchControls } from "../generation/useBranchControls";
 import { useCandidates } from "../generation/useCandidates";
 import { contextHash } from "../tree/hash";
@@ -47,6 +59,8 @@ type ChatControllerDeps = {
   dispatch: Dispatch<WorkspaceAction>;
   candidates: ReturnType<typeof useCandidates>;
   branchControls: ReturnType<typeof useBranchControls>;
+  /** Project ban list to send, already gated by its master switch. */
+  activeBannedStrings: string[];
   abortRef: MutableRefObject<AbortController | null>;
   clearDeleteUndo: () => void;
   resetRecordedSelectionToEnd: (nextBuffer: string) => void;
@@ -73,6 +87,7 @@ export function useChatController(deps: ChatControllerDeps) {
     draftBody,
     dispatch,
     branchControls,
+    activeBannedStrings,
     abortRef,
     clearDeleteUndo,
     resetRecordedSelectionToEnd,
@@ -348,70 +363,126 @@ export function useChatController(deps: ChatControllerDeps) {
     const n = branchControls.normalizeBranchCount();
     if (n === null) return;
     const resolvedMaxTokens = branchControls.normalizeMaxTokens();
-    const samplerSnapshot = mergePreset(draftBody);
+    // Resolve the sampler snapshot now, with the active project bans folded in,
+    // so a drawer or ban-list edit mid-stream can't change what a persisted node
+    // records as having produced it, and a saved node carries the bans that
+    // actually shaped its text. The snapshot and the request body are the same.
+    const samplerSnapshot = buildSamplerSnapshot(draftBody, activeBannedStrings);
     const promptSnapshot = concatPathText(basePath);
     const { messages, responsePrefix } = buildChatPayload(basePath);
 
-    startGeneration({
-      context: "chat",
-      count: n,
-      prompt: promptSnapshot,
-      baseId,
-      modelId: currentTabbyModel.id,
-      samplerSnapshot,
-    });
     setError(null);
     setStreaming(true);
     abortRef.current = new AbortController();
-    let firstVisibleChosen = false;
+    const signal = abortRef.current.signal;
 
     try {
-      await streamChatCompletion(
-        {
-          messages,
-          response_prefix: responsePrefix,
-          add_generation_prompt: true,
-          n,
-          max_tokens: resolvedMaxTokens,
-          ...samplerSnapshot,
-        },
-        (chunk) => {
-          for (const choice of chunk.choices) {
-            if (choice.index < 0 || choice.index >= n) continue;
-            const text = choice.delta.content ?? "";
-            if (!firstVisibleChosen && text) {
-              firstVisibleChosen = true;
-              setVisibleCandidateIndex(choice.index);
-            }
-            setCandidates((current) => {
-              const next =
-                current.length === n
-                  ? [...current]
-                  : Array.from(
-                      { length: n },
-                      (_, index) =>
-                        current[index] ?? {
-                          text: "",
-                          done: false,
-                          finishReason: null,
-                        },
-                    );
-              const existing = next[choice.index] ?? {
-                text: "",
-                done: false,
-                finishReason: null,
-              };
-              next[choice.index] = {
-                text: existing.text + text,
-                done: existing.done || choice.finish_reason !== null,
-                finishReason: choice.finish_reason ?? existing.finishReason,
-              };
-              return next;
+      // Diverse openings. Probe the first token's distribution, then fan out one
+      // continuation per distinct opening so siblings start differently. The
+      // seed token rides in response_prefix, so it never streams back. The helper
+      // pre-seeds each slot with it. The helper returns false when the probe
+      // yields no openings, so the plain n-sample path below runs instead.
+      let ranSeeded = false;
+      if (branchControls.seededBranches) {
+        // Cap the seeded branch count at the browser's connection limit so every
+        // branch streams at once. See SEEDED_BRANCH_CAP. The plain path below is
+        // one request, so it keeps the user's full count.
+        const seededCount = Math.min(n, SEEDED_BRANCH_CAP);
+        ranSeeded = await runSeededFanOut({
+          resolvedMaxTokens,
+          signal,
+          clearBranchPicker,
+          bannedStrings: activeBannedStrings,
+          fetchOpenings: (probeSignal) =>
+            fetchChatOpenings(
+              {
+                messages,
+                response_prefix: responsePrefix,
+                add_generation_prompt: true,
+                ...samplerSnapshot,
+              },
+              seededCount,
+              probeSignal,
+            ),
+          beginSeeded: (seeds) => {
+            startGeneration({
+              context: "chat",
+              count: seeds.length,
+              prompt: promptSnapshot,
+              baseId,
+              modelId: currentTabbyModel.id,
+              samplerSnapshot,
             });
-          }
-        },
-        abortRef.current.signal,
-      );
+            setCandidates(seededCandidates(seeds));
+            setVisibleCandidateIndex(0);
+          },
+          streamSeed: (seed, slot, continuationMax, seedSignal) =>
+            streamChatCompletion(
+              clampMinTokens(
+                {
+                  messages,
+                  response_prefix: (responsePrefix ?? "") + seed,
+                  add_generation_prompt: true,
+                  n: 1,
+                  max_tokens: continuationMax,
+                  ...samplerSnapshot,
+                },
+                continuationMax,
+              ),
+              (chunk) => {
+                for (const choice of chunk.choices) {
+                  const text = choice.delta.content ?? "";
+                  if (!text && choice.finish_reason === null) continue;
+                  setCandidates((current) =>
+                    appendToCandidate(current, slot, text, choice.finish_reason),
+                  );
+                }
+              },
+              seedSignal,
+            ),
+          setCandidates,
+          setError,
+        });
+      }
+
+      if (!ranSeeded) {
+        startGeneration({
+          context: "chat",
+          count: n,
+          prompt: promptSnapshot,
+          baseId,
+          modelId: currentTabbyModel.id,
+          samplerSnapshot,
+        });
+        let firstVisibleChosen = false;
+        await streamChatCompletion(
+          clampMinTokens(
+            {
+              messages,
+              response_prefix: responsePrefix,
+              add_generation_prompt: true,
+              n,
+              max_tokens: resolvedMaxTokens,
+              ...samplerSnapshot,
+            },
+            resolvedMaxTokens,
+          ),
+          (chunk) => {
+            for (const choice of chunk.choices) {
+              if (choice.index < 0 || choice.index >= n) continue;
+              const text = choice.delta.content ?? "";
+              if (!firstVisibleChosen && text) {
+                firstVisibleChosen = true;
+                setVisibleCandidateIndex(choice.index);
+              }
+              setCandidates((current) =>
+                foldChunk(current, choice.index, text, choice.finish_reason, n),
+              );
+            }
+          },
+          signal,
+        );
+      }
     } catch (err) {
       const e = err as Error;
       if (e.name !== "AbortError") setError(e.message);
@@ -500,11 +571,8 @@ export function useChatController(deps: ChatControllerDeps) {
     ) {
       return;
     }
-    const text = candidates[index]?.text ?? "";
-    if (!text) {
-      setError("Select a branch with text before using it.");
-      return;
-    }
+    const text = usableCandidateText(candidates[index], "using", setError);
+    if (text === null) return;
     // Flush any pending turn / system edits first so the candidate
     // attaches to the freshly-committed tree, not a stale snapshot.
     // Without this an edit-in-progress on an earlier turn would be
@@ -565,26 +633,37 @@ export function useChatController(deps: ChatControllerDeps) {
     ) {
       return;
     }
-    const text = candidates[index]?.text ?? "";
-    if (!text) {
-      setError("Select a branch with text before keeping it.");
-      return;
+    const text = usableCandidateText(candidates[index], "keeping", setError);
+    if (text === null) return;
+
+    // Keep stays available while sibling branches are still streaming, so a
+    // finished candidate can be saved without waiting for the whole pass. The
+    // draft flush mutates the tree, which commitChatDraftsAndPersist refuses to
+    // do mid-stream, so while streaming we attach the kept branch straight onto
+    // the current tree. candidateBaseId is the live generation base, so it is
+    // always on the current path then. With nothing streaming we flush pending
+    // drafts first so the kept branch attaches to the freshly committed tree.
+    // Keep preserves the picker either way because its whole point is to save
+    // one candidate while leaving the others visible.
+    let baseTree = tree;
+    let baseCurrentId = currentId;
+    if (!streaming) {
+      const committed = await commitChatDraftsAndPersist({
+        preserveBranchPicker: true,
+      });
+      if (!committed) return;
+      baseTree = committed.tree;
+      baseCurrentId = committed.currentId;
     }
-    // Same draft-flush rationale as onUseChatCandidate. Keep
-    // preserves the picker because the whole point of Keep is to
-    // save one candidate while leaving the others visible for
-    // continued evaluation.
-    const committed = await commitChatDraftsAndPersist({ preserveBranchPicker: true });
-    if (!committed) return;
-    if (!committed.tree.nodes[candidateBaseId]) {
+    if (!baseTree.nodes[candidateBaseId]) {
       setError("The generation base no longer exists.");
       return;
     }
-    // Same path-validity check as Use: a flush that forked the
-    // base turn moved candidateBaseId off the active path. Keep's
-    // saved branch would dangle under the abandoned chain.
+    // A flush that forked the base turn moved candidateBaseId off the active
+    // path, where Keep's saved branch would dangle under the abandoned chain.
+    // No flush runs mid-stream, so this only trips after a draft commit.
     const committedPathIds = new Set(
-      pathFromRoot(committed.tree, committed.currentId).map((node) => node.id),
+      pathFromRoot(baseTree, baseCurrentId).map((node) => node.id),
     );
     if (!committedPathIds.has(candidateBaseId)) {
       setError(
@@ -605,18 +684,16 @@ export function useChatController(deps: ChatControllerDeps) {
       candidates[index]?.finishReason === "stop",
     );
     const nextTree: Tree = {
-      rootId: committed.tree.rootId,
+      rootId: baseTree.rootId,
       nodes: {
-        ...committed.tree.nodes,
+        ...baseTree.nodes,
         [node.id]: node,
       },
     };
     setSaving(true);
     setError(null);
     try {
-      await mutateNodes(
-        mutationBatchFromTrees(committed.tree, nextTree, committed.currentId),
-      );
+      await mutateNodes(mutationBatchFromTrees(baseTree, nextTree, baseCurrentId));
       dispatch({ type: "treeMutated", tree: nextTree });
       markKept(index, node.id);
     } catch (err) {

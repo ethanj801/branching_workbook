@@ -112,7 +112,6 @@ export default function BranchPicker({
                       ? undefined
                       : { gridColumn: `${centeredStart} / span 2` }
                   }
-                  keepDisabledWhileStreaming
                 />
               );
             })}
