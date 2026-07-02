@@ -53,7 +53,20 @@ export type TextField = {
   info?: string;
 };
 
-export type SamplerField = SliderField | NumberField | CheckboxField | TextField;
+export type ListField = {
+  kind: "list";
+  key: keyof SamplerBody;
+  label: string;
+  neutral: string[];
+  info?: string;
+};
+
+export type SamplerField =
+  | SliderField
+  | NumberField
+  | CheckboxField
+  | TextField
+  | ListField;
 
 export type SamplerSection = {
   id: string;
@@ -146,11 +159,11 @@ export const SAMPLER_SECTIONS: SamplerSection[] = [
         info: "Context window, in tokens, that DRY looks back over. 0 means whole context.",
       },
       {
-        kind: "text",
+        kind: "list",
         key: "dry_sequence_breakers",
         label: "dry_sequence_breakers",
-        neutral: "",
-        info: 'Comma-separated strings that break DRY matching, for example "\\n" or ".".',
+        neutral: [],
+        info: "One string per row breaks DRY matching. Type \\n for a newline.",
       },
       {
         kind: "slider",
@@ -373,9 +386,24 @@ export function neutralBody(): SamplerBody {
   // assert once at the boundary instead of suppressing every write.
   const body: Record<string, unknown> = {};
   for (const field of SAMPLER_FIELDS) {
-    body[field.key] = field.neutral;
+    // Clone array neutrals so every draft gets its own list to mutate.
+    body[field.key] = Array.isArray(field.neutral) ? [...field.neutral] : field.neutral;
   }
   return body as SamplerBody;
+}
+
+/**
+ * Interpret the common backslash escapes a DRY break sequence can hold, so a
+ * user can type a backslash n in the editor and have it break on a real
+ * newline. Sequences we do not recognize keep their literal text.
+ */
+function unescapeBreakSequence(entry: string): string {
+  return entry.replace(/\\[ntr\\]/g, (match) => {
+    if (match === "\\n") return "\n";
+    if (match === "\\t") return "\t";
+    if (match === "\\r") return "\r";
+    return "\\";
+  });
 }
 
 /**
@@ -390,6 +418,29 @@ export function sanitizeSamplerBody(body: SamplerBody): SamplerBody {
     if (!(field.key in body)) continue;
     const value = body[field.key];
     if (value === undefined || value === null) continue;
+    if (field.kind === "list") {
+      // A list field holds one string per entry. Coerce a stray string to a
+      // single entry, drop blank entries, and interpret escapes so a typed
+      // backslash n reaches TabbyAPI as a real newline. Skip the field when
+      // nothing remains so an empty list never overrides TabbyAPI's default.
+      const list = Array.isArray(value)
+        ? value
+        : typeof value === "string" && value.trim() !== ""
+          ? [value]
+          : [];
+      const cleaned = list.filter((entry) => entry !== "").map(unescapeBreakSequence);
+      if (cleaned.length === 0) continue;
+      out[field.key] = cleaned;
+      continue;
+    }
+    if (Array.isArray(value)) {
+      // Drop blank lines, then skip the field entirely when nothing remains so
+      // an empty list never overrides TabbyAPI's own default.
+      const cleaned = value.filter((entry) => entry !== "");
+      if (cleaned.length === 0) continue;
+      out[field.key] = cleaned;
+      continue;
+    }
     if (value === field.neutral) continue;
     if (typeof value === "string" && value.trim() === "") continue;
     out[field.key] = value;

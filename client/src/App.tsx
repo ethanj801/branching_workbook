@@ -42,11 +42,24 @@ import WorkbookEditor, {
   type WorkbookEditorHandle,
 } from "./editor/WorkbookEditor";
 import SamplerDrawer from "./samplers/SamplerDrawer";
-import { mergePreset, neutralBody } from "./samplers/fields";
+import { neutralBody } from "./samplers/fields";
 import { useModelLoader, type ModelDownloadJob } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
-import { applyChoice } from "./candidates";
+import Switch from "./Switch";
+import {
+  appendToCandidate,
+  applyChoice,
+  seededCandidates,
+  usableCandidateText,
+} from "./candidates";
+import {
+  buildSamplerSnapshot,
+  clampMinTokens,
+  fetchProseOpenings,
+  runSeededFanOut,
+  SEEDED_BRANCH_CAP,
+} from "./generation/seeding";
 import {
   MAX_BRANCH_UI_LIMIT,
   branchGridColumns,
@@ -54,6 +67,8 @@ import {
   resolveTokensPerSuggestion,
 } from "./generation/branchControls";
 import { useBranchControls } from "./generation/useBranchControls";
+import { useBanList } from "./banlist/useBanList";
+import BanListPopover from "./banlist/BanListPopover";
 import { useCandidates } from "./generation/useCandidates";
 import BranchPicker from "./generation/BranchPicker";
 import InlineCandidateControls from "./generation/InlineCandidateControls";
@@ -100,6 +115,9 @@ type TreeContextMenu = {
 };
 
 type WorkspaceMode = "compose" | "autocomplete" | "map";
+
+const DIVERSE_OPENINGS_INFO =
+  "Start each branch from a different token so siblings diverge instead of repeating the same opening.";
 
 type AutocompleteState =
   | { phase: "idle" }
@@ -383,6 +401,8 @@ export default function App() {
   const [draftBody, setDraftBody] = useState<SamplerBody>(() => neutralBody());
   const [samplerBusy, setSamplerBusy] = useState(false);
   const [samplerOpen, setSamplerOpen] = useState(false);
+  const [banListOpen, setBanListOpen] = useState(false);
+  const banListAnchorRef = useRef<HTMLDivElement>(null);
   const [treeMenu, setTreeMenu] = useState<TreeContextMenu | null>(null);
   const [collapsedNodes, setCollapsedNodes] = useState<Record<string, boolean>>({});
   const [expandedChains, setExpandedChains] = useState<Record<string, boolean>>({});
@@ -404,6 +424,8 @@ export default function App() {
   const [mapFitRequest, setMapFitRequest] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const autocompleteAbortRef = useRef<AbortController | null>(null);
+  // Tail of the serialized project-settings write chain (see saveProjectSettings).
+  const settingsWriteChainRef = useRef<Promise<unknown>>(Promise.resolve());
   const editorRef = useRef<WorkbookEditorHandle | null>(null);
   const manuscriptScrollRef = useRef<HTMLDivElement | null>(null);
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
@@ -434,6 +456,15 @@ export default function App() {
   // hydrate is stable (the only branch-control function used inside a memoized
   // callback's deps); pull it out so loadProject can depend on a bare ref.
   const { hydrate: hydrateBranchControls } = branchControls;
+  const banList = useBanList(saveProjectSettings);
+  const { hydrate: hydrateBanList } = banList;
+  // The banned strings a generation should actually send. The project list applies when
+  // the master switch is on, otherwise nothing. The project list is the only
+  // source of banned strings now that the sampler drawer no longer offers them.
+  const activeBannedStrings = useMemo(
+    () => (banList.enabled ? banList.bannedStrings : []),
+    [banList.enabled, banList.bannedStrings],
+  );
   const branchLimitMessage =
     maxBranches >= MAX_BRANCH_UI_LIMIT
       ? `capped at ${MAX_BRANCH_UI_LIMIT} for readable layouts`
@@ -584,7 +615,13 @@ export default function App() {
 
   function saveProjectSettings(patch: ProjectSettingsPatch) {
     if (!project) return;
-    void updateProjectSettings(patch)
+    // Serialize settings writes through a single chain so two quick edits (e.g.
+    // add then remove a banned phrase) reach the server in call order. Firing
+    // them concurrently let the later request finish first and persist a stale
+    // list, and the shared SQLite connection rejects overlapping writes.
+    settingsWriteChainRef.current = settingsWriteChainRef.current
+      .catch(() => {})
+      .then(() => updateProjectSettings(patch))
       .then(() => {
         setError((current) =>
           current?.includes("/api/project/settings") ? null : current,
@@ -593,6 +630,18 @@ export default function App() {
       .catch((err) => {
         setError(formatError(err));
       });
+  }
+
+  // Wait for queued project-settings writes to land before the server's current
+  // project changes. The settings endpoint targets whatever project is open, so
+  // a write enqueued against the old project must finish before we switch, or it
+  // would apply to the next one.
+  async function drainSettingsWrites() {
+    try {
+      await settingsWriteChainRef.current;
+    } catch {
+      // saveProjectSettings already surfaced any error. Here we only wait.
+    }
   }
 
   function resetRecordedSelectionToEnd(nextBuffer: string) {
@@ -646,6 +695,7 @@ export default function App() {
     dispatch: dispatchWorkspace,
     candidates: candidatesApi,
     branchControls,
+    activeBannedStrings,
     abortRef,
     clearDeleteUndo,
     resetRecordedSelectionToEnd,
@@ -682,6 +732,7 @@ export default function App() {
       resetChatDrafts();
       setComposeDisplayMode(settings.display_mode);
       hydrateBranchControls(settings);
+      hydrateBanList(settings);
       clearBranchPicker();
 
       // Pull the project's active preset (lives in its project_meta) and
@@ -701,6 +752,7 @@ export default function App() {
     [
       applyActivePreset,
       hydrateBranchControls,
+      hydrateBanList,
       clearBranchPicker,
       refreshPresets,
       resetChatDrafts,
@@ -800,7 +852,6 @@ export default function App() {
       branchControls.tokensPerSuggestionText,
     );
     const { trimmedPrompt, partial } = trimAutocompletePromptSuffix(buffer);
-    const samplerSnapshot = mergePreset(draftBody);
     let cancelled = false;
     const timeoutId = window.setTimeout(() => {
       const abort = new AbortController();
@@ -808,17 +859,29 @@ export default function App() {
       setAutocompleteState({ phase: "thinking" });
       setAutocompleteStatus(null);
 
+      // Project bans apply everywhere the model generates, so autocomplete
+      // merges them the same way branch and chat generation do. The Banned
+      // control renders only in compose mode by design. The ban list is a
+      // project-level setting that stays in effect here without a separate
+      // autocomplete control. Building the body inside the debounce keeps the
+      // sampler merge and ban union to once per request that fires, not once
+      // per keystroke.
+      const requestBody = buildSamplerSnapshot(draftBody, activeBannedStrings);
+
       const partials = Array.from({ length: AUTOCOMPLETE_POOL_TARGET }, () => "");
       const slotsByIndex = Array.from({ length: AUTOCOMPLETE_POOL_TARGET }, () => -1);
 
       void streamCompletion(
-        {
-          prompt: trimmedPrompt,
-          n: AUTOCOMPLETE_POOL_TARGET,
-          max_tokens: tokensPerSuggestion,
-          ...samplerSnapshot,
-          ban_eos_token: true,
-        },
+        clampMinTokens(
+          {
+            prompt: trimmedPrompt,
+            n: AUTOCOMPLETE_POOL_TARGET,
+            max_tokens: tokensPerSuggestion,
+            ...requestBody,
+            ban_eos_token: true,
+          },
+          tokensPerSuggestion,
+        ),
         (chunk) => {
           if (cancelled) return;
           for (const choice of chunk.choices) {
@@ -894,6 +957,7 @@ export default function App() {
     buffer,
     currentTabbyModel,
     draftBody,
+    activeBannedStrings,
     saving,
     streaming,
     branchControls.tokensPerSuggestionText,
@@ -981,6 +1045,8 @@ export default function App() {
           setModelPanelOpen(false);
         } else if (samplerOpen) {
           setSamplerOpen(false);
+        } else if (banListOpen) {
+          setBanListOpen(false);
         } else if (treeMenu) {
           setTreeMenu(null);
         }
@@ -990,6 +1056,7 @@ export default function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    banListOpen,
     closeConfirmOpen,
     commitBuffer,
     modelPanelOpen,
@@ -999,6 +1066,17 @@ export default function App() {
     treeMenu,
     workspaceMode,
   ]);
+
+  useEffect(() => {
+    if (!banListOpen) return;
+    function onPointerDown(event: MouseEvent) {
+      if (!banListAnchorRef.current?.contains(event.target as Node)) {
+        setBanListOpen(false);
+      }
+    }
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, [banListOpen]);
 
   useEffect(() => {
     if (!treeMenu) return;
@@ -1125,6 +1203,7 @@ export default function App() {
     const normalized = ensureBwbkSuffix(path);
     setLoadingProject(true);
     try {
+      await drainSettingsWrites();
       const info = await createProject(normalized, titleFromPath(normalized), kind);
       await loadProject(info);
     } catch (err) {
@@ -1137,6 +1216,7 @@ export default function App() {
   async function openProjectFromPath(path: string) {
     setLoadingProject(true);
     try {
+      await drainSettingsWrites();
       const info = await openProject(path);
       await loadProject(info);
     } catch (err) {
@@ -1201,6 +1281,7 @@ export default function App() {
     setError(null);
     setCloseConfirmOpen(false);
     try {
+      await drainSettingsWrites();
       await closeProjectApi();
       dispatchWorkspace({ type: "projectClosed" });
       resetRecordedSelectionToEnd("");
@@ -1379,45 +1460,113 @@ export default function App() {
     if (n === null) return;
     const resolvedMaxTokens = branchControls.normalizeMaxTokens();
     const promptSnapshot = committed.buffer;
-    // Resolve the sampler snapshot *now* so a user tweaking the drawer
-    // mid-stream doesn't retroactively change what a persisted node says
-    // produced it.
-    const samplerSnapshot = mergePreset(draftBody);
-    startGeneration({
-      context: "prose",
-      count: n,
-      prompt: promptSnapshot,
-      baseId: committed.currentId,
-      modelId: currentTabbyModel.id,
-      samplerSnapshot,
-    });
-    setBranchPaneRatio(branchPaneRatioForCount(n));
+    // Resolve the sampler snapshot *now*, with the active project bans folded
+    // in, so a drawer or ban-list edit mid-stream can't change what a persisted
+    // node records as having produced it, and a saved node carries the bans
+    // that actually shaped its text. The snapshot and the request body are the
+    // same value.
+    const samplerSnapshot = buildSamplerSnapshot(draftBody, activeBannedStrings);
     setError(null);
     setStreaming(true);
     scrollManuscriptToEnd();
     abortRef.current = new AbortController();
-    let firstVisibleChosen = false;
+    const signal = abortRef.current.signal;
 
     try {
-      await streamCompletion(
-        {
+      // Diverse openings. Probe the first token's distribution, then fan out
+      // one continuation per distinct opening so siblings start differently.
+      // The shared helper returns false when the probe yields no openings, so
+      // the plain n-sample path below runs instead.
+      let ranSeeded = false;
+      if (branchControls.seededBranches) {
+        // Cap the seeded branch count at the browser's connection limit so every
+        // branch streams at once. See SEEDED_BRANCH_CAP. The plain path below is
+        // one request, so it keeps the user's full count.
+        const seededCount = Math.min(n, SEEDED_BRANCH_CAP);
+        ranSeeded = await runSeededFanOut({
+          resolvedMaxTokens,
+          signal,
+          clearBranchPicker,
+          bannedStrings: activeBannedStrings,
+          fetchOpenings: (probeSignal) =>
+            fetchProseOpenings(
+              { prompt: promptSnapshot, ...samplerSnapshot },
+              seededCount,
+              probeSignal,
+            ),
+          beginSeeded: (seeds) => {
+            setBranchPaneRatio(branchPaneRatioForCount(seeds.length));
+            startGeneration({
+              context: "prose",
+              count: seeds.length,
+              prompt: promptSnapshot,
+              baseId: committed.currentId,
+              modelId: currentTabbyModel.id,
+              samplerSnapshot,
+            });
+            setCandidates(seededCandidates(seeds));
+            setVisibleCandidateIndex(0);
+          },
+          streamSeed: (seed, slot, continuationMax, seedSignal) =>
+            streamCompletion(
+              clampMinTokens(
+                {
+                  prompt: promptSnapshot + seed,
+                  n: 1,
+                  max_tokens: continuationMax,
+                  ...samplerSnapshot,
+                },
+                continuationMax,
+              ),
+              (chunk) => {
+                for (const choice of chunk.choices) {
+                  if (!choice.text && choice.finish_reason === null) continue;
+                  setCandidates((current) =>
+                    appendToCandidate(current, slot, choice.text, choice.finish_reason),
+                  );
+                }
+              },
+              seedSignal,
+            ),
+          setCandidates,
+          setError,
+        });
+      }
+
+      if (!ranSeeded) {
+        setBranchPaneRatio(branchPaneRatioForCount(n));
+        startGeneration({
+          context: "prose",
+          count: n,
           prompt: promptSnapshot,
-          n,
-          max_tokens: resolvedMaxTokens,
-          ...samplerSnapshot,
-        },
-        (chunk) => {
-          for (const choice of chunk.choices) {
-            if (choice.index < 0 || choice.index >= n || !choice.text) continue;
-            if (!firstVisibleChosen) {
-              firstVisibleChosen = true;
-              setVisibleCandidateIndex(choice.index);
+          baseId: committed.currentId,
+          modelId: currentTabbyModel.id,
+          samplerSnapshot,
+        });
+        let firstVisibleChosen = false;
+        await streamCompletion(
+          clampMinTokens(
+            {
+              prompt: promptSnapshot,
+              n,
+              max_tokens: resolvedMaxTokens,
+              ...samplerSnapshot,
+            },
+            resolvedMaxTokens,
+          ),
+          (chunk) => {
+            for (const choice of chunk.choices) {
+              if (choice.index < 0 || choice.index >= n || !choice.text) continue;
+              if (!firstVisibleChosen) {
+                firstVisibleChosen = true;
+                setVisibleCandidateIndex(choice.index);
+              }
+              setCandidates((current) => applyChoice(current, choice, n));
             }
-            setCandidates((current) => applyChoice(current, choice, n));
-          }
-        },
-        abortRef.current.signal,
-      );
+          },
+          signal,
+        );
+      }
     } catch (err) {
       const e = err as Error;
       if (e.name !== "AbortError") setError(e.message);
@@ -1524,12 +1673,14 @@ export default function App() {
       void onUseChatCandidate(index);
       return;
     }
+    // The inline Use button is disabled mid-stream, but the Tab keybinding
+    // reaches here directly. Guard the action itself so a still-streaming
+    // branch (with Diverse on, only its seed token so far) can't splice
+    // partial text into the manuscript.
+    if (streaming) return;
 
-    const text = candidates[index]?.text ?? "";
-    if (!text) {
-      setError("Select a branch with text before using it.");
-      return;
-    }
+    const text = usableCandidateText(candidates[index], "using", setError);
+    if (text === null) return;
 
     // Completions are continuations of the draft, so they always append at
     // the end of the buffer — never at a recorded cursor position, which is
@@ -1598,11 +1749,8 @@ export default function App() {
     }
     if (savedCandidateIds[index]) return;
 
-    const text = candidates[index]?.text ?? "";
-    if (!text) {
-      setError("Select a branch with text before keeping it.");
-      return;
-    }
+    const text = usableCandidateText(candidates[index], "keeping", setError);
+    if (text === null) return;
     if (!tree.nodes[candidateBaseId]) {
       setError("The generation base no longer exists.");
       return;
@@ -2769,159 +2917,203 @@ export default function App() {
             </div>
 
             <footer className="bw-actionbar">
-              {workspaceMode !== "map" && (
-                <>
-                  <label className="bw-field">
-                    Preset
-                    <select
-                      value={activePresetId ?? ""}
-                      onChange={(event) =>
-                        void onSelectPreset(event.target.value || null)
-                      }
-                      disabled={samplerBusy || streaming}
-                      className="bw-select min-w-36"
-                    >
-                      <option value="">none</option>
-                      {presets.map((preset) => (
-                        <option key={preset.id} value={preset.id}>
-                          {preset.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  {draftDirty && (
-                    <span
-                      title="Unsaved sampler changes"
-                      className="text-[color:var(--warn)]"
-                    >
-                      *
-                    </span>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => setSamplerOpen(true)}
-                    disabled={samplerBusy}
-                    className="bw-button"
-                  >
-                    Samplers
-                  </button>
-                </>
-              )}
-              {workspaceMode === "compose" ? (
-                <>
-                  <label className="bw-field">
-                    Branches
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      min={1}
-                      max={maxBranches}
-                      value={branchControls.branchCountText}
-                      onChange={(event) =>
-                        branchControls.onBranchCountChange(event.target.value)
-                      }
-                      onBlur={() => {
-                        branchControls.normalizeBranchCount();
-                      }}
-                      aria-invalid={branchControls.branchCountError !== null}
-                      disabled={streaming || saving}
-                      className="bw-input w-16"
-                      title={branchLimitMessage}
-                    />
-                    {(branchControls.branchCountError ||
-                      branchControls.branchLimitHint) && (
-                      <span
-                        className="bw-field-note"
-                        data-error={branchControls.branchCountError !== null}
+              <div className="bw-actionbar-left">
+                {workspaceMode !== "map" && (
+                  <>
+                    <label className="bw-field">
+                      Preset
+                      <select
+                        value={activePresetId ?? ""}
+                        onChange={(event) =>
+                          void onSelectPreset(event.target.value || null)
+                        }
+                        disabled={samplerBusy || streaming}
+                        className="bw-select min-w-32"
                       >
-                        {branchControls.branchCountError ?? branchLimitMessage}
+                        <option value="">none</option>
+                        {presets.map((preset) => (
+                          <option key={preset.id} value={preset.id}>
+                            {preset.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {draftDirty && (
+                      <span
+                        title="Unsaved sampler changes"
+                        className="text-[color:var(--warn)]"
+                      >
+                        *
                       </span>
                     )}
-                  </label>
-                  <label className="bw-field">
-                    Max tokens
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      min={1}
-                      max={contextMax ?? undefined}
-                      value={branchControls.maxTokensText}
-                      onChange={(event) =>
-                        branchControls.onMaxTokensChange(event.target.value)
-                      }
-                      onBlur={() => {
-                        branchControls.normalizeMaxTokens();
-                      }}
-                      aria-invalid={branchControls.maxTokensError !== null}
-                      disabled={streaming || saving}
-                      className="bw-input w-24"
-                      title={
-                        contextMax
-                          ? `1-${contextMax.toLocaleString()} (loaded context)`
-                          : undefined
-                      }
-                    />
-                    {(branchControls.maxTokensError ||
-                      branchControls.maxTokensLimitHint) && (
-                      <span
-                        className="bw-field-note"
-                        data-error={branchControls.maxTokensError !== null}
-                      >
-                        {branchControls.maxTokensError ??
-                          (contextMax
-                            ? `capped at ${contextMax.toLocaleString()} (loaded context)`
-                            : "capped at the loaded context length")}
-                      </span>
+                    <button
+                      type="button"
+                      onClick={() => setSamplerOpen(true)}
+                      disabled={samplerBusy}
+                      className="bw-button"
+                    >
+                      Samplers
+                    </button>
+                  </>
+                )}
+                {workspaceMode === "compose" ? (
+                  <>
+                    <label className="bw-field">
+                      Branches
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        min={1}
+                        max={maxBranches}
+                        value={branchControls.branchCountText}
+                        onChange={(event) =>
+                          branchControls.onBranchCountChange(event.target.value)
+                        }
+                        onBlur={() => {
+                          branchControls.normalizeBranchCount();
+                        }}
+                        aria-invalid={branchControls.branchCountError !== null}
+                        disabled={streaming || saving}
+                        className="bw-input w-16"
+                        title={branchLimitMessage}
+                      />
+                      {(branchControls.branchCountError ||
+                        branchControls.branchLimitHint) && (
+                        <span
+                          className="bw-field-note"
+                          data-error={branchControls.branchCountError !== null}
+                        >
+                          {branchControls.branchCountError ?? branchLimitMessage}
+                        </span>
+                      )}
+                    </label>
+                    <label className="bw-field">
+                      Max tokens
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        min={1}
+                        max={contextMax ?? undefined}
+                        value={branchControls.maxTokensText}
+                        onChange={(event) =>
+                          branchControls.onMaxTokensChange(event.target.value)
+                        }
+                        onBlur={() => {
+                          branchControls.normalizeMaxTokens();
+                        }}
+                        aria-invalid={branchControls.maxTokensError !== null}
+                        disabled={streaming || saving}
+                        className="bw-input w-20"
+                        title={
+                          contextMax
+                            ? `1-${contextMax.toLocaleString()} (loaded context)`
+                            : undefined
+                        }
+                      />
+                      {(branchControls.maxTokensError ||
+                        branchControls.maxTokensLimitHint) && (
+                        <span
+                          className="bw-field-note"
+                          data-error={branchControls.maxTokensError !== null}
+                        >
+                          {branchControls.maxTokensError ??
+                            (contextMax
+                              ? `capped at ${contextMax.toLocaleString()} (loaded context)`
+                              : "capped at the loaded context length")}
+                        </span>
+                      )}
+                    </label>
+                    {!isChatProject && (
+                      <div className="bw-display-toggle" aria-label="Display mode">
+                        <span>Display</span>
+                        <button
+                          type="button"
+                          data-active={composeDisplayMode === "cards"}
+                          onClick={() => {
+                            setComposeDisplayMode("cards");
+                            saveProjectSettings({ display_mode: "cards" });
+                          }}
+                        >
+                          cards
+                        </button>
+                        <button
+                          type="button"
+                          data-active={composeDisplayMode === "inline"}
+                          onClick={() => {
+                            setComposeDisplayMode("inline");
+                            saveProjectSettings({ display_mode: "inline" });
+                          }}
+                        >
+                          inline
+                        </button>
+                      </div>
                     )}
-                  </label>
-                  {!isChatProject && (
-                    <div className="bw-display-toggle" aria-label="Display mode">
-                      <span>Display</span>
+                    <Switch
+                      label="Diverse"
+                      checked={branchControls.seededBranches}
+                      onChange={() => branchControls.onToggleSeededBranches()}
+                      disabled={streaming || saving}
+                    >
+                      <span
+                        className="bw-info-dot"
+                        tabIndex={0}
+                        aria-label={DIVERSE_OPENINGS_INFO}
+                      >
+                        i<span role="tooltip">{DIVERSE_OPENINGS_INFO}</span>
+                      </span>
+                    </Switch>
+                    <div className="bw-banlist-anchor" ref={banListAnchorRef}>
                       <button
                         type="button"
-                        data-active={composeDisplayMode === "cards"}
-                        onClick={() => {
-                          setComposeDisplayMode("cards");
-                          saveProjectSettings({ display_mode: "cards" });
-                        }}
+                        className="bw-button"
+                        data-active={banListOpen}
+                        data-bans-off={
+                          banList.bannedStrings.length > 0 && !banList.enabled
+                        }
+                        onClick={() => setBanListOpen((open) => !open)}
+                        disabled={saving}
                       >
-                        cards
+                        Banned
+                        {banList.bannedStrings.length > 0 &&
+                          ` · ${banList.bannedStrings.length}`}
+                        {banList.bannedStrings.length > 0 &&
+                          !banList.enabled &&
+                          " (off)"}
                       </button>
-                      <button
-                        type="button"
-                        data-active={composeDisplayMode === "inline"}
-                        onClick={() => {
-                          setComposeDisplayMode("inline");
-                          saveProjectSettings({ display_mode: "inline" });
-                        }}
-                      >
-                        inline
-                      </button>
+                      {banListOpen && (
+                        <BanListPopover
+                          bannedStrings={banList.bannedStrings}
+                          enabled={banList.enabled}
+                          onAdd={banList.addBannedString}
+                          onRemoveAt={banList.removeBannedStringAt}
+                          onToggleEnabled={banList.toggleEnabled}
+                          onClose={() => setBanListOpen(false)}
+                        />
+                      )}
                     </div>
-                  )}
-                </>
-              ) : workspaceMode === "autocomplete" ? (
-                <label className="bw-field">
-                  Tokens per suggestion
-                  <input
-                    type="number"
-                    min={1}
-                    max={8}
-                    value={branchControls.tokensPerSuggestionText}
-                    onChange={(event) =>
-                      branchControls.onTokensPerSuggestionChange(event.target.value)
-                    }
-                    onBlur={() => {
-                      branchControls.normalizeTokensPerSuggestion();
-                    }}
-                    disabled={saving}
-                    className="bw-input w-16"
-                  />
-                </label>
-              ) : null}
-              <div className="flex-1" />
+                  </>
+                ) : workspaceMode === "autocomplete" ? (
+                  <label className="bw-field">
+                    Tokens per suggestion
+                    <input
+                      type="number"
+                      min={1}
+                      max={8}
+                      value={branchControls.tokensPerSuggestionText}
+                      onChange={(event) =>
+                        branchControls.onTokensPerSuggestionChange(event.target.value)
+                      }
+                      onBlur={() => {
+                        branchControls.normalizeTokensPerSuggestion();
+                      }}
+                      disabled={saving}
+                      className="bw-input w-16"
+                    />
+                  </label>
+                ) : null}
+              </div>
               <div className="bw-action-main">
                 {isChatProject && currentNode && (
                   <button
@@ -2986,11 +3178,6 @@ export default function App() {
                 >
                   {saving ? "Saving" : "Save"}
                 </button>
-                {project && (
-                  <span className="bw-save-state" data-dirty={dirtyBuffer}>
-                    {dirtyBuffer ? "Unsaved changes" : "Saved"}
-                  </span>
-                )}
                 {isChatProject && streaming ? (
                   <button
                     type="button"

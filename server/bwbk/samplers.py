@@ -25,7 +25,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from bwbk.db import _require_conn
+from bwbk.db import WRITE_LOCK, _require_conn
 from bwbk.userdata import get_conn as get_userdata
 
 router = APIRouter()
@@ -88,7 +88,7 @@ def create_preset(data: PresetCreate) -> SamplerPreset:
     now = _now_iso()
     preset_id = str(uuid.uuid4())
     try:
-        with conn:
+        with WRITE_LOCK, conn:
             conn.execute(
                 """
                 INSERT INTO sampler_presets (
@@ -122,7 +122,7 @@ def update_preset(preset_id: str, data: PresetUpdate) -> SamplerPreset:
     new_body = json.loads(row["body"]) if data.body is None else data.body
 
     try:
-        with conn:
+        with WRITE_LOCK, conn:
             conn.execute(
                 """
                 UPDATE sampler_presets
@@ -149,7 +149,7 @@ def delete_preset(preset_id: str) -> dict[str, bool]:
     ).fetchone()
     if row is None:
         raise HTTPException(status_code=404, detail="Preset not found.")
-    with conn:
+    with WRITE_LOCK, conn:
         conn.execute("DELETE FROM sampler_presets WHERE id = ?", (preset_id,))
     return {"deleted": True}
 
@@ -172,7 +172,7 @@ def set_active_preset(data: ActivePreset, request: Request) -> ActivePreset:
         ).fetchone()
         if exists is None:
             raise HTTPException(status_code=404, detail="Preset not found.")
-    with conn:
+    with WRITE_LOCK, conn:
         if data.preset_id is None:
             conn.execute(
                 "DELETE FROM project_meta WHERE key = ?", (ACTIVE_PRESET_KEY,)

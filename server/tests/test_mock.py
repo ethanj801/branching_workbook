@@ -209,6 +209,71 @@ async def test_completions_streams_interleaved_fanout_indexes(client: AsyncClien
     assert all(len(text) > 10 for text in by_index.values())
 
 
+async def test_completions_emit_top_logprobs_when_requested(client: AsyncClient):
+    """Seeding asks for the first token's distribution via logprobs/top_logprobs.
+    The mock must attach a ranked token map to the first content chunk so the
+    seeded path has local coverage."""
+    async with client.stream(
+        "POST",
+        "/api/completions",
+        json={
+            "prompt": "hello",
+            "n": 1,
+            "max_tokens": 1,
+            "logprobs": 6,
+            "top_logprobs": 6,
+        },
+    ) as r:
+        body = ""
+        async for chunk in r.aiter_text():
+            body += chunk
+
+    events, _ = _parse_sse(body)
+    with_logprobs = [ev for ev in events if ev["choices"][0].get("logprobs")]
+    assert len(with_logprobs) == 1, "exactly one chunk carries the opening distribution"
+    top = with_logprobs[0]["choices"][0]["logprobs"]["top_logprobs"][0]
+    assert len(top) >= 2, "more than one distinct opening so branches can diverge"
+    assert all(token.startswith(" ") for token in top)
+
+
+async def test_completions_omit_logprobs_when_not_requested(client: AsyncClient):
+    async with client.stream(
+        "POST",
+        "/api/completions",
+        json={"prompt": "hello", "n": 1, "max_tokens": 40},
+    ) as r:
+        body = ""
+        async for chunk in r.aiter_text():
+            body += chunk
+
+    events, _ = _parse_sse(body)
+    assert all("logprobs" not in ev["choices"][0] for ev in events)
+
+
+async def test_chat_completions_emit_top_logprobs_when_requested(client: AsyncClient):
+    async with client.stream(
+        "POST",
+        "/api/chat/completions",
+        json={
+            "messages": [{"role": "user", "content": "hello"}],
+            "n": 1,
+            "max_tokens": 1,
+            "logprobs": 6,
+            "top_logprobs": 6,
+        },
+    ) as r:
+        body = ""
+        async for chunk in r.aiter_text():
+            body += chunk
+
+    events, _ = _parse_sse(body)
+    with_logprobs = [ev for ev in events if ev["choices"][0].get("logprobs")]
+    assert len(with_logprobs) == 1
+    leaves = with_logprobs[0]["choices"][0]["logprobs"]["content"][0]["top_logprobs"]
+    assert len(leaves) >= 2
+    assert all(leaf["token"].startswith(" ") for leaf in leaves)
+
+
 async def test_completions_respects_max_tokens_budget(client: AsyncClient):
     """max_tokens caps how much is streamed — approximated as max_tokens*4 chars."""
     small = 10

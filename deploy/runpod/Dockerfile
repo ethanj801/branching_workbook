@@ -18,6 +18,10 @@ RUN apt-get update --yes && \
     python3 -m pip uninstall -y infinity-emb sentence-transformers || true && \
     mkdir -p /var/run/sshd /workspace/models /workspace/tabby-config
 
+# Temporary chat completions logprobs fix until the upstream base image carries it.
+# Idempotent. It is a no-op once the base already has the fix.
+RUN python3 -c "p='/app/endpoints/OAI/utils/chat_completion.py'; s=open(p).read(); open(p,'w').write(s.replace('tag not in [t_think_end, t_tool_end]', 'tag not in [t for t in (t_think_end, t_tool_end) if t]'))"
+
 COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 RUN chmod +x /usr/local/bin/runpod-entrypoint.sh
 
