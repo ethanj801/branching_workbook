@@ -26,6 +26,20 @@ server:
 client:
     cd client && npm run dev
 
+# Download the local backend's GGUF model into server/models (needs the `local` extra)
+download-model:
+    cd server && uv run --extra local python scripts/download_model.py
+
+# Run with the local real-model backend. First: `cd server && uv sync --extra local`,
+# then `just download-model`.
+dev-local:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    trap 'kill 0' EXIT
+    (cd server && BWBK_BACKEND=local uv run --extra local uvicorn bwbk.main:app --reload --port 8000) &
+    (cd client && npm run dev) &
+    wait
+
 # Lint Python code with ruff
 lint:
     cd server && uv run ruff check .

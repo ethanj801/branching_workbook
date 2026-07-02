@@ -9,6 +9,9 @@ server/.venv/
 .pytest_cache/
 .ruff_cache/
 
+# Local backend model weights (downloaded via `just download-model`, not committed)
+server/models/
+
 # Node / Vite
 client/node_modules/
 client/dist/
