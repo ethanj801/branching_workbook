@@ -377,11 +377,12 @@ export function useChatController(deps: ChatControllerDeps) {
     const signal = abortRef.current.signal;
 
     try {
-      // Diverse openings. Probe the first token's distribution, then fan out one
-      // continuation per distinct opening so siblings start differently. The
-      // seed token rides in response_prefix, so it never streams back. The helper
-      // pre-seeds each slot with it. The helper returns false when the probe
-      // yields no openings, so the plain n-sample path below runs instead.
+      // Diverse openings. Probe a pool of first-token candidates, sample one
+      // opening per branch from it, then fan out one continuation per opening
+      // so siblings start differently. The seed token rides in response_prefix,
+      // so it never streams back. The helper pre-seeds each slot with it. The
+      // helper returns false when the probe yields no usable pool, so the plain
+      // n-sample path below runs instead.
       let ranSeeded = false;
       if (branchControls.seededBranches) {
         // Cap the seeded branch count at the browser's connection limit so every
@@ -393,6 +394,8 @@ export function useChatController(deps: ChatControllerDeps) {
           signal,
           clearBranchPicker,
           bannedStrings: activeBannedStrings,
+          seedCount: seededCount,
+          samplerBody: samplerSnapshot,
           fetchOpenings: (probeSignal) =>
             fetchChatOpenings(
               {
@@ -401,7 +404,6 @@ export function useChatController(deps: ChatControllerDeps) {
                 add_generation_prompt: true,
                 ...samplerSnapshot,
               },
-              seededCount,
               probeSignal,
             ),
           beginSeeded: (seeds) => {

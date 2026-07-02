@@ -6,7 +6,9 @@ import {
   rankChatTop,
   rankCompletionTop,
   runSeededFanOut,
+  sampleOpenings,
   withBannedStrings,
+  type Opening,
 } from "./seeding";
 import type { SamplerBody } from "../api";
 import type { Candidate } from "../candidates";
@@ -14,10 +16,25 @@ import type { Candidate } from "../candidates";
 const NEVER_ABORT = new AbortController().signal;
 const noop = () => {};
 
+/** Build a pool from tokens, most likely first, with descending logprobs. */
+function pool(...tokens: string[]): Opening[] {
+  return tokens.map((token, i) => ({ token, logprob: -0.5 * (i + 1) }));
+}
+
+/** An rng that replays a fixed sequence, for deterministic draws. */
+function sequenceRng(values: number[]): () => number {
+  let i = 0;
+  return () => values[i++ % values.length] ?? 0.5;
+}
+
 describe("rankCompletionTop", () => {
   it("orders a token-to-logprob map from most to least likely", () => {
     const ranked = rankCompletionTop({ " A": -2.1, " The": -0.3, " It": -1.4 });
-    expect(ranked).toEqual([" The", " It", " A"]);
+    expect(ranked).toEqual([
+      { token: " The", logprob: -0.3 },
+      { token: " It", logprob: -1.4 },
+      { token: " A", logprob: -2.1 },
+    ]);
   });
 
   it("returns nothing for a missing map", () => {
@@ -33,7 +50,11 @@ describe("rankChatTop", () => {
       { token: " The", logprob: -0.3 },
       { token: " It", logprob: -1.4 },
     ]);
-    expect(ranked).toEqual([" The", " It", " A"]);
+    expect(ranked).toEqual([
+      { token: " The", logprob: -0.3 },
+      { token: " It", logprob: -1.4 },
+      { token: " A", logprob: -2.1 },
+    ]);
   });
 
   it("returns nothing for a missing list", () => {
@@ -104,19 +125,141 @@ describe("clampMinTokens", () => {
 
 describe("dropBannedOpenings", () => {
   it("returns every opening when there are no bans", () => {
-    expect(dropBannedOpenings([" The", " A"], [])).toEqual([" The", " A"]);
+    expect(dropBannedOpenings(pool(" The", " A"), [])).toEqual(pool(" The", " A"));
   });
 
   it("drops an opening equal to a banned phrase, case-insensitively", () => {
-    expect(dropBannedOpenings([" Suddenly", " The"], ["suddenly"])).toEqual([" The"]);
+    const out = dropBannedOpenings(pool(" Suddenly", " The"), ["suddenly"]);
+    expect(out.map((o) => o.token)).toEqual([" The"]);
   });
 
   it("keeps an opening that merely contains a banned word", () => {
-    expect(dropBannedOpenings([" There", " The"], ["the"])).toEqual([" There"]);
+    const out = dropBannedOpenings(pool(" There", " The"), ["the"]);
+    expect(out.map((o) => o.token)).toEqual([" There"]);
   });
 
   it("ignores empty ban entries", () => {
-    expect(dropBannedOpenings([" The"], [""])).toEqual([" The"]);
+    expect(dropBannedOpenings(pool(" The"), [""])).toEqual(pool(" The"));
+  });
+});
+
+describe("sampleOpenings", () => {
+  it("returns the most likely openings in order at temperature zero", () => {
+    const out = sampleOpenings(pool(" The", " It", " A", " He"), 2, {
+      temperature: 0,
+    });
+    expect(out).toEqual([" The", " It"]);
+  });
+
+  it("draws every opening exactly once when asked for the whole pool", () => {
+    const tokens = [" The", " It", " A", " He"];
+    const out = sampleOpenings(pool(...tokens), 4, { temperature: 1 });
+    expect([...out].sort()).toEqual([...tokens].sort());
+  });
+
+  it("orders by likelihood under a constant rng", () => {
+    // Identical noise on every candidate shifts all keys by the same amount,
+    // so the draw reduces to the likelihood order.
+    const out = sampleOpenings(pool(" The", " It", " A"), 2, {}, () => 0.5);
+    expect(out).toEqual([" The", " It"]);
+  });
+
+  it("can draw an unlikely opening when the noise favors it", () => {
+    const candidates: Opening[] = [
+      { token: " A", logprob: Math.log(0.9) },
+      { token: " B", logprob: Math.log(0.1) },
+    ];
+    const out = sampleOpenings(candidates, 1, {}, sequenceRng([0.0001, 0.999]));
+    expect(out).toEqual([" B"]);
+  });
+
+  it("limits eligible openings to top_k", () => {
+    const out = sampleOpenings(pool(" The", " It", " A", " He"), 4, { top_k: 2 });
+    expect(out).toHaveLength(2);
+    expect([...out].sort()).toEqual([" It", " The"]);
+  });
+
+  it("drops candidates far below the peak with min_p", () => {
+    const candidates: Opening[] = [
+      { token: " The", logprob: Math.log(0.5) },
+      { token: " It", logprob: Math.log(0.4) },
+      { token: " A", logprob: Math.log(0.001) },
+    ];
+    const out = sampleOpenings(candidates, 3, { min_p: 0.5 });
+    expect(out).toHaveLength(2);
+    expect(out).not.toContain(" A");
+  });
+
+  it("keeps only tokens whose cumulative raw mass stays within top_p", () => {
+    // The engine drops the token that crosses the top_p boundary, keeping the
+    // most likely token unconditionally.
+    const candidates: Opening[] = [
+      { token: " The", logprob: Math.log(0.6) },
+      { token: " It", logprob: Math.log(0.3) },
+      { token: " A", logprob: Math.log(0.1) },
+    ];
+    expect(sampleOpenings(candidates, 3, { top_p: 0.7 })).toEqual([" The"]);
+  });
+
+  it("keeps the whole pool when its raw mass never reaches top_p", () => {
+    // The pool holds 0.6 of the true mass, so the real nucleus extends past
+    // it and every returned candidate is inside. Normalizing within the pool
+    // would wrongly cut at 0.9 of the pool.
+    const candidates: Opening[] = [
+      { token: " The", logprob: Math.log(0.3) },
+      { token: " It", logprob: Math.log(0.2) },
+      { token: " A", logprob: Math.log(0.1) },
+    ];
+    expect(sampleOpenings(candidates, 3, { top_p: 0.9 })).toHaveLength(3);
+  });
+
+  it("cuts top_p against the top_k survivors when top_k lands in the pool", () => {
+    // The engine renormalizes after top_k. The same pool and top_p that stay
+    // intact above now cut down to one token, because the two top_k survivors
+    // become the whole mass base and the second one crosses 0.9.
+    const candidates: Opening[] = [
+      { token: " The", logprob: Math.log(0.3) },
+      { token: " It", logprob: Math.log(0.2) },
+      { token: " A", logprob: Math.log(0.1) },
+    ];
+    expect(sampleOpenings(candidates, 3, { top_k: 2, top_p: 0.9 })).toEqual([" The"]);
+  });
+
+  it("applies temperature before truncation unless temperature_last is set", () => {
+    // At temperature 5 the ratios flatten, so every candidate clears a 0.5
+    // min_p bar. With temperature_last the bar applies to the raw ratios and
+    // the weakest candidate falls below it.
+    const candidates: Opening[] = [
+      { token: " The", logprob: Math.log(0.5) },
+      { token: " It", logprob: Math.log(0.3) },
+      { token: " A", logprob: Math.log(0.2) },
+    ];
+    const tempFirst = sampleOpenings(candidates, 3, { temperature: 5, min_p: 0.5 });
+    expect(tempFirst).toHaveLength(3);
+    const tempLast = sampleOpenings(candidates, 3, {
+      temperature: 5,
+      min_p: 0.5,
+      temperature_last: true,
+    });
+    expect(tempLast).toHaveLength(2);
+    expect(tempLast).not.toContain(" A");
+  });
+
+  it("merges candidates that share a token string, summing their mass", () => {
+    // First-wins dedupe would leave " The" at 0.3 and pick " A". Merged mass
+    // makes " The" 0.6 and it wins the greedy draw.
+    const candidates: Opening[] = [
+      { token: " A", logprob: Math.log(0.4) },
+      { token: " The", logprob: Math.log(0.3) },
+      { token: " The", logprob: Math.log(0.3) },
+    ];
+    expect(sampleOpenings(candidates, 1, { temperature: 0 })).toEqual([" The"]);
+    expect(sampleOpenings(candidates, 3, {})).toHaveLength(2);
+  });
+
+  it("returns nothing for an empty pool or a zero count", () => {
+    expect(sampleOpenings([], 3, {})).toEqual([]);
+    expect(sampleOpenings(pool(" The"), 0, {})).toEqual([]);
   });
 });
 
@@ -127,6 +270,10 @@ describe("runSeededFanOut", () => {
       signal: NEVER_ABORT,
       clearBranchPicker: noop,
       bannedStrings: [],
+      seedCount: 3,
+      // Temperature zero makes the draw deterministic, so tests can assert
+      // exact seed sets.
+      samplerBody: { temperature: 0 } as SamplerBody,
       beginSeeded: noop,
       setCandidates: noop,
       setError: noop,
@@ -157,7 +304,7 @@ describe("runSeededFanOut", () => {
     const ran = await runSeededFanOut({
       ...baseOpts(),
       bannedStrings: ["suddenly"],
-      fetchOpenings: async () => [" Suddenly", " The", " A"],
+      fetchOpenings: async () => pool(" Suddenly", " The", " A"),
       beginSeeded: (seeds) => {
         beganWith = seeds;
       },
@@ -170,12 +317,27 @@ describe("runSeededFanOut", () => {
     expect(seen.sort()).toEqual([0, 1]);
   });
 
+  it("keeps the full seed count when a banned candidate sits in the pool", async () => {
+    let beganWith: string[] | null = null;
+    const ran = await runSeededFanOut({
+      ...baseOpts(),
+      bannedStrings: ["suddenly"],
+      fetchOpenings: async () => pool(" Suddenly", " The", " A", " It"),
+      beginSeeded: (seeds) => {
+        beganWith = seeds;
+      },
+      streamSeed: async () => {},
+    });
+    expect(ran).toBe(true);
+    expect(beganWith).toEqual([" The", " A", " It"]);
+  });
+
   it("falls back to the plain path when every opening is banned", async () => {
     let began = false;
     const ran = await runSeededFanOut({
       ...baseOpts(),
       bannedStrings: ["the", "a"],
-      fetchOpenings: async () => [" The", " A"],
+      fetchOpenings: async () => pool(" The", " A"),
       beginSeeded: () => {
         began = true;
       },
@@ -191,7 +353,7 @@ describe("runSeededFanOut", () => {
     const ran = await runSeededFanOut({
       ...baseOpts(),
       resolvedMaxTokens: 5,
-      fetchOpenings: async () => [" A", " B", " C"],
+      fetchOpenings: async () => pool(" A", " B", " C"),
       beginSeeded: (seeds) => {
         beganWith = seeds;
       },
@@ -208,13 +370,27 @@ describe("runSeededFanOut", () => {
     ]);
   });
 
+  it("seeds no more branches than the seed count from a larger pool", async () => {
+    let beganWith: string[] | null = null;
+    await runSeededFanOut({
+      ...baseOpts(),
+      seedCount: 2,
+      fetchOpenings: async () => pool(" A", " B", " C", " D", " E"),
+      beginSeeded: (seeds) => {
+        beganWith = seeds;
+      },
+      streamSeed: async () => {},
+    });
+    expect(beganWith).toEqual([" A", " B"]);
+  });
+
   it("seeds the slots but streams nothing when the budget is one token", async () => {
     let began = false;
     let streamed = 0;
     const ran = await runSeededFanOut({
       ...baseOpts(),
       resolvedMaxTokens: 1,
-      fetchOpenings: async () => [" A", " B"],
+      fetchOpenings: async () => pool(" A", " B"),
       beginSeeded: () => {
         began = true;
       },
@@ -264,7 +440,8 @@ describe("runSeededFanOut", () => {
     let errorMsg: string | null = null;
     const ran = await runSeededFanOut({
       ...baseOpts(),
-      fetchOpenings: async () => [" A", " B"],
+      seedCount: 2,
+      fetchOpenings: async () => pool(" A", " B"),
       streamSeed: async (_seed, slot) => {
         if (slot === 0) throw new Error("boom");
       },
@@ -287,7 +464,8 @@ describe("runSeededFanOut", () => {
     const abortErr = Object.assign(new Error("stop"), { name: "AbortError" });
     await runSeededFanOut({
       ...baseOpts(),
-      fetchOpenings: async () => [" A"],
+      seedCount: 1,
+      fetchOpenings: async () => pool(" A"),
       streamSeed: async () => {
         throw abortErr;
       },
