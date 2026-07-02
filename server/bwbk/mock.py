@@ -3,8 +3,8 @@ Mock TabbyAPI-compatible completions endpoint.
 
 Emits SSE chunks in the same format TabbyAPI's /v1/completions uses (sibling
 checkout at ../tabbyAPI: endpoints/OAI/utils/completion.py), so the client can
-be built and tested without a real inference backend. When the real proxy
-replaces this in Phase 4, nothing on the client should need to change.
+be built and tested without a real inference backend. The shared wire shape
+lives in bwbk.sse, which the local LLM backend (bwbk.local) also uses.
 
 Supports `n > 1` by emitting interleaved chunks with per-branch choice indexes,
 matching the client contract used by the real TabbyAPI proxy later.
@@ -14,11 +14,18 @@ import asyncio
 import json
 import random
 from time import time
-from uuid import uuid4
 
 from fastapi import APIRouter, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
+
+from bwbk.sse import (
+    DONE,
+    chat_envelope,
+    completion_envelope,
+    new_request_id,
+    top_map_to_chat_leaves,
+)
 
 router = APIRouter()
 
@@ -167,22 +174,8 @@ def _continuation_start(text: str) -> int:
     return sum(ord(ch) for ch in text)
 
 
-def _chunk_envelope(request_id: str, choices: list[dict], model: str = "mock") -> str:
-    """Match TabbyAPI's CompletionResponse streaming envelope shape."""
-    return json.dumps(
-        {
-            "id": f"cmpl-{request_id}",
-            "object": "text_completion",
-            "created": int(time()),
-            "model": model,
-            "choices": choices,
-        },
-        ensure_ascii=False,
-    )
-
-
 async def _stream_mock_completion(request: Request, data: CompletionRequest):
-    request_id = uuid4().hex
+    request_id = new_request_id()
     chunk_delay = 0.03  # ~30ms between chunks, feels live
     branch_count = max(1, data.n)
     char_budget = data.max_tokens * 4  # rough char-to-token conversion
@@ -209,7 +202,7 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
             if offsets[index] >= len(text) or emitted[index] >= char_budget:
                 finished[index] = True
                 finish = "stop" if offsets[index] >= len(text) else "length"
-                yield _chunk_envelope(
+                yield completion_envelope(
                     request_id,
                     [{"index": index, "text": "", "finish_reason": finish}],
                 )
@@ -231,14 +224,14 @@ async def _stream_mock_completion(request: Request, data: CompletionRequest):
                     "top_logprobs": [_top_logprobs_map(top_k)],
                     "text_offset": [0],
                 }
-            yield _chunk_envelope(request_id, [choice])
+            yield completion_envelope(request_id, [choice])
             await asyncio.sleep(chunk_delay)
 
-    yield "[DONE]"
+    yield DONE
 
 
 async def _stream_mock_chat_completion(request: Request, data: ChatCompletionRequest):
-    request_id = uuid4().hex
+    request_id = new_request_id()
     chunk_delay = 0.03
     branch_count = max(1, data.n)
     char_budget = data.max_tokens * 4
@@ -267,19 +260,10 @@ async def _stream_mock_chat_completion(request: Request, data: ChatCompletionReq
             if offsets[index] >= len(text) or emitted[index] >= char_budget:
                 finished[index] = True
                 finish = "stop" if offsets[index] >= len(text) else "length"
-                yield json.dumps(
-                    {
-                        "id": f"chatcmpl-{request_id}",
-                        "choices": [
-                            {
-                                "index": index,
-                                "delta": {},
-                                "finish_reason": finish,
-                            }
-                        ],
-                        "model_name": MOCK_MODEL_ID,
-                    },
-                    ensure_ascii=False,
+                yield chat_envelope(
+                    request_id,
+                    [{"index": index, "delta": {}, "finish_reason": finish}],
+                    MOCK_MODEL_ID,
                 )
                 continue
 
@@ -302,24 +286,14 @@ async def _stream_mock_chat_completion(request: Request, data: ChatCompletionReq
                         {
                             "token": delta,
                             "logprob": -0.2,
-                            "top_logprobs": [
-                                {"token": token, "logprob": logprob}
-                                for token, logprob in _top_logprobs_map(top_k).items()
-                            ],
+                            "top_logprobs": top_map_to_chat_leaves(_top_logprobs_map(top_k)),
                         }
                     ]
                 }
-            yield json.dumps(
-                {
-                    "id": f"chatcmpl-{request_id}",
-                    "choices": [choice],
-                    "model_name": MOCK_MODEL_ID,
-                },
-                ensure_ascii=False,
-            )
+            yield chat_envelope(request_id, [choice], MOCK_MODEL_ID)
             await asyncio.sleep(chunk_delay)
 
-    yield "[DONE]"
+    yield DONE
 
 
 @router.post("/api/completions")

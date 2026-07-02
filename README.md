@@ -55,6 +55,8 @@ Open <http://localhost:5173>.
 
 The default backend is a built-in mock that streams fake completions, so you can explore the UI without a GPU. To connect to a real model, see [`deploy/`](./deploy).
 
+For development without a GPU you can also run a tiny real model (Gemma-3-270M) in-process. Install the extra with `cd server && uv sync --extra local`, fetch the model with `just download-model`, then start with `just dev-local`. It gives real, prompt-dependent diverse openings, continuations, samplers, and `banned_strings`, and it batches N branches into one decode step the way the real backend does, so features like "Diverse openings" behave as they will against TabbyAPI.
+
 ## Using with a real model
 
 You bring your own TabbyAPI — running on the same machine as Branching Workbook if you have a GPU there, or on a separate host reached over an SSH tunnel (a workstation, a disposable cloud GPU — there's a [RunPod recipe](./deploy/runpod) in this repo as one example). [`deploy/README.md`](./deploy/README.md) walks through both, with env vars and a macOS-specific port note.

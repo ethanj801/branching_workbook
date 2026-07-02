@@ -11,12 +11,24 @@ dependencies = [
     "platformdirs>=4.0",
 ]
 
+[project.optional-dependencies]
+# Optional real-model dev backend (BWBK_BACKEND=local). Kept out of the default install
+# so the mock stays dependency-light. See bwbk/local.py and `just download-model`.
+local = [
+    "llama-cpp-python>=0.3.2",
+    "huggingface-hub>=0.24",
+    "numpy>=1.26",
+]
+
 [dependency-groups]
 dev = [
     "ruff>=0.8",
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "anyio>=4.0",
+    # bwbk.engine imports numpy, so tests that import bwbk.local need it even without
+    # the `local` extra installed.
+    "numpy>=1.26",
 ]
 
 [build-system]
