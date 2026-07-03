@@ -4,6 +4,15 @@ import { isCandidateUsable, type Candidate } from "../candidates";
 import { displayBranchText } from "../nodeMapLayout";
 import { approxTokenCount } from "../tokens";
 
+/*
+ * The one description of each action, shared by the button tooltips here and
+ * the chat picker legend, so the two surfaces cannot drift apart.
+ */
+export const USE_ACTION_DESCRIPTION =
+  "commits the chunk to the active path and continues from it";
+export const KEEP_ACTION_DESCRIPTION =
+  "saves the chunk as a hidden sibling to compare or resume later";
+
 type BranchCardProps = {
   candidate: Candidate;
   index: number;
@@ -80,6 +89,7 @@ export default function BranchCard({
           onClick={() => onUseCandidate(index)}
           disabled={!usable || streaming || saving || picked}
           className={`bw-button ${picked ? "bw-button-used" : "bw-button-primary"}`}
+          title={`Use ${USE_ACTION_DESCRIPTION}`}
         >
           {picked ? "Used" : "Use"}
         </button>
@@ -97,6 +107,7 @@ export default function BranchCard({
           onClick={() => void onKeepCandidate(index)}
           disabled={!usable || saving || kept || isStreaming}
           className="bw-button"
+          title={`Keep ${KEEP_ACTION_DESCRIPTION}`}
         >
           {kept ? "Kept" : "Keep"}
         </button>

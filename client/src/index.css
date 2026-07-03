@@ -1167,6 +1167,21 @@ textarea:disabled {
   gap: 0.75rem;
 }
 
+/* The head wraps so the Use/Keep legend drops to its own line on narrow
+   trays instead of colliding with the kicker or the Clear button. */
+.bw-chat-candidate-head {
+  flex-wrap: wrap;
+}
+
+.bw-chat-candidate-legend {
+  color: var(--ink-muted);
+  font-size: 0.76rem;
+}
+
+.bw-chat-candidate-legend strong {
+  font-weight: 600;
+}
+
 .bw-chat-candidate-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
@@ -1741,6 +1756,32 @@ textarea:disabled {
 
 .bw-field-note[data-error="true"] {
   color: var(--warn);
+}
+
+/* In the actionbar the note floats above its input instead of widening the
+   label. The row wraps, so an in-flow note would reflow the toolbar
+   mid-interaction and move controls out from under the pointer. The note is
+   purely informational and overlays real content, so it ignores the pointer.
+   It also wraps within its own field's width so the Branches and Max tokens
+   notes never overlap each other when both show at once. */
+.bw-actionbar .bw-field {
+  position: relative;
+}
+
+.bw-actionbar .bw-field-note {
+  position: absolute;
+  left: 0;
+  bottom: calc(100% + 0.45rem);
+  z-index: 40;
+  width: max-content;
+  max-width: 100%;
+  white-space: normal;
+  pointer-events: none;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.35rem;
+  background: var(--editor);
+  padding: 0.28rem 0.5rem;
+  box-shadow: 0 2px 8px rgba(38, 31, 25, 0.1);
 }
 
 .bw-display-toggle {
@@ -2533,14 +2574,13 @@ textarea:disabled {
   outline: 0;
 }
 
-.bw-info-dot span {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 0.4rem);
-  z-index: 5;
-  width: max-content;
+/* The info tooltip body. InfoDot portals it into document.body at a fixed,
+   viewport-clamped position so no scrolling ancestor can clip it and no
+   neighboring control can layer over it. See InfoDot.tsx. */
+.bw-info-tooltip {
+  position: fixed;
+  z-index: 80;
   max-width: 15rem;
-  transform: translateX(-50%);
   border: 1px solid var(--line-dark);
   border-radius: 0.2rem;
   background: var(--ink);
@@ -2550,15 +2590,9 @@ textarea:disabled {
   font-weight: 400;
   letter-spacing: 0;
   line-height: 1.35;
-  opacity: 0;
   pointer-events: none;
   text-transform: none;
-  transition: opacity 120ms ease;
-}
-
-.bw-info-dot:hover span,
-.bw-info-dot:focus span {
-  opacity: 1;
+  white-space: normal;
 }
 
 .bw-modal-head {

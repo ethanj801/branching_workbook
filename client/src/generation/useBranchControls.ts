@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import type { ProjectSettingsPatch } from "../api";
 import {
@@ -9,6 +9,7 @@ import {
   resolveMaxTokens,
   resolveTokensPerSuggestion,
 } from "./branchControls";
+import { SEEDED_BRANCH_CAP } from "./seeding";
 
 type BranchControlSettings = {
   branch_count: number;
@@ -49,21 +50,41 @@ export function useBranchControls({
   );
   const [seededBranches, setSeededBranches] = useState(false);
 
-  // Re-clamp the branch count only when the loaded model changes the allowed
-  // ceiling. Normalizing on every keystroke would reintroduce the leading-zero
-  // bug, so this deliberately depends on maxBranches alone.
+  // The branch count the user actually asked for, before any ceiling clamped
+  // it. The re-clamp effect resolves from this instead of the visible text, so
+  // a count squeezed down by a low ceiling springs back when the ceiling rises
+  // again (toggling Diverse off, loading a bigger model).
+  const requestedBranchCount = useRef(String(DEFAULT_BRANCH_COUNT));
+
+  // The ceiling the Branches input enforces right now. Diverse (seeded)
+  // generation streams one HTTP request per branch, so it caps lower than the
+  // plain batched path. See SEEDED_BRANCH_CAP.
+  const branchCap = seededBranches
+    ? Math.min(maxBranches, SEEDED_BRANCH_CAP)
+    : maxBranches;
+
+  // Re-resolve the branch count only when the allowed ceiling changes (a model
+  // swap or the Diverse toggle). Resolving the requested count against the new
+  // ceiling restores a previously clamped value when the ceiling rises, and
+  // refreshes the hint and error so neither quotes a stale range. Normalizing
+  // on every keystroke would reintroduce the leading-zero bug, so this
+  // deliberately depends on the ceiling alone.
   useEffect(() => {
-    if (branchCountText.trim() === "") return;
-    const result = resolveBranchCount(branchCountText, maxBranches);
-    if (result.ok && result.limitHint) {
-      setBranchCountText(String(result.value));
-      setBranchLimitHint(true);
-      setBranchCountError(null);
+    const requested = requestedBranchCount.current;
+    if (requested.trim() === "") return;
+    const result = resolveBranchCount(requested, branchCap);
+    if (!result.ok) {
+      setBranchLimitHint(false);
+      setBranchCountError(result.error);
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [maxBranches]);
+    setBranchCountText(String(result.value));
+    setBranchLimitHint(result.limitHint);
+    setBranchCountError(null);
+  }, [branchCap]);
 
   function onBranchCountChange(next: string) {
+    requestedBranchCount.current = next;
     setBranchCountText(next);
     setBranchLimitHint(false);
     // Real-time validation: a non-empty, non-digit value (e.g. "abc") used to
@@ -73,12 +94,12 @@ export function useBranchControls({
     if (next.trim() === "" || /^\d+$/.test(next.trim())) {
       setBranchCountError(null);
     } else {
-      setBranchCountError(`Enter 1-${maxBranches} branches.`);
+      setBranchCountError(`Enter 1-${branchCap} branches.`);
     }
   }
 
   function normalizeBranchCount(): number | null {
-    const result = resolveBranchCount(branchCountText, maxBranches);
+    const result = resolveBranchCount(branchCountText, branchCap);
     if (!result.ok) {
       setBranchLimitHint(false);
       setBranchCountError(result.error);
@@ -133,6 +154,7 @@ export function useBranchControls({
   // (setters only) so callers can list it in effect/callback deps without
   // churning their identity every render.
   const hydrate = useCallback((settings: BranchControlSettings) => {
+    requestedBranchCount.current = String(settings.branch_count);
     setBranchCountText(String(settings.branch_count));
     setMaxTokensText(String(settings.max_tokens));
     setTokensPerSuggestionText(String(settings.tokens_per_suggestion));
@@ -142,6 +164,7 @@ export function useBranchControls({
   }, []);
 
   return {
+    branchCap,
     branchCountText,
     branchCountError,
     branchLimitHint,

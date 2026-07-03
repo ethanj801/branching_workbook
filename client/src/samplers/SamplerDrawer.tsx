@@ -1,6 +1,7 @@
 import { useMemo, useState, type ChangeEvent } from "react";
 
 import type { SamplerBody, SamplerPreset } from "../api";
+import InfoDot from "../InfoDot";
 import { SAMPLER_SECTIONS, neutralBody, type SamplerField } from "./fields";
 
 type Props = {
@@ -40,11 +41,7 @@ function FieldLabel({ field }: { field: SamplerField }) {
   return (
     <span className="bw-sampler-label">
       <span>{field.label}</span>
-      {field.info && (
-        <span className="bw-info-dot" tabIndex={0} aria-label={field.info}>
-          ?<span role="tooltip">{field.info}</span>
-        </span>
-      )}
+      {field.info && <InfoDot info={field.info} glyph="?" />}
     </span>
   );
 }

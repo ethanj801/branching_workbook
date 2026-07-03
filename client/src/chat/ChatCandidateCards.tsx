@@ -1,5 +1,8 @@
 import type { Candidate } from "../candidates";
-import BranchCard from "../generation/BranchCard";
+import BranchCard, {
+  KEEP_ACTION_DESCRIPTION,
+  USE_ACTION_DESCRIPTION,
+} from "../generation/BranchCard";
 import type { CandidateContext } from "../generation/useCandidates";
 
 type ChatCandidateCardsProps = {
@@ -43,6 +46,10 @@ export default function ChatCandidateCards({
             {streaming ? " generating" : " ready"}
           </div>
         </div>
+        <span className="bw-chat-candidate-legend">
+          <strong>Use</strong> {USE_ACTION_DESCRIPTION} ·{" "}
+          <strong>Keep</strong> {KEEP_ACTION_DESCRIPTION}
+        </span>
         <button
           type="button"
           onClick={clearBranchPicker}

@@ -47,6 +47,7 @@ import { useModelLoader, type ModelDownloadJob } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
 import Switch from "./Switch";
+import InfoDot from "./InfoDot";
 import {
   appendToCandidate,
   applyChoice,
@@ -466,9 +467,11 @@ export default function App() {
     [banList.enabled, banList.bannedStrings],
   );
   const branchLimitMessage =
-    maxBranches >= MAX_BRANCH_UI_LIMIT
-      ? `capped at ${MAX_BRANCH_UI_LIMIT} for readable layouts`
-      : `max ${maxBranches} with this model`;
+    branchControls.branchCap < maxBranches
+      ? `capped at ${branchControls.branchCap} while Diverse is on`
+      : maxBranches >= MAX_BRANCH_UI_LIMIT
+        ? `capped at ${MAX_BRANCH_UI_LIMIT} for readable layouts`
+        : `max ${maxBranches} with this model`;
   const autocompleteSuggestion =
     autocompleteState.phase === "showing"
       ? (autocompleteState.suggestions[autocompleteState.visibleIdx] ?? null)
@@ -2929,10 +2932,12 @@ export default function App() {
                         disabled={samplerBusy || streaming}
                         className="bw-select min-w-32"
                       >
-                        <option value="">none</option>
+                        <option value="">(none)</option>
                         {presets.map((preset) => (
                           <option key={preset.id} value={preset.id}>
-                            {preset.name}
+                            {preset.is_starter
+                              ? `${preset.name} (starter)`
+                              : preset.name}
                           </option>
                         ))}
                       </select>
@@ -2964,7 +2969,7 @@ export default function App() {
                         inputMode="numeric"
                         pattern="[0-9]*"
                         min={1}
-                        max={maxBranches}
+                        max={branchControls.branchCap}
                         value={branchControls.branchCountText}
                         onChange={(event) =>
                           branchControls.onBranchCountChange(event.target.value)
@@ -3055,13 +3060,7 @@ export default function App() {
                       onChange={() => branchControls.onToggleSeededBranches()}
                       disabled={streaming || saving}
                     >
-                      <span
-                        className="bw-info-dot"
-                        tabIndex={0}
-                        aria-label={DIVERSE_OPENINGS_INFO}
-                      >
-                        i<span role="tooltip">{DIVERSE_OPENINGS_INFO}</span>
-                      </span>
+                      <InfoDot info={DIVERSE_OPENINGS_INFO} />
                     </Switch>
                     <div className="bw-banlist-anchor" ref={banListAnchorRef}>
                       <button
