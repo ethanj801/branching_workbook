@@ -30,7 +30,12 @@ export default function AutoGrowTextarea(
     }
     const scrollTopBefore = scroller?.scrollTop;
     ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
+    // scrollHeight excludes the borders that a border-box height must cover.
+    // offsetHeight minus clientHeight is exactly the two border widths. Without
+    // this the textarea lands 2px short and stays scrollable by that much,
+    // which draws a scrollbar on every turn when scrollbars are set to always
+    // show and lets wheel gestures latch onto the turn.
+    ta.style.height = `${ta.scrollHeight + ta.offsetHeight - ta.clientHeight}px`;
     if (
       scroller &&
       scrollTopBefore !== undefined &&

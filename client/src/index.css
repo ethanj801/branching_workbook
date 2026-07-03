@@ -1088,6 +1088,10 @@ textarea:disabled {
   /* Grow to fit content; manual drag-resize is unnecessary and would only
      be lost across re-mount cycles (e.g. when candidates show/clear). */
   field-sizing: content;
+  /* The editors always grow to fit, so any internal scrollability is a
+     sizing rounding artifact. Hiding overflow keeps a scrollbar from ever
+     appearing on a turn. */
+  overflow-y: hidden;
   resize: none;
   border: 1px solid var(--line);
   border-radius: 5px;
