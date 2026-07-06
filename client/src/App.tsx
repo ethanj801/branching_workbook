@@ -503,13 +503,14 @@ export default function App() {
       currentPath.filter((node) => node.parentId !== null && node.role !== "system"),
     [currentPath],
   );
-  // "Is this conversation starred" for the chat actionbar toggle: lit when
-  // any conversation node on the active path is starred, so the star stays
-  // on after the conversation grows past the node that was starred.
-  const chatPathStarred = useMemo(
-    () => chatConversationNodes.some((node) => node.starred),
-    [chatConversationNodes],
-  );
+  // The chat actionbar star is a node-level toggle on the conversation tip.
+  // Earlier revisions read the whole path and swept every starred path node
+  // on unstar. With long shared prefixes one sweep could clear stars that
+  // other conversations relied on, so the toggle now reads and writes the
+  // tip alone. A star stranded higher up the path stays visible in the
+  // sidebar's starred list.
+  const chatTipStarred =
+    chatConversationNodes[chatConversationNodes.length - 1]?.starred ?? false;
   const tokenMeterLabel =
     tokenCount === null || contextMax === null
       ? "Current draft token count and loaded context length are unavailable"
@@ -1960,39 +1961,26 @@ export default function App() {
     });
   }
 
-  // Star/unstar the chat conversation as a unit. Starring marks the deepest
-  // conversation node — the starred filter's lineage expansion then keeps the
-  // whole conversation path visible. Unstarring clears every starred
-  // conversation node on the current path so the toggle always answers "is
-  // this conversation starred". Both directions deliberately skip the root
-  // and system nodes (see chatConversationNodes): in an empty chat the path
-  // tail IS the preamble, and a star written there — or swept away from
-  // there — would affect every conversation in the project at once.
+  // Star or unstar the conversation tip. Both directions write exactly one
+  // node, the deepest conversation node on the current path, so this toggle
+  // can never touch stars on a shared prefix that other conversations rely
+  // on. Starring the tip still keeps the whole conversation visible under
+  // the starred filter through its lineage expansion. Both directions skip
+  // the root and system nodes (see chatConversationNodes) because in an
+  // empty chat the path tail is the preamble shared by every conversation
+  // in the project.
   async function onSetChatConversationStarred(starred: boolean) {
     if (!tree || !currentId || saving || streaming) return;
-
-    const nextNodes = { ...tree.nodes };
-    let changed = false;
-    if (starred) {
-      const tip = chatConversationNodes[chatConversationNodes.length - 1];
-      if (tip && !tip.starred) {
-        nextNodes[tip.id] = { ...tip, starred: true };
-        changed = true;
-      }
-    } else {
-      for (const node of chatConversationNodes) {
-        if (node.starred) {
-          nextNodes[node.id] = { ...node, starred: false };
-          changed = true;
-        }
-      }
-    }
-    if (!changed) return;
+    const tip = chatConversationNodes[chatConversationNodes.length - 1];
+    if (!tip || tip.starred === starred) return;
 
     await persistTreeMutation(
       tree,
       currentId,
-      { rootId: tree.rootId, nodes: nextNodes },
+      {
+        rootId: tree.rootId,
+        nodes: { ...tree.nodes, [tip.id]: { ...tip, starred } },
+      },
       {
         onSuccess: () => {
           pendingDeleteUndoRef.current = null;
@@ -3117,29 +3105,29 @@ export default function App() {
                   <button
                     type="button"
                     className="bw-node-star"
-                    data-on={chatPathStarred}
-                    aria-pressed={chatPathStarred}
+                    data-on={chatTipStarred}
+                    aria-pressed={chatTipStarred}
                     aria-label={
-                      chatPathStarred
+                      chatTipStarred
                         ? "Unstar this conversation"
                         : "Star this conversation"
                     }
                     title={
                       chatConversationNodes.length === 0
                         ? "Nothing to star yet — send a message first"
-                        : chatPathStarred
+                        : chatTipStarred
                           ? "Unstar this conversation"
                           : "Star this conversation"
                     }
                     disabled={
-                      // Disabled in an empty chat: the only path nodes are
-                      // the root/system preamble, which the conversation
+                      // Disabled in an empty chat. The only path nodes there
+                      // are the root/system preamble, which the conversation
                       // star must never write to.
                       saving || streaming || chatConversationNodes.length === 0
                     }
-                    onClick={() => void onSetChatConversationStarred(!chatPathStarred)}
+                    onClick={() => void onSetChatConversationStarred(!chatTipStarred)}
                   >
-                    {chatPathStarred ? "★" : "☆"}
+                    {chatTipStarred ? "★" : "☆"}
                   </button>
                 )}
                 {isChatProject && (
