@@ -402,11 +402,15 @@ export function useChatController(deps: ChatControllerDeps) {
           bannedStrings: activeBannedStrings,
           seedCount: seededCount,
           samplerBody: samplerSnapshot,
-          fetchOpenings: (probeSignal) =>
+          fetchOpenings: (probeSignal, prefixText) =>
             fetchChatOpenings(
               {
                 messages,
-                response_prefix: responsePrefix,
+                // Deeper probes carry the grown seed text in the response
+                // prefix, the same way the continuations carry their seed.
+                response_prefix: prefixText
+                  ? (responsePrefix ?? "") + prefixText
+                  : responsePrefix,
                 add_generation_prompt: true,
                 ...samplerSnapshot,
               },

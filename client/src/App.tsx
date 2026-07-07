@@ -1440,8 +1440,11 @@ export default function App() {
           bannedStrings: activeBannedStrings,
           seedCount: seededCount,
           samplerBody: samplerSnapshot,
-          fetchOpenings: (probeSignal) =>
-            fetchProseOpenings({ prompt: promptSnapshot, ...samplerSnapshot }, probeSignal),
+          fetchOpenings: (probeSignal, prefixText) =>
+            fetchProseOpenings(
+              { prompt: promptSnapshot + prefixText, ...samplerSnapshot },
+              probeSignal,
+            ),
           beginSeeded: (seeds) => {
             setBranchPaneRatio(branchPaneRatioForCount(seeds.length));
             startGeneration({

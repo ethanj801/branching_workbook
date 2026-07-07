@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import {
+  allocateSeedSlots,
   buildSamplerSnapshot,
   clampMinTokens,
   dropBannedOpenings,
+  growSeeds,
   rankChatTop,
   rankCompletionTop,
   runSeededFanOut,
@@ -143,6 +145,23 @@ describe("dropBannedOpenings", () => {
   });
 });
 
+describe("allocateSeedSlots", () => {
+  it("gives every survivor a slot and sums to the count", () => {
+    const slots = allocateSeedSlots(pool(" A", " B", " C"), 6, 1);
+    expect(slots).toHaveLength(3);
+    expect(slots.reduce((a, b) => a + b, 0)).toBe(6);
+    expect(Math.min(...slots)).toBeGreaterThanOrEqual(1);
+  });
+
+  it("weights the extra slots toward the likelier survivor", () => {
+    const survivors: Opening[] = [
+      { token: " A", logprob: Math.log(0.8) },
+      { token: " B", logprob: Math.log(0.2) },
+    ];
+    expect(allocateSeedSlots(survivors, 6, 1)).toEqual([4, 2]);
+  });
+});
+
 describe("sampleOpenings", () => {
   it("returns the most likely openings in order at temperature zero", () => {
     const out = sampleOpenings(pool(" The", " It", " A", " He"), 2, {
@@ -263,6 +282,132 @@ describe("sampleOpenings", () => {
   });
 });
 
+describe("growSeeds", () => {
+  function baseArgs() {
+    return {
+      prefix: "",
+      depth: 0,
+      count: 3,
+      // Temperature zero makes draws deterministic, so tests can assert exact
+      // seed sets.
+      samplerBody: { temperature: 0 } as SamplerBody,
+      bannedStrings: [],
+      maxDepth: 8,
+      probe: async (): Promise<Opening[]> => {
+        throw new Error("no probe expected");
+      },
+    };
+  }
+
+  it("stays a one-token draw when the pool covers the count", async () => {
+    const seeds = await growSeeds({ ...baseArgs(), pool: pool(" A", " B", " C") });
+    expect(seeds).toEqual([
+      { text: " A", tokenCount: 1 },
+      { text: " B", tokenCount: 1 },
+      { text: " C", tokenCount: 1 },
+    ]);
+  });
+
+  it("splits a short pool at the second token and keeps no bare split prefix", async () => {
+    const probed: string[] = [];
+    const seeds = await growSeeds({
+      ...baseArgs(),
+      pool: pool(" A", " B"),
+      probe: async (prefixText) => {
+        probed.push(prefixText);
+        return pool(" x", " y");
+      },
+    });
+    // Two survivors take three slots, so the likelier prefix owes two branches
+    // and gets split. Its extensions replace it. The other stays bare.
+    expect(probed).toEqual([" A"]);
+    expect(seeds).toEqual([
+      { text: " A x", tokenCount: 2 },
+      { text: " A y", tokenCount: 2 },
+      { text: " B", tokenCount: 1 },
+    ]);
+  });
+
+  it("keeps growing when the second position is also short", async () => {
+    const probed: string[] = [];
+    const seeds = await growSeeds({
+      ...baseArgs(),
+      maxDepth: 3,
+      pool: pool(" A"),
+      probe: async (prefixText) => {
+        probed.push(prefixText);
+        return pool(" z");
+      },
+    });
+    // Every position offers one option, so growth walks to maxDepth and then
+    // settles for a single seed.
+    expect(probed).toEqual([" A", " A z"]);
+    expect(seeds).toEqual([{ text: " A z z", tokenCount: 3 }]);
+  });
+
+  it("returns the short draw when maxDepth forbids growing", async () => {
+    const seeds = await growSeeds({ ...baseArgs(), maxDepth: 1, pool: pool(" A", " B") });
+    expect(seeds).toEqual([
+      { text: " A", tokenCount: 1 },
+      { text: " B", tokenCount: 1 },
+    ]);
+  });
+
+  it("filters bans from a deeper pool", async () => {
+    const seeds = await growSeeds({
+      ...baseArgs(),
+      bannedStrings: ["bad"],
+      pool: pool(" A", " B"),
+      probe: async () => pool(" bad", " x", " y"),
+    });
+    expect(seeds).toEqual([
+      { text: " A x", tokenCount: 2 },
+      { text: " A y", tokenCount: 2 },
+      { text: " B", tokenCount: 1 },
+    ]);
+  });
+
+  it("falls back to the bare prefix when its deeper probe fails", async () => {
+    const seeds = await growSeeds({
+      ...baseArgs(),
+      pool: pool(" A", " B"),
+      probe: async () => {
+        throw new Error("backend 400");
+      },
+    });
+    expect(seeds).toEqual([
+      { text: " A", tokenCount: 1 },
+      { text: " B", tokenCount: 1 },
+    ]);
+  });
+
+  it("falls back to the bare prefix when its deeper pool filters to nothing", async () => {
+    const seeds = await growSeeds({
+      ...baseArgs(),
+      bannedStrings: ["bad"],
+      pool: pool(" A", " B"),
+      probe: async () => pool(" bad"),
+    });
+    expect(seeds).toEqual([
+      { text: " A", tokenCount: 1 },
+      { text: " B", tokenCount: 1 },
+    ]);
+  });
+
+  it("re-raises an abort from a deeper probe", async () => {
+    const abortErr = Object.assign(new Error("aborted"), { name: "AbortError" });
+    await expect(
+      growSeeds({
+        ...baseArgs(),
+        pool: pool(" A", " B"),
+        probe: async () => {
+          throw abortErr;
+        },
+      }),
+    ).rejects.toBe(abortErr);
+  });
+});
+
 describe("runSeededFanOut", () => {
   function baseOpts() {
     return {
@@ -303,6 +448,7 @@ describe("runSeededFanOut", () => {
     const seen: number[] = [];
     const ran = await runSeededFanOut({
       ...baseOpts(),
+      seedCount: 2,
       bannedStrings: ["suddenly"],
       fetchOpenings: async () => pool(" Suddenly", " The", " A"),
       beginSeeded: (seeds) => {
@@ -315,6 +461,30 @@ describe("runSeededFanOut", () => {
     expect(ran).toBe(true);
     expect(beganWith).toEqual([" The", " A"]);
     expect(seen.sort()).toEqual([0, 1]);
+  });
+
+  it("grows past a short pool and budgets each branch below its seed length", async () => {
+    const seen: { seed: string; max: number }[] = [];
+    let beganWith: string[] | null = null;
+    const ran = await runSeededFanOut({
+      ...baseOpts(),
+      resolvedMaxTokens: 5,
+      fetchOpenings: async (_signal, prefixText) =>
+        prefixText === "" ? pool(" A", " B") : pool(" x", " y"),
+      beginSeeded: (seeds) => {
+        beganWith = seeds;
+      },
+      streamSeed: async (seed, _slot, max) => {
+        seen.push({ seed, max });
+      },
+    });
+    expect(ran).toBe(true);
+    expect(beganWith).toEqual([" A x", " A y", " B"]);
+    expect(seen.sort((a, b) => a.seed.localeCompare(b.seed))).toEqual([
+      { seed: " A x", max: 3 },
+      { seed: " A y", max: 3 },
+      { seed: " B", max: 4 },
+    ]);
   });
 
   it("keeps the full seed count when a banned candidate sits in the pool", async () => {
