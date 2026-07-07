@@ -22,6 +22,8 @@ import {
   getProjectSettings,
   listNodes,
   listPresets,
+  beginTreeMutation,
+  endTreeMutation,
   mutateNodes,
   openProject,
   setActivePreset,
@@ -981,6 +983,7 @@ export default function App() {
         return { tree, currentId, buffer };
       }
       if (streaming || saving) return null;
+      if (!beginTreeMutation()) return null;
 
       setSaving(true);
       setError(null);
@@ -1014,6 +1017,7 @@ export default function App() {
         return null;
       } finally {
         setSaving(false);
+        endTreeMutation();
       }
     },
     [buffer, currentId, project, saving, setError, setSaving, streaming, tree],
@@ -1432,6 +1436,7 @@ export default function App() {
     const path = pathFromRoot(committed.tree, targetId);
     const nextBuffer = concatPathText(path);
 
+    if (!beginTreeMutation()) return;
     setSaving(true);
     setError(null);
     try {
@@ -1447,6 +1452,7 @@ export default function App() {
       setError(formatError(err));
     } finally {
       setSaving(false);
+      endTreeMutation();
     }
   }
 
@@ -2002,6 +2008,7 @@ export default function App() {
     nextTree: Tree,
     options: { onSuccess?: () => void; onSettled?: () => void } = {},
   ) {
+    if (!beginTreeMutation()) return;
     setSaving(true);
     setError(null);
     try {
@@ -2012,6 +2019,7 @@ export default function App() {
       setError(formatError(err));
     } finally {
       setSaving(false);
+      endTreeMutation();
       options.onSettled?.();
     }
   }
@@ -2030,6 +2038,7 @@ export default function App() {
     const nextPath = pathFromRoot(nextTree, nextCurrentId);
     const nextBuffer = concatPathText(nextPath);
 
+    if (!beginTreeMutation()) return;
     setSaving(true);
     setError(null);
     try {
@@ -2047,6 +2056,7 @@ export default function App() {
       setError(formatError(err));
     } finally {
       setSaving(false);
+      endTreeMutation();
     }
   }
 

@@ -395,6 +395,26 @@ export function mutateNodes(batch: MutationBatch): Promise<{
   });
 }
 
+// Synchronous re-entry lock around tree persistence. The React `saving` flag
+// only disables buttons after a re-render, so two clicks landing inside one
+// render window both pass it, each builds its next tree from the same stale
+// snapshot, and the later dispatch silently reverts the earlier change while
+// the server keeps both. Every persistence entry point acquires this lock
+// synchronously before reading workspace state and releases it in a finally
+// block, which closes that window. A caller that fails to acquire simply
+// drops the action, matching what the disabled button would have done.
+let treeMutationInFlight = false;
+
+export function beginTreeMutation(): boolean {
+  if (treeMutationInFlight) return false;
+  treeMutationInFlight = true;
+  return true;
+}
+
+export function endTreeMutation(): void {
+  treeMutationInFlight = false;
+}
+
 async function streamJsonEvents<T>(
   response: Response,
   onEvent: (event: T) => void,

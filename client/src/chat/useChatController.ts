@@ -9,6 +9,8 @@ import {
 } from "react";
 
 import {
+  beginTreeMutation,
+  endTreeMutation,
   mutateNodes,
   streamChatCompletion,
   type ChatCompletionMessage,
@@ -213,6 +215,7 @@ export function useChatController(deps: ChatControllerDeps) {
     nextTree: Tree,
     nextCurrentId: string,
   ) {
+    if (!beginTreeMutation()) return false;
     const nextBuffer = concatPathText(pathFromRoot(nextTree, nextCurrentId));
     setSaving(true);
     setError(null);
@@ -232,6 +235,7 @@ export function useChatController(deps: ChatControllerDeps) {
       return false;
     } finally {
       setSaving(false);
+      endTreeMutation();
     }
   }
 
@@ -291,6 +295,7 @@ export function useChatController(deps: ChatControllerDeps) {
       return { tree, currentId };
     }
 
+    if (!beginTreeMutation()) return null;
     setSaving(true);
     setError(null);
     try {
@@ -323,6 +328,7 @@ export function useChatController(deps: ChatControllerDeps) {
       return null;
     } finally {
       setSaving(false);
+      endTreeMutation();
     }
   }
 
@@ -692,6 +698,7 @@ export function useChatController(deps: ChatControllerDeps) {
         [node.id]: node,
       },
     };
+    if (!beginTreeMutation()) return;
     setSaving(true);
     setError(null);
     try {
@@ -702,6 +709,7 @@ export function useChatController(deps: ChatControllerDeps) {
       setError(formatError(err));
     } finally {
       setSaving(false);
+      endTreeMutation();
     }
   }
 
