@@ -10,6 +10,7 @@ import {
 import AutoGrowTextarea from "../AutoGrowTextarea";
 import type { Candidate } from "../candidates";
 import { displayBranchText } from "../nodeMapLayout";
+import NodeNameEditor from "../NodeNameEditor";
 import { approxTokenCount } from "../tokens";
 import type { TreeNode } from "../tree/types";
 import ChatCandidateCards from "./ChatCandidateCards";
@@ -36,6 +37,7 @@ type ChatSurfaceProps = {
   commitChatDraftsAndPersist: () => void;
   onEndChatAssistantTurn: () => void;
   onDeleteChatTurn: (turn: ChatTurn) => void;
+  onRenameChatNode: (nodeId: string, name: string | null) => void | Promise<void>;
   onSubmitChatUser: () => void;
   onSaveChatSystem: () => void;
   // Forwarded to the candidate picker for the active assistant turn.
@@ -74,6 +76,7 @@ export default function ChatSurface({
   commitChatDraftsAndPersist,
   onEndChatAssistantTurn,
   onDeleteChatTurn,
+  onRenameChatNode,
   onSubmitChatUser,
   onSaveChatSystem,
   candidates,
@@ -243,7 +246,8 @@ export default function ChatSurface({
             .map((turn, index) => {
               const isActiveAssistant =
                 turn.role === "assistant" && chatTailTurn === turn && !turn.endOfTurn;
-              const turnKey = turn.nodes[0]?.id ?? "";
+              const headNode = turn.nodes[0];
+              const turnKey = headNode?.id ?? "";
               const draft = chatTurnDrafts[turnKey];
               const editable = turn.role === "user" || turn.role === "assistant";
               return (
@@ -254,7 +258,19 @@ export default function ChatSurface({
                   data-active={isActiveAssistant}
                 >
                   <div className="bw-chat-turn-head">
-                    <span>{turn.role === "user" ? "YOU" : "ASSISTANT"}</span>
+                    <span className="bw-chat-turn-head-left">
+                      <span>{turn.role === "user" ? "YOU" : "ASSISTANT"}</span>
+                      {/* The name lives on the turn's first node, the same
+                          node the sidebar shows as this turn's row. */}
+                      {headNode && (
+                        <NodeNameEditor
+                          node={headNode}
+                          disabled={saving || streaming}
+                          placeholder="Name this turn"
+                          onRename={(name) => void onRenameChatNode(headNode.id, name)}
+                        />
+                      )}
+                    </span>
                     {isActiveAssistant && (
                       <span>
                         in progress · {approxTokenCount(turn.text).toLocaleString()} tok

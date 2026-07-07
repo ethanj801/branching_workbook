@@ -48,6 +48,7 @@ import { neutralBody } from "./samplers/fields";
 import { useModelLoader, type ModelDownloadJob } from "./models/useModelLoader";
 import ModelPanel from "./models/ModelPanel";
 import NodeMapView from "./nodemap/NodeMapView";
+import NodeNameEditor from "./NodeNameEditor";
 import Switch from "./Switch";
 import InfoDot from "./InfoDot";
 import {
@@ -102,7 +103,6 @@ import {
   pathFromRoot,
   type NodeSource,
   type Tree,
-  type TreeNode,
 } from "./tree/types";
 
 type CommitResult = {
@@ -183,75 +183,6 @@ function formatModelDownloadTitle(job: ModelDownloadJob): string {
     case "idle":
       return "";
   }
-}
-
-function NodeNameEditor({
-  node,
-  disabled,
-  onRename,
-}: {
-  node: TreeNode;
-  disabled: boolean;
-  onRename: (name: string | null) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState(node.name ?? "");
-  const inputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    setDraft(node.name ?? "");
-    setEditing(false);
-  }, [node.id, node.name]);
-
-  useEffect(() => {
-    if (!editing) return;
-    inputRef.current?.focus();
-    inputRef.current?.select();
-  }, [editing]);
-
-  function commit() {
-    onRename(draft.trim() || null);
-    setEditing(false);
-  }
-
-  if (editing) {
-    return (
-      <input
-        ref={inputRef}
-        value={draft}
-        onChange={(event) => setDraft(event.target.value)}
-        onBlur={commit}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") {
-            event.preventDefault();
-            commit();
-          }
-          if (event.key === "Escape") {
-            event.preventDefault();
-            setDraft(node.name ?? "");
-            setEditing(false);
-          }
-        }}
-        placeholder="Untitled section"
-        className="bw-node-name-input"
-      />
-    );
-  }
-
-  const hasName = !!node.name?.trim();
-  return (
-    <button
-      type="button"
-      className={`bw-node-name${hasName ? "" : " is-empty"}`}
-      onClick={() => {
-        if (!disabled) setEditing(true);
-      }}
-      disabled={disabled}
-      title={hasName ? "Rename this section" : "Name this section"}
-    >
-      <span>{hasName ? node.name : "Untitled section"}</span>
-    </button>
-  );
 }
 
 const AUTOCOMPLETE_POOL_TARGET = 10;
@@ -1905,16 +1836,16 @@ export default function App() {
           .filter(Boolean)
           .join(" ");
 
-  async function onRenameCurrentNode(name: string | null) {
+  async function onRenameNode(nodeIdToRename: string, name: string | null) {
     if (!tree || !currentId || saving || streaming) return;
-    const current = tree.nodes[currentId];
-    if (!current || (current.name ?? null) === name) return;
+    const node = tree.nodes[nodeIdToRename];
+    if (!node || (node.name ?? null) === name) return;
 
     const nextTree: Tree = {
       rootId: tree.rootId,
       nodes: {
         ...tree.nodes,
-        [currentId]: { ...current, name },
+        [nodeIdToRename]: { ...node, name },
       },
     };
 
@@ -2767,6 +2698,7 @@ export default function App() {
                   commitChatDraftsAndPersist={commitChatDraftsAndPersist}
                   onEndChatAssistantTurn={onEndChatAssistantTurn}
                   onDeleteChatTurn={onDeleteChatTurn}
+                  onRenameChatNode={onRenameNode}
                   onSubmitChatUser={onSubmitChatUser}
                   onSaveChatSystem={onSaveChatSystem}
                   candidates={candidates}
@@ -2816,7 +2748,7 @@ export default function App() {
                           <NodeNameEditor
                             node={currentNode}
                             disabled={saving || streaming}
-                            onRename={(name) => void onRenameCurrentNode(name)}
+                            onRename={(name) => void onRenameNode(currentNode.id, name)}
                           />
                           <button
                             type="button"

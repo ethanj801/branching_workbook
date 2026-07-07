@@ -1138,6 +1138,36 @@ textarea:disabled {
   text-transform: none;
 }
 
+.bw-chat-turn-head-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  flex: 1;
+  min-width: 0;
+}
+
+.bw-chat-turn-head .bw-node-name,
+.bw-chat-turn-head .bw-node-name-input {
+  font-family: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  padding: 0 0 0.05rem;
+}
+
+/* Keep unnamed turns quiet in a long transcript. The affordance appears
+   when the pointer is over the turn or when it has keyboard focus. */
+.bw-chat-turn .bw-node-name.is-empty {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.bw-chat-turn:hover .bw-node-name.is-empty,
+.bw-chat-turn:focus-within .bw-node-name.is-empty {
+  opacity: 1;
+}
+
 .bw-chat-turn-text {
   margin-top: 0.6rem;
   white-space: pre-wrap;
