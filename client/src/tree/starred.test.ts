@@ -87,4 +87,25 @@ describe("starredNavigationNodes", () => {
 
     expect(starredNavigationNodes(tree).map((node) => node.id)).toEqual(["kept"]);
   });
+
+  it("orders stars on a very deep chain without overflowing the stack", () => {
+    const depth = 20000;
+    const nodes = [makeNode("n0", null)];
+    for (let i = 1; i <= depth; i++) {
+      nodes.push(
+        makeNode(`n${i}`, `n${i - 1}`, {
+          createdAt: i,
+          starred: i % 5000 === 0,
+        }),
+      );
+    }
+    const tree = makeTree(nodes);
+
+    expect(starredNavigationNodes(tree).map((node) => node.id)).toEqual([
+      "n5000",
+      "n10000",
+      "n15000",
+      "n20000",
+    ]);
+  });
 });
