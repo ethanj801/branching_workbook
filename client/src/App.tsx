@@ -111,11 +111,12 @@ type CommitResult = {
   buffer: string;
 };
 
-type TreeContextMenu = {
-  nodeId: string;
-  x: number;
-  y: number;
-};
+// Right-click menu in the tree sidebar and node map. The node variant acts
+// on one row. The chain variant acts on every node folded into a linear-run
+// summary row.
+type TreeContextMenu =
+  | { kind: "node"; nodeId: string; x: number; y: number }
+  | { kind: "chain"; nodeIds: string[]; x: number; y: number };
 
 type WorkspaceMode = "compose" | "autocomplete" | "map";
 
@@ -641,12 +642,19 @@ export default function App() {
     commitChatDraftsAndPersistRef.current = commitChatDraftsAndPersist;
   });
 
-  function openTreeMenu(nodeIdToOpen: string, x: number, y: number) {
-    setTreeMenu({
-      nodeId: nodeIdToOpen,
+  function clampMenuPosition(x: number, y: number) {
+    return {
       x: Math.max(8, Math.min(x, window.innerWidth - 220)),
       y: Math.max(8, Math.min(y, window.innerHeight - 190)),
-    });
+    };
+  }
+
+  function openTreeMenu(nodeIdToOpen: string, x: number, y: number) {
+    setTreeMenu({ kind: "node", nodeId: nodeIdToOpen, ...clampMenuPosition(x, y) });
+  }
+
+  function openChainMenu(nodeIds: string[], x: number, y: number) {
+    setTreeMenu({ kind: "chain", nodeIds, ...clampMenuPosition(x, y) });
   }
 
   const loadProject = useCallback(
@@ -2199,10 +2207,13 @@ export default function App() {
     await persistTreeEdit(tree, nextTree, nextCurrentId, nextSelectedId);
   }
 
-  async function onHideMapSelection(selectedIdsToHide: string[]) {
+  // Batch hide, shared by the node map's multi-selection and the sidebar's
+  // linear-run context menu. Skips the root, the active node, and anything
+  // already hidden.
+  async function onHideNodes(nodeIdsToHide: string[]) {
     if (!tree || !currentId || saving || streaming) return;
 
-    const eligible = selectedIdsToHide.filter((id) => {
+    const eligible = nodeIdsToHide.filter((id) => {
       const node = tree.nodes[id];
       return node && node.parentId !== null && id !== currentId && !node.hidden;
     });
@@ -2216,7 +2227,9 @@ export default function App() {
     }
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
-    await persistTreeMutation(tree, currentId, nextTree);
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSettled: () => setTreeMenu(null),
+    });
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2412,7 +2425,23 @@ export default function App() {
         </div>
       )}
 
-      {treeMenu && tree && (
+      {treeMenu && treeMenu.kind === "chain" && tree && (
+        <div
+          className="bw-context-menu"
+          style={{ left: treeMenu.x, top: treeMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            onClick={() => void onHideNodes(treeMenu.nodeIds)}
+            disabled={saving || streaming}
+          >
+            Hide these {treeMenu.nodeIds.length} nodes
+          </button>
+        </div>
+      )}
+
+      {treeMenu && treeMenu.kind === "node" && tree && (
         <div
           className="bw-context-menu"
           style={{ left: treeMenu.x, top: treeMenu.y }}
@@ -2576,6 +2605,7 @@ export default function App() {
             onSelectNode={onSelectNode}
             onSetNodeStarred={onSetNodeStarred}
             openTreeMenu={openTreeMenu}
+            openChainMenu={openChainMenu}
             onTreeResizeStart={(event) =>
               startColumnDrag(event, setTreeWidth, treeWidth, 1, 180, 480)
             }
@@ -2731,7 +2761,7 @@ export default function App() {
                   onSetNodeHidden={onSetNodeHidden}
                   onDeleteMapNode={onDeleteMapNode}
                   onDeleteMapSelection={onDeleteMapSelection}
-                  onHideMapSelection={onHideMapSelection}
+                  onHideMapSelection={onHideNodes}
                   onMergeMapSelection={onMergeMapSelection}
                   onMergeLinearChainDown={onMergeLinearChainDown}
                   onMergeNodeIntoParent={onMergeNodeIntoParent}

@@ -43,6 +43,7 @@ type TreeSidebarProps = {
   onSelectNode: (nodeId: string) => void | Promise<void>;
   onSetNodeStarred: (nodeId: string, starred: boolean) => void | Promise<void>;
   openTreeMenu: (nodeId: string, x: number, y: number) => void;
+  openChainMenu: (nodeIds: string[], x: number, y: number) => void;
   onTreeResizeStart: (event: ReactMouseEvent<HTMLDivElement>) => void;
 };
 
@@ -104,6 +105,7 @@ export default function TreeSidebar({
   onSelectNode,
   onSetNodeStarred,
   openTreeMenu,
+  openChainMenu,
   onTreeResizeStart,
 }: TreeSidebarProps) {
   const starredLineageIds = useMemo<Set<string> | null>(() => {
@@ -364,6 +366,15 @@ export default function TreeSidebar({
             onClick={() => {
               setExpandedChains((prev) => ({ ...prev, [key]: true }));
               void onSelectNode(destination.id);
+            }}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              openChainMenu(
+                chain.nodes.map((node) => node.id),
+                event.clientX,
+                event.clientY,
+              );
             }}
             title={`Go to ${nodeLabel(destination)}`}
           >
