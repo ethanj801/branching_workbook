@@ -1,29 +1,40 @@
-import { useLayoutEffect, useRef, type TextareaHTMLAttributes } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  type TextareaHTMLAttributes,
+} from "react";
 
-// The chat textareas style themselves with CSS `field-sizing: content` to
-// grow with their content, but that property only landed in Chrome 123
-// (Mar 2024) and Safari 18 (Sept 2024), and Firefox still doesn't support
-// it as of mid-2026. Combined with `resize: none` in the same rule, an
-// unsupported browser leaves the user with tiny boxes they can't grow.
+// The chat textareas style themselves with CSS `field-sizing: content` to grow
+// with their content. That property also reflows the box when its column width
+// changes (e.g. the sidebar collapses and the transcript widens), so where the
+// browser supports it the CSS alone is correct and this component renders a
+// plain textarea.
 //
-// This component sets the height inline via scrollHeight on every value
-// change, which works in every browser and harmlessly overrides
-// field-sizing where the latter does work.
+// field-sizing landed in Chrome 123 (Mar 2024) and Safari 18 (Sept 2024), and
+// Firefox still lacks it as of mid-2026. There we set the height from
+// scrollHeight ourselves, on both value changes and width changes. We must not
+// do this where field-sizing works, because an inline height overrides
+// field-sizing and freezes the box at whatever width it was last measured at,
+// leaving empty space below the text after the column resizes.
+const supportsFieldSizing =
+  typeof CSS !== "undefined" && CSS.supports("field-sizing", "content");
+
 export default function AutoGrowTextarea(
   props: TextareaHTMLAttributes<HTMLTextAreaElement>,
 ) {
   const ref = useRef<HTMLTextAreaElement | null>(null);
 
-  useLayoutEffect(() => {
+  const resize = useCallback(() => {
     const ta = ref.current;
     if (!ta) return;
-    // Without field-sizing support, height:auto momentarily collapses the
-    // textarea to its CSS min-height during the re-measure's forced reflow.
-    // If a long textarea sits inside a scrolled container (the chat
-    // transcript), that collapse shrinks the container's content and the
-    // browser clamps its scrollTop — permanently, since restoring the
-    // height afterwards doesn't restore the scroll. Pin the nearest
-    // scrollable ancestor across the two writes.
+    // height:auto momentarily collapses the textarea to its CSS min-height
+    // during the re-measure's forced reflow. If a long textarea sits inside a
+    // scrolled container (the chat transcript), that collapse shrinks the
+    // container's content and the browser clamps its scrollTop permanently,
+    // since restoring the height afterwards doesn't restore the scroll. Pin the
+    // nearest scrollable ancestor across the two writes.
     let scroller: HTMLElement | null = ta.parentElement;
     while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
       scroller = scroller.parentElement;
@@ -43,7 +54,29 @@ export default function AutoGrowTextarea(
     ) {
       scroller.scrollTop = scrollTopBefore;
     }
-  }, [props.value]);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (supportsFieldSizing) return;
+    resize();
+  }, [props.value, resize]);
+
+  useEffect(() => {
+    if (supportsFieldSizing) return;
+    const ta = ref.current;
+    if (!ta) return;
+    // Re-measure when the column width changes. Guard on width so setting our
+    // own height doesn't feed back into the observer as an endless loop.
+    let lastWidth = ta.clientWidth;
+    const observer = new ResizeObserver(() => {
+      const width = ta.clientWidth;
+      if (width === lastWidth) return;
+      lastWidth = width;
+      resize();
+    });
+    observer.observe(ta);
+    return () => observer.disconnect();
+  }, [resize]);
 
   return <textarea ref={ref} {...props} />;
 }
