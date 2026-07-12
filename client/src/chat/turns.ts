@@ -102,6 +102,37 @@ export function foldChatTurns(nodes: readonly TreeNode[]): ChatTurn[] {
   return turns;
 }
 
+export type ChatPayload = {
+  messages: { role: ChatRole; content: string }[];
+  continueFinalMessage: boolean;
+};
+
+// The wire shape for generating from a chat path. Every turn becomes a
+// message, including an unfinished assistant tail. continueFinalMessage
+// marks that tail for the backend to render as an unterminated turn and
+// continue. Seed bytes travel separately in response_prefix at the call
+// sites.
+export function buildChatPayload(path: readonly TreeNode[]): ChatPayload {
+  const turns = foldChatTurns(path.filter((item) => item.parentId !== null));
+  const lastTurn = turns[turns.length - 1] ?? null;
+  const continueFinalMessage =
+    lastTurn?.role === "assistant" && lastTurn.endOfTurn === false;
+  return {
+    messages: turns.map((turn) => ({ role: turn.role, content: turn.text })),
+    continueFinalMessage,
+  };
+}
+
+// A template that owns the space after its assistant header (Mistral's
+// "[/INST] " family) re-adds it on every render, and the model emits it
+// inside its first streamed token. Storing that space would double it on
+// re-render. Other template families place no bare space there, so removing
+// one plain leading space is safe for every model. Continuation text must
+// never pass through here. A leading space mid-turn is genuine content.
+export function stripTurnOpeningSpace(text: string): string {
+  return text.startsWith(" ") ? text.slice(1) : text;
+}
+
 // Any user or assistant tail can generate. A finalized assistant tail
 // (endOfTurn=true) is included: Generate there means "continue this turn
 // after all" — the controller re-opens it (clears endOfTurn) before

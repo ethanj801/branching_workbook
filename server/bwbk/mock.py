@@ -25,6 +25,7 @@ from bwbk.sse import (
     completion_envelope,
     new_request_id,
     top_map_to_chat_leaves,
+    validate_continue_final_message,
 )
 
 router = APIRouter()
@@ -98,6 +99,7 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
     response_prefix: str | None = None
     add_generation_prompt: bool = True
+    continue_final_message: bool = False
     n: int = 1
     stream: bool = True
     max_tokens: int = 128
@@ -235,7 +237,12 @@ async def _stream_mock_chat_completion(request: Request, data: ChatCompletionReq
     chunk_delay = 0.03
     branch_count = max(1, data.n)
     char_budget = data.max_tokens * 4
-    prefix = data.response_prefix or ""
+    # The continued final message and any response_prefix both extend the
+    # prompt, matching TabbyAPI's continue_final_message behavior. The canned
+    # text starts with a space, which reads as a word separator mid-message
+    # and as the template-owned space on a fresh turn.
+    continued = data.messages[-1].content or "" if data.continue_final_message else ""
+    prefix = continued + (data.response_prefix or "")
 
     start = _continuation_start(
         prefix + "".join(message.content or "" for message in data.messages)
@@ -303,6 +310,7 @@ async def completions(request: Request, data: CompletionRequest):
 
 @router.post("/api/chat/completions")
 async def chat_completions(request: Request, data: ChatCompletionRequest):
+    validate_continue_final_message(data)
     return EventSourceResponse(_stream_mock_chat_completion(request, data))
 
 

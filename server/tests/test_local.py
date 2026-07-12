@@ -187,3 +187,36 @@ async def test_current_model_reports_local_id(client: AsyncClient):
     body = r.json()
     assert body["id"] == local.MODEL_ID
     assert body["parameters"]["max_batch_size"] == local.MAX_SEQS
+
+
+def test_gemma_prompt_continue_final_message_leaves_final_turn_open():
+    messages = [
+        local.ChatMessage(role="user", content="Tell me a story."),
+        local.ChatMessage(role="assistant", content="The story begins"),
+    ]
+    prompt = local._gemma_prompt(messages, "", False, True)
+    assert prompt.endswith("<start_of_turn>model\nThe story begins")
+    assert prompt.count("<end_of_turn>") == 1
+
+
+def test_gemma_prompt_continue_final_message_appends_response_prefix():
+    messages = [
+        local.ChatMessage(role="user", content="Go on."),
+        local.ChatMessage(role="assistant", content="First"),
+    ]
+    prompt = local._gemma_prompt(messages, " second", False, True)
+    assert prompt.endswith("<start_of_turn>model\nFirst second")
+
+
+async def test_chat_continue_final_message_rejects_generation_prompt(client: AsyncClient):
+    r = await client.post(
+        "/api/chat/completions",
+        json={
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "The"},
+            ],
+            "continue_final_message": True,
+        },
+    )
+    assert r.status_code == 422

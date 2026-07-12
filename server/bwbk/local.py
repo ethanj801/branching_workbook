@@ -30,6 +30,7 @@ from bwbk.sse import (
     completion_envelope,
     new_request_id,
     top_map_to_chat_leaves,
+    validate_continue_final_message,
 )
 
 router = APIRouter()
@@ -101,6 +102,7 @@ class ChatCompletionRequest(BaseModel):
     messages: list[ChatMessage]
     response_prefix: str | None = None
     add_generation_prompt: bool = True
+    continue_final_message: bool = False
     n: int = 1
     stream: bool = True
     max_tokens: int = 128
@@ -133,16 +135,26 @@ class TokenEncodeRequest(BaseModel):
 
 
 def _gemma_prompt(
-    messages: list[ChatMessage], response_prefix: str, add_generation_prompt: bool
+    messages: list[ChatMessage],
+    response_prefix: str,
+    add_generation_prompt: bool,
+    continue_final_message: bool = False,
 ) -> str:
     """Wrap chat messages in Gemma's chat-turn template. Gemma has no system role, so a
     system message is emitted as a user turn. Tokenized with special=True so the turn
-    markers become real special tokens, with BOS added automatically."""
+    markers become real special tokens, with BOS added automatically. With
+    continue_final_message the final message is rendered as an unterminated turn so
+    generation continues it in place."""
     parts = []
-    for message in messages:
+    closed = messages[:-1] if continue_final_message else messages
+    for message in closed:
         role = "model" if message.role == "assistant" else "user"
         parts.append(f"<start_of_turn>{role}\n{message.content or ''}<end_of_turn>\n")
-    if add_generation_prompt:
+    if continue_final_message:
+        final = messages[-1]
+        role = "model" if final.role == "assistant" else "user"
+        parts.append(f"<start_of_turn>{role}\n{final.content or ''}")
+    elif add_generation_prompt:
         parts.append("<start_of_turn>model\n")
     parts.append(response_prefix)
     return "".join(parts)
@@ -278,7 +290,13 @@ async def completions(request: Request, data: CompletionRequest):
 
 @router.post("/api/chat/completions")
 async def chat_completions(request: Request, data: ChatCompletionRequest):
-    prompt = _gemma_prompt(data.messages, data.response_prefix or "", data.add_generation_prompt)
+    validate_continue_final_message(data)
+    prompt = _gemma_prompt(
+        data.messages,
+        data.response_prefix or "",
+        data.add_generation_prompt,
+        data.continue_final_message,
+    )
     specs = _specs(_engine_or_raise(), data, prompt)
     return EventSourceResponse(_run(request, specs, chat=True))
 

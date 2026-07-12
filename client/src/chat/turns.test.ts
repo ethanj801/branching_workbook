@@ -4,6 +4,7 @@ import type { Tree } from "../tree/types";
 import { pathFromRoot } from "../tree/types";
 import {
   applyChatTurnEditFork,
+  buildChatPayload,
   canAddAssistantChunkFromTail,
   canGenerateAssistantFromTail,
   commitChatDrafts,
@@ -13,6 +14,7 @@ import {
   hasUnsavedChatDrafts,
   isDraftCommitable,
   isDraftDirty,
+  stripTurnOpeningSpace,
 } from "./turns";
 
 function makeNode(
@@ -1001,5 +1003,88 @@ describe("hasUnsavedChatDrafts", () => {
         ghost: draft("edit on deleted turn", ""),
       }),
     ).toBe(false);
+  });
+});
+
+describe("buildChatPayload", () => {
+  it("sends every finished turn as a message with no continuation", () => {
+    const payload = buildChatPayload([
+      makeNode("root", null, "system", ""),
+      makeNode("s1", "root", "system", "Be brief.", true),
+      makeNode("u1", "s1", "user", "Tell me a story.", true),
+    ]);
+    expect(payload.messages).toEqual([
+      { role: "system", content: "Be brief." },
+      { role: "user", content: "Tell me a story." },
+    ]);
+    expect(payload.continueFinalMessage).toBe(false);
+  });
+
+  it("keeps an unfinished assistant tail as the final message and flags the continuation", () => {
+    const payload = buildChatPayload([
+      makeNode("root", null, "system", ""),
+      makeNode("u1", "root", "user", "Tell me a story.", true),
+      makeNode("a1", "u1", "assistant", "The story begins"),
+    ]);
+    expect(payload.messages).toEqual([
+      { role: "user", content: "Tell me a story." },
+      { role: "assistant", content: "The story begins" },
+    ]);
+    expect(payload.continueFinalMessage).toBe(true);
+  });
+
+  it("treats a finalized assistant tail as a fresh turn", () => {
+    const payload = buildChatPayload([
+      makeNode("root", null, "system", ""),
+      makeNode("u1", "root", "user", "Tell me a story.", true),
+      makeNode("a1", "u1", "assistant", "The story ends.", true),
+    ]);
+    expect(payload.continueFinalMessage).toBe(false);
+  });
+
+  it("folds a multi-chunk assistant tail into one continued message", () => {
+    const payload = buildChatPayload([
+      makeNode("root", null, "system", ""),
+      makeNode("u1", "root", "user", "Go on.", true),
+      makeNode("a1", "u1", "assistant", "First "),
+      makeNode("a2", "a1", "assistant", "second"),
+    ]);
+    expect(payload.messages[payload.messages.length - 1]).toEqual({
+      role: "assistant",
+      content: "First second",
+    });
+    expect(payload.continueFinalMessage).toBe(true);
+  });
+
+  it("drops the root node from the payload", () => {
+    const payload = buildChatPayload([
+      makeNode("root", null, "system", "root text never ships"),
+      makeNode("u1", "root", "user", "Hi", true),
+    ]);
+    expect(payload.messages).toEqual([{ role: "user", content: "Hi" }]);
+  });
+});
+
+describe("stripTurnOpeningSpace", () => {
+  it("removes exactly one leading plain space", () => {
+    expect(stripTurnOpeningSpace(" The story begins")).toBe("The story begins");
+  });
+
+  it("leaves text without a leading space unchanged", () => {
+    expect(stripTurnOpeningSpace("The story begins")).toBe("The story begins");
+  });
+
+  it("removes only one space when two are present", () => {
+    expect(stripTurnOpeningSpace("  doubled")).toBe(" doubled");
+  });
+
+  it("does not touch a leading newline or tab", () => {
+    expect(stripTurnOpeningSpace("\nThe story")).toBe("\nThe story");
+    expect(stripTurnOpeningSpace("\tThe story")).toBe("\tThe story");
+  });
+
+  it("turns a lone space into an empty string", () => {
+    expect(stripTurnOpeningSpace(" ")).toBe("");
+    expect(stripTurnOpeningSpace("")).toBe("");
   });
 });

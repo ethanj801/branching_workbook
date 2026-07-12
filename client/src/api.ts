@@ -121,6 +121,11 @@ export type ChatCompletionRequestBody = SamplerBody & {
   messages: ChatCompletionMessage[];
   response_prefix?: string;
   add_generation_prompt?: boolean;
+  // Renders the final message as an unterminated assistant turn so the model
+  // continues it through the template. Requires add_generation_prompt false.
+  // A response_prefix may be sent with it and is appended verbatim after the
+  // turn.
+  continue_final_message?: boolean;
   n?: number;
 };
 

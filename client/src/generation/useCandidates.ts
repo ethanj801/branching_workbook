@@ -74,6 +74,11 @@ export type GenerationSeed = {
   baseId: string;
   modelId: string;
   samplerSnapshot: SamplerBody;
+  // True when a chat generation opened a fresh assistant turn rather than
+  // continuing one. Captured at start time because the tree can change
+  // between streaming and Use, and stripTurnOpeningSpace must key off how
+  // the text was generated rather than the tree's later shape.
+  opensAssistantTurn?: boolean;
 };
 
 type UseCandidatesArgs = {
@@ -96,6 +101,7 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
   const [candidateModelId, setCandidateModelId] = useState<string | null>(null);
   const [candidateSamplerSnapshot, setCandidateSamplerSnapshot] =
     useState<SamplerBody | null>(null);
+  const [candidateOpensTurn, setCandidateOpensTurn] = useState(false);
   const [savedCandidateIds, setSavedCandidateIds] = useState<Record<number, string>>(
     {},
   );
@@ -115,6 +121,7 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
     setCandidateBaseId(null);
     setCandidateModelId(null);
     setCandidateSamplerSnapshot(null);
+    setCandidateOpensTurn(false);
     setSavedCandidateIds({});
     setPickedCandidateIndex(null);
     setUsedCandidateRange(null);
@@ -130,6 +137,7 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
     setCandidateBaseId(seed.baseId);
     setCandidateModelId(seed.modelId);
     setCandidateSamplerSnapshot(seed.samplerSnapshot);
+    setCandidateOpensTurn(seed.opensAssistantTurn ?? false);
     setSavedCandidateIds({});
     setPickedCandidateIndex(null);
     setUsedCandidateRange(null);
@@ -194,6 +202,7 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
     candidateBaseId,
     candidateModelId,
     candidateSamplerSnapshot,
+    candidateOpensTurn,
     savedCandidateIds,
     pickedCandidateIndex,
     usedCandidateRange,

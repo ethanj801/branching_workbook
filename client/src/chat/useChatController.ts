@@ -13,7 +13,6 @@ import {
   endTreeMutation,
   mutateNodes,
   streamChatCompletion,
-  type ChatCompletionMessage,
   type ProjectInfo,
   type SamplerBody,
   type TabbyModel,
@@ -41,7 +40,9 @@ import { treeHistoryLocation, type RecordTreeHistory } from "../tree/history";
 import type { WorkspaceAction } from "../workspace/workspaceReducer";
 import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "../tree/types";
 import {
+  buildChatPayload,
   canAddAssistantChunkFromTail,
+  stripTurnOpeningSpace,
   canGenerateAssistantFromTail,
   commitChatDrafts,
   foldChatTurns,
@@ -111,6 +112,7 @@ export function useChatController(deps: ChatControllerDeps) {
     candidatePrompt,
     candidateModelId,
     candidateSamplerSnapshot,
+    candidateOpensTurn,
     savedCandidateIds,
     branchPickerOpen,
     setCandidates,
@@ -201,25 +203,6 @@ export function useChatController(deps: ChatControllerDeps) {
       ta.setSelectionRange(len, len);
     }
   }, [chatTurns, saving, streaming]);
-
-  function buildChatPayload(path: TreeNode[]): {
-    messages: ChatCompletionMessage[];
-    responsePrefix: string | undefined;
-  } {
-    const turns = foldChatTurns(path.filter((item) => item.parentId !== null));
-
-    const lastTurn = turns[turns.length - 1] ?? null;
-    const continuingAssistant =
-      lastTurn?.role === "assistant" && lastTurn.endOfTurn === false;
-    const messageTurns = continuingAssistant ? turns.slice(0, -1) : turns;
-    return {
-      messages: messageTurns.map((turn) => ({
-        role: turn.role,
-        content: turn.text,
-      })),
-      responsePrefix: continuingAssistant ? lastTurn.text : undefined,
-    };
-  }
 
   async function persistChatTree(
     beforeTree: Tree,
@@ -409,7 +392,7 @@ export function useChatController(deps: ChatControllerDeps) {
     // actually shaped its text. The snapshot and the request body are the same.
     const samplerSnapshot = buildSamplerSnapshot(draftBody, activeBannedStrings);
     const promptSnapshot = concatPathText(basePath);
-    const { messages, responsePrefix } = buildChatPayload(basePath);
+    const { messages, continueFinalMessage } = buildChatPayload(basePath);
 
     setError(null);
     setStreaming(true);
@@ -442,10 +425,9 @@ export function useChatController(deps: ChatControllerDeps) {
                 messages,
                 // Deeper probes carry the grown seed text in the response
                 // prefix, the same way the continuations carry their seed.
-                response_prefix: prefixText
-                  ? (responsePrefix ?? "") + prefixText
-                  : responsePrefix,
-                add_generation_prompt: true,
+                response_prefix: prefixText || undefined,
+                add_generation_prompt: !continueFinalMessage,
+                continue_final_message: continueFinalMessage,
                 ...samplerSnapshot,
               },
               probeSignal,
@@ -458,6 +440,7 @@ export function useChatController(deps: ChatControllerDeps) {
               baseId,
               modelId: currentTabbyModel.id,
               samplerSnapshot,
+              opensAssistantTurn: !continueFinalMessage,
             });
             setCandidates(seededCandidates(seeds));
             setVisibleCandidateIndex(0);
@@ -467,8 +450,9 @@ export function useChatController(deps: ChatControllerDeps) {
               clampMinTokens(
                 {
                   messages,
-                  response_prefix: (responsePrefix ?? "") + seed,
-                  add_generation_prompt: true,
+                  response_prefix: seed,
+                  add_generation_prompt: !continueFinalMessage,
+                  continue_final_message: continueFinalMessage,
                   n: 1,
                   max_tokens: continuationMax,
                   ...samplerSnapshot,
@@ -499,14 +483,15 @@ export function useChatController(deps: ChatControllerDeps) {
           baseId,
           modelId: currentTabbyModel.id,
           samplerSnapshot,
+          opensAssistantTurn: !continueFinalMessage,
         });
         let firstVisibleChosen = false;
         await streamChatCompletion(
           clampMinTokens(
             {
               messages,
-              response_prefix: responsePrefix,
-              add_generation_prompt: true,
+              add_generation_prompt: !continueFinalMessage,
+              continue_final_message: continueFinalMessage,
               n,
               max_tokens: resolvedMaxTokens,
               ...samplerSnapshot,
@@ -692,7 +677,7 @@ export function useChatController(deps: ChatControllerDeps) {
     const endOfTurn = candidates[index]?.finishReason === "stop";
     const node = branchNode(
       candidateBaseId,
-      text,
+      candidateOpensTurn ? stripTurnOpeningSpace(text) : text,
       "composed",
       false,
       candidatePrompt,
@@ -772,7 +757,7 @@ export function useChatController(deps: ChatControllerDeps) {
     }
     const node = branchNode(
       candidateBaseId,
-      text,
+      candidateOpensTurn ? stripTurnOpeningSpace(text) : text,
       "generated",
       true,
       candidatePrompt,

@@ -350,3 +350,97 @@ async def test_token_encode_returns_length(client: AsyncClient):
     payload = r.json()
     assert payload["length"] == 4
     assert len(payload["tokens"]) == 4
+
+
+async def _chat_stream_text(client: AsyncClient, payload: dict) -> str:
+    """POST a chat completion and reassemble the streamed delta text."""
+    body = ""
+    async with client.stream("POST", "/api/chat/completions", json=payload) as r:
+        assert r.status_code == 200
+        async for chunk in r.aiter_text():
+            body += chunk
+    events, done = _parse_sse(body)
+    assert done
+    return "".join(ev["choices"][0]["delta"].get("content", "") for ev in events)
+
+
+async def test_chat_fresh_turn_streams_template_owned_space(client: AsyncClient):
+    """A fresh assistant turn streams text with the Mistral-family leading
+    space, the shape the client strips once at save time."""
+    text = await _chat_stream_text(
+        client,
+        {"messages": [{"role": "user", "content": "hello"}], "n": 1, "max_tokens": 400},
+    )
+    assert text.startswith(" ")
+
+
+async def test_chat_continue_final_message_streams_only_new_text(client: AsyncClient):
+    """A continuation never re-streams the continued message. The streamed
+    text is exactly one canned continuation, nothing prepended."""
+    text = await _chat_stream_text(
+        client,
+        {
+            "messages": [
+                {"role": "user", "content": "Tell me a story."},
+                {"role": "assistant", "content": "The story begins"},
+            ],
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+            "n": 1,
+            "max_tokens": 400,
+        },
+    )
+    assert text in mock.SAMPLE_CONTINUATIONS
+
+
+async def test_chat_continue_final_message_composes_with_response_prefix(
+    client: AsyncClient,
+):
+    """Seed bytes ride response_prefix on top of a continuation. Neither the
+    continued message nor the seed streams back."""
+    text = await _chat_stream_text(
+        client,
+        {
+            "messages": [
+                {"role": "user", "content": "Tell me a story."},
+                {"role": "assistant", "content": "The story begins"},
+            ],
+            "response_prefix": " and then",
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+            "n": 1,
+            "max_tokens": 400,
+        },
+    )
+    assert text in mock.SAMPLE_CONTINUATIONS
+
+
+async def test_chat_continue_final_message_rejects_generation_prompt(
+    client: AsyncClient,
+):
+    r = await client.post(
+        "/api/chat/completions",
+        json={
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "The"},
+            ],
+            "continue_final_message": True,
+        },
+    )
+    assert r.status_code == 422
+
+
+async def test_chat_continue_final_message_requires_final_content(client: AsyncClient):
+    r = await client.post(
+        "/api/chat/completions",
+        json={
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": None},
+            ],
+            "continue_final_message": True,
+            "add_generation_prompt": False,
+        },
+    )
+    assert r.status_code == 422

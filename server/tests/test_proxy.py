@@ -14,6 +14,7 @@ from bwbk.proxy import (
     _tabby_stream_read_timeout_seconds,
     _tabby_stream_timeout,
     _tabby_url,
+    chat_completions,
 )
 
 
@@ -219,3 +220,51 @@ def _patched_client_init(transport: httpx.MockTransport):
         original_init(self, *args, **kwargs)
 
     return patched
+
+
+def test_chat_completions_forwards_continue_final_message(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """The proxy passes the chat body through to TabbyAPI verbatim, so the
+    continuation flag and the final assistant message reach the template
+    layer untouched."""
+    captured = {}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content.decode())
+
+        async def body():
+            yield b"data: [DONE]\n\n"
+
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=_AsyncIteratorStream(body()),
+        )
+
+    monkeypatch.setattr(
+        httpx.AsyncClient,
+        "__init__",
+        _patched_client_init(httpx.MockTransport(handler)),
+    )
+
+    async def run():
+        response = await chat_completions(
+            _FakeRequest(),
+            {
+                "messages": [
+                    {"role": "user", "content": "Tell me a story."},
+                    {"role": "assistant", "content": "The story begins"},
+                ],
+                "continue_final_message": True,
+                "add_generation_prompt": False,
+            },
+        )
+        return await _collect_stream(response)
+
+    asyncio.run(run())
+    sent = captured["body"]
+    assert sent["continue_final_message"] is True
+    assert sent["add_generation_prompt"] is False
+    assert sent["messages"][-1] == {"role": "assistant", "content": "The story begins"}
+    assert sent["stream"] is True

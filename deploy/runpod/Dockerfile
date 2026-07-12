@@ -11,7 +11,8 @@ ENV PYTHONUNBUFFERED=1 \
 RUN apt-get update --yes && \
     DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
         curl \
-        openssh-server && \
+        openssh-server \
+        patch && \
     rm -rf /var/lib/apt/lists/* && \
     cd /app && \
     python3 -m pip install --no-cache-dir -U '.[cu12]' hf_transfer && \
@@ -21,6 +22,15 @@ RUN apt-get update --yes && \
 # Temporary chat completions logprobs fix until the upstream base image carries it.
 # Idempotent. It is a no-op once the base already has the fix.
 RUN python3 -c "p='/app/endpoints/OAI/utils/chat_completion.py'; s=open(p).read(); open(p,'w').write(s.replace('tag not in [t_think_end, t_tool_end]', 'tag not in [t for t in (t_think_end, t_tool_end) if t]'))"
+
+# Adds continue_final_message to chat completions until the upstream base image
+# carries it (fork branch ethanj801/tabbyAPI continue-final-message).
+# Idempotent. It is a no-op once the base already has the feature.
+COPY tabbyapi-continue-final-message.patch /tmp/
+RUN cd /app && \
+    { grep -q continue_final_message endpoints/OAI/types/chat_completion.py || \
+      patch -p1 --fuzz=0 < /tmp/tabbyapi-continue-final-message.patch; } && \
+    rm /tmp/tabbyapi-continue-final-message.patch
 
 COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 RUN chmod +x /usr/local/bin/runpod-entrypoint.sh
