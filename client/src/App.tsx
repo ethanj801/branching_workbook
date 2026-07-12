@@ -2880,9 +2880,9 @@ export default function App() {
                   commitChatDraftsAndPersist={commitChatDraftsAndPersist}
                   onEndChatAssistantTurn={onEndChatAssistantTurn}
                   onDeleteChatTurn={onDeleteChatTurn}
-                  onRenameChatNode={onRenameNode}
                   onSubmitChatUser={onSubmitChatUser}
                   onSaveChatSystem={onSaveChatSystem}
+                  onRenameChatNode={onRenameNode}
                   candidates={candidates}
                   savedCandidateIds={savedCandidateIds}
                   pickedCandidateIndex={pickedCandidateIndex}

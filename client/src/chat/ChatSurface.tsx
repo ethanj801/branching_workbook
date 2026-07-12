@@ -9,8 +9,8 @@ import {
 
 import AutoGrowTextarea from "../AutoGrowTextarea";
 import type { Candidate } from "../candidates";
-import { displayBranchText } from "../nodeMapLayout";
 import NodeNameEditor from "../NodeNameEditor";
+import { displayBranchText } from "../nodeMapLayout";
 import { approxTokenCount } from "../tokens";
 import type { TreeNode } from "../tree/types";
 import ChatCandidateCards from "./ChatCandidateCards";
@@ -37,9 +37,9 @@ type ChatSurfaceProps = {
   commitChatDraftsAndPersist: () => void;
   onEndChatAssistantTurn: () => void;
   onDeleteChatTurn: (turn: ChatTurn) => void;
-  onRenameChatNode: (nodeId: string, name: string | null) => void | Promise<void>;
   onSubmitChatUser: () => void;
   onSaveChatSystem: () => void;
+  onRenameChatNode: (nodeId: string, name: string | null) => void | Promise<void>;
   // Forwarded to the candidate picker for the active assistant turn.
   candidates: Candidate[];
   savedCandidateIds: Record<number, string>;
@@ -76,9 +76,9 @@ export default function ChatSurface({
   commitChatDraftsAndPersist,
   onEndChatAssistantTurn,
   onDeleteChatTurn,
-  onRenameChatNode,
   onSubmitChatUser,
   onSaveChatSystem,
+  onRenameChatNode,
   candidates,
   savedCandidateIds,
   pickedCandidateIndex,
@@ -250,6 +250,14 @@ export default function ChatSurface({
               const turnKey = headNode?.id ?? "";
               const draft = chatTurnDrafts[turnKey];
               const editable = turn.role === "user" || turn.role === "assistant";
+              // The tail turn hosts the name editor for the node the path
+              // currently ends on, which mid-turn is the latest partial-fill
+              // chunk rather than the turn head. Earlier turns show carried
+              // names read-only; renaming them means navigating there first.
+              const editorNode =
+                chatTailTurn === turn && chatTailNode && chatTailNode.parentId !== null
+                  ? chatTailNode
+                  : null;
               return (
                 <section
                   key={`${turn.nodes[0]?.id ?? index}-${index}`}
@@ -260,14 +268,21 @@ export default function ChatSurface({
                   <div className="bw-chat-turn-head">
                     <span className="bw-chat-turn-head-left">
                       <span>{turn.role === "user" ? "YOU" : "ASSISTANT"}</span>
-                      {/* The name lives on the turn's first node, the same
-                          node the sidebar shows as this turn's row. */}
-                      {headNode && (
+                      {turn.nodes.map((n) =>
+                        n.name?.trim() && n.id !== editorNode?.id ? (
+                          <span key={n.id} className="bw-chat-turn-name">
+                            {n.name}
+                          </span>
+                        ) : null,
+                      )}
+                      {editorNode && (
                         <NodeNameEditor
-                          node={headNode}
+                          node={editorNode}
                           disabled={saving || streaming}
-                          placeholder="Name this turn"
-                          onRename={(name) => void onRenameChatNode(headNode.id, name)}
+                          placeholder="Name this node"
+                          onRename={(name) =>
+                            void onRenameChatNode(editorNode.id, name)
+                          }
                         />
                       )}
                     </span>

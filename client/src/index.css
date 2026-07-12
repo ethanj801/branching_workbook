@@ -1197,7 +1197,7 @@ textarea:disabled {
   padding: 0 0 0.05rem;
 }
 
-/* Keep unnamed turns quiet in a long transcript. The affordance appears
+/* Keep an unnamed tail quiet in a long transcript. The affordance appears
    when the pointer is over the turn or when it has keyboard focus. */
 .bw-chat-turn .bw-node-name.is-empty {
   opacity: 0;
@@ -1207,6 +1207,16 @@ textarea:disabled {
 .bw-chat-turn:hover .bw-node-name.is-empty,
 .bw-chat-turn:focus-within .bw-node-name.is-empty {
   opacity: 1;
+}
+
+/* Read-only label for a name carried by an earlier node in a turn.
+   Renaming targets the current node via the tail turn's editor. */
+.bw-chat-turn-name {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--ink);
 }
 
 .bw-chat-turn-text {
