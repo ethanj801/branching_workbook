@@ -452,6 +452,35 @@ describe("commitChatDrafts", () => {
     expect(result.currentId).toBe("a1");
   });
 
+  it("forks a starred leaf turn instead of editing in place", () => {
+    // The star marks the node's exact wording as canonical. An edit
+    // must not rewrite it; the edit lands as an unstarred sibling and
+    // the original keeps its star and text.
+    const root = makeNode("root", null, "user", "");
+    const u1 = makeNode("u1", "root", "user", "hi", true);
+    const a1 = { ...makeNode("a1", "u1", "assistant", "hello", true), starred: true };
+    const tree = makeTree(root, u1, a1);
+    const turns = foldChatTurns([u1, a1]);
+
+    const result = commitChatDrafts(
+      tree,
+      "a1",
+      turns,
+      { a1: draft("hello (edited)", "hello") },
+      null,
+      makeStubDeps(),
+    );
+    expect(result.consumedTurnDraftIds).toEqual(["a1"]);
+    const original = result.tree.nodes["a1"]!;
+    expect(original.text).toBe("hello");
+    expect(original.starred).toBe(true);
+    const fork = result.tree.nodes["fork-1"]!;
+    expect(fork.text).toBe("hello (edited)");
+    expect(fork.starred).toBe(false);
+    expect(fork.parentId).toBe("u1");
+    expect(result.currentId).toBe("fork-1");
+  });
+
   it("preserves a finalized assistant turn's endOfTurn across an edit fork", () => {
     // Editing rewords a turn; it must not silently re-open a finished one.
     // (Generate is the explicit re-open path.) Multi-chunk turn forces the

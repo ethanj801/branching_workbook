@@ -283,7 +283,11 @@ export function commitChatDrafts(
     const lastHasChildren = Object.values(working.nodes).some(
       (n) => n.parentId === lastNode.id,
     );
-    const canInPlace = turn.nodes.length === 1 && !lastHasChildren;
+    // A starred node never edits in place. The star marks its exact
+    // wording as canonical, so a rewrite forks instead and the edit
+    // becomes an unstarred sibling while the original keeps the star.
+    const turnHasStar = turn.nodes.some((n) => working.nodes[n.id]?.starred);
+    const canInPlace = turn.nodes.length === 1 && !lastHasChildren && !turnHasStar;
 
     if (canInPlace) {
       working = {
