@@ -97,6 +97,7 @@ import {
   collectLinearChainDownward,
   collectSubtreeNodeIds,
 } from "./tree/merge";
+import { prunableDescendants } from "./tree/lineage";
 import {
   childrenOf,
   concatPathText,
@@ -380,6 +381,11 @@ export default function App() {
     prevCurrentId: string;
     prevSelectedId: string;
   } | null>(null);
+  // Session-scoped undo stack for hide operations. Every hide (single node,
+  // chain batch, prune) pushes the exact id set it hid. Cmd+Z pops the most
+  // recent entry that still has hidden nodes and unhides just those.
+  const hideUndoStackRef = useRef<string[][]>([]);
+  const [hideToast, setHideToast] = useState<{ count: number } | null>(null);
 
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
@@ -671,6 +677,8 @@ export default function App() {
       });
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
+      hideUndoStackRef.current = [];
+      setHideToast(null);
       // Chat projects render their surface inside compose mode — there's no
       // separate chat workspace mode — so every project opens in "compose".
       setWorkspaceMode("compose");
@@ -963,8 +971,30 @@ export default function App() {
   );
 
   const onGenerateRef = useLatestRef(onGenerate);
+  const onUndoLastHideRef = useLatestRef(onUndoLastHide);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
+      if (
+        (event.metaKey || event.ctrlKey) &&
+        !event.shiftKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "z"
+      ) {
+        // Native text undo wins inside editable fields, and the node map's
+        // own cmd+Z handler wins while a map delete is pending.
+        const target = event.target as HTMLElement | null;
+        const inEditable =
+          !!target &&
+          (target.tagName === "TEXTAREA" ||
+            target.tagName === "INPUT" ||
+            target.isContentEditable);
+        const mapDeletePending =
+          workspaceMode === "map" && pendingDeleteUndoRef.current !== null;
+        if (!inEditable && !mapDeletePending && hideUndoStackRef.current.length > 0) {
+          event.preventDefault();
+          void onUndoLastHideRef.current();
+        }
+      }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
         if (project?.kind === "chat") {
@@ -1008,11 +1038,29 @@ export default function App() {
     commitBuffer,
     modelPanelOpen,
     onGenerateRef,
+    onUndoLastHideRef,
     project?.kind,
     samplerOpen,
     treeMenu,
     workspaceMode,
   ]);
+
+  // The prune toast dismisses itself. Undo stays available through cmd+Z
+  // after it goes.
+  useEffect(() => {
+    if (!hideToast) return;
+    const timer = window.setTimeout(() => setHideToast(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [hideToast]);
+
+  // What the prune menu item would hide for the node under the context menu.
+  // Computed only while a node menu is open so the button can show the count
+  // and disable itself when nothing below the node is prunable.
+  const prunableForMenu = useMemo(() => {
+    if (!tree || !currentId || !treeMenu || treeMenu.kind !== "node") return null;
+    const currentPathIds = new Set(pathFromRoot(tree, currentId).map((n) => n.id));
+    return prunableDescendants(tree, treeMenu.nodeId, currentPathIds);
+  }, [tree, currentId, treeMenu]);
 
   useEffect(() => {
     if (!banListOpen) return;
@@ -1233,6 +1281,8 @@ export default function App() {
       dispatchWorkspace({ type: "projectClosed" });
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
+      hideUndoStackRef.current = [];
+      setHideToast(null);
       resetChatDrafts();
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
@@ -1883,6 +1933,7 @@ export default function App() {
     await persistTreeMutation(tree, currentId, nextTree, {
       onSuccess: () => {
         pendingDeleteUndoRef.current = null;
+        if (hidden) hideUndoStackRef.current.push([nodeIdToUpdate]);
       },
       onSettled: () => setTreeMenu(null),
     });
@@ -2231,8 +2282,68 @@ export default function App() {
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
     await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        hideUndoStackRef.current.push(eligible);
+      },
       onSettled: () => setTreeMenu(null),
     });
+  }
+
+  // Hide every descendant of the anchor that is off the starred lineages.
+  // Paths to a star and everything below a star survive, the current path
+  // survives, the rest of the subtree is hidden in one batch. The hidden id
+  // set goes onto the hide undo stack so cmd+Z reverses exactly this op.
+  async function onPruneNonStarred(anchorId: string) {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const currentPathIds = new Set(pathFromRoot(tree, currentId).map((n) => n.id));
+    const idsToHide = prunableDescendants(tree, anchorId, currentPathIds);
+    if (idsToHide.length === 0) {
+      setTreeMenu(null);
+      return;
+    }
+
+    const nextNodes = { ...tree.nodes };
+    for (const id of idsToHide) {
+      const node = nextNodes[id];
+      if (!node) continue;
+      nextNodes[id] = { ...node, hidden: true };
+    }
+    const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
+
+    await persistTreeMutation(tree, currentId, nextTree, {
+      onSuccess: () => {
+        hideUndoStackRef.current.push(idsToHide);
+        setHideToast({ count: idsToHide.length });
+      },
+      onSettled: () => setTreeMenu(null),
+    });
+  }
+
+  // Pop the most recent hide op that still has hidden nodes and unhide them.
+  // Entries can hollow out when the user unhides nodes by hand, so skip past
+  // entries with nothing left to restore.
+  async function onUndoLastHide() {
+    if (!tree || !currentId || saving || streaming) return;
+
+    const stack = hideUndoStackRef.current;
+    while (stack.length > 0) {
+      const ids = stack.pop()!;
+      const restorable = ids.filter((id) => tree.nodes[id]?.hidden === true);
+      if (restorable.length === 0) continue;
+
+      const nextNodes = { ...tree.nodes };
+      for (const id of restorable) {
+        const node = nextNodes[id];
+        if (node) nextNodes[id] = { ...node, hidden: false };
+      }
+      const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
+
+      await persistTreeMutation(tree, currentId, nextTree, {
+        onSuccess: () => setHideToast(null),
+      });
+      return;
+    }
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2504,6 +2615,45 @@ export default function App() {
             }
           >
             {tree.nodes[treeMenu.nodeId]?.hidden ? "Unhide node" : "Hide node"}
+          </button>
+          {childrenOf(tree, treeMenu.nodeId).length > 0 && (
+            <button
+              type="button"
+              onClick={() => void onPruneNonStarred(treeMenu.nodeId)}
+              disabled={saving || streaming || (prunableForMenu?.length ?? 0) === 0}
+              title={
+                (prunableForMenu?.length ?? 0) === 0
+                  ? "Everything below this node is starred, on the current path, or already hidden."
+                  : undefined
+              }
+            >
+              Hide non-starred paths below
+              {prunableForMenu && prunableForMenu.length > 0
+                ? ` (${prunableForMenu.length})`
+                : ""}
+            </button>
+          )}
+        </div>
+      )}
+
+      {hideToast && (
+        <div className="bw-hide-toast" role="status">
+          <span>
+            Hid {hideToast.count} node{hideToast.count === 1 ? "" : "s"}
+          </span>
+          <button
+            type="button"
+            onClick={() => void onUndoLastHide()}
+            disabled={saving || streaming}
+          >
+            Undo
+          </button>
+          <button
+            type="button"
+            aria-label="Dismiss"
+            onClick={() => setHideToast(null)}
+          >
+            ✕
           </button>
         </div>
       )}

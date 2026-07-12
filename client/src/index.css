@@ -416,6 +416,47 @@ textarea:disabled {
   background: var(--state-soft);
 }
 
+.bw-context-menu button:disabled {
+  color: var(--ink-faint);
+  background: transparent;
+}
+
+.bw-hide-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 1.4rem;
+  transform: translateX(-50%);
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+  border: 1px solid var(--line-dark);
+  border-radius: 0.2rem;
+  background: var(--accent);
+  color: var(--editor);
+  padding: 0.45rem 0.8rem;
+  font-size: 0.78rem;
+  box-shadow: 0 10px 26px -16px rgba(38, 31, 25, 0.6);
+}
+
+.bw-hide-toast button {
+  border: 0;
+  background: transparent;
+  color: inherit;
+  padding: 0;
+  font-size: 0.78rem;
+}
+
+.bw-hide-toast button:first-of-type {
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bw-hide-toast button:hover {
+  opacity: 0.8;
+}
+
 .bw-tree {
   display: flex;
   min-height: 0;
