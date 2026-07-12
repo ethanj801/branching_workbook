@@ -367,10 +367,10 @@ export default function App() {
   const bufferSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const bufferSelectionArmedRef = useRef(false);
   const preserveUsedRangeForBufferRef = useRef<string | null>(null);
-  // commitChatDraftsAndPersist closes over state that changes every
-  // render. Stash it behind a ref so the global keyboard handler can
-  // call it without re-binding (and re-running its effect) every time.
-  const commitChatDraftsAndPersistRef = useRef<
+  // onSaveChat closes over state that changes every render. Stash it
+  // behind a ref so the global keyboard handler can call it without
+  // re-binding (and re-running its effect) every time.
+  const onSaveChatRef = useRef<
     (() => Promise<{ tree: Tree; currentId: string } | null>) | null
   >(null);
   // Single-slot undo for the most recent Delete action. Cleared when any
@@ -619,6 +619,7 @@ export default function App() {
     setChatSystemExpanded,
     resetChatDrafts,
     onSaveChatSystem,
+    onSaveChat,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,
     onSubmitChatUser,
@@ -645,7 +646,7 @@ export default function App() {
     resetRecordedSelectionToEnd,
   });
   useEffect(() => {
-    commitChatDraftsAndPersistRef.current = commitChatDraftsAndPersist;
+    onSaveChatRef.current = onSaveChat;
   });
 
   function clampMenuPosition(x: number, y: number) {
@@ -1001,7 +1002,7 @@ export default function App() {
           // commitBuffer is a no-op for chat; route Cmd/Ctrl+S through
           // the chat-aware path so the keyboard shortcut matches the
           // Save button.
-          void commitChatDraftsAndPersistRef.current?.();
+          void onSaveChatRef.current?.();
         } else {
           void commitBuffer();
         }
@@ -1298,11 +1299,9 @@ export default function App() {
   function hasDirtyBuffer(): boolean {
     if (!project || !tree || !currentId) return false;
     if (project.kind === "chat") {
-      // For close-warn purposes the compose box counts too — losing
-      // half-typed compose text on close is just as bad as losing a
-      // turn edit. (The actionbar Save button uses the narrower
-      // chatHasUnsavedDrafts since Save can't ship a compose draft —
-      // that's what Send is for.)
+      // For close-warn purposes the compose box counts even when the
+      // composer is not active — losing half-typed compose text on
+      // close is just as bad as losing a turn edit.
       return chatHasUnsavedDrafts || chatUserDraft.trim().length > 0;
     }
     return buffer !== concatPathText(pathFromRoot(tree, currentId));
@@ -1395,7 +1394,7 @@ export default function App() {
 
   async function onSave() {
     if (project?.kind === "chat") {
-      await commitChatDraftsAndPersist();
+      await onSaveChat();
       return;
     }
     await commitBuffer();
@@ -1785,7 +1784,7 @@ export default function App() {
     tree !== null &&
     currentId !== null &&
     (project.kind === "chat"
-      ? chatHasUnsavedDrafts
+      ? chatHasUnsavedDrafts || chatHasPendingUserDraft
       : buffer !== concatPathText(currentPath));
   const emptyDraftStartsFromRoot =
     project !== null && currentPath.length > 1 && buffer.trim().length === 0;

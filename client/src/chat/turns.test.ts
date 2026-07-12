@@ -271,7 +271,7 @@ describe("canGenerateAssistantFromTail", () => {
 });
 
 describe("canAddAssistantChunkFromTail", () => {
-  it("returns true only when the tail is a user turn", () => {
+  it("returns true when the tail is a user turn", () => {
     expect(
       canAddAssistantChunkFromTail(makeNode("u1", "root", "user", "Hi", true)),
     ).toBe(true);
@@ -295,12 +295,12 @@ describe("canAddAssistantChunkFromTail", () => {
     ).toBe(false);
   });
 
-  it("returns false for a system tail", () => {
+  it("returns true for a system tail so a conversation can open with a hand-written assistant greeting", () => {
     expect(
       canAddAssistantChunkFromTail(
         makeNode("s1", "root", "system", "be helpful", true),
       ),
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it("returns false when there is no tail", () => {

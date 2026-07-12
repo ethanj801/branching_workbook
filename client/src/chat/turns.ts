@@ -113,14 +113,16 @@ export function canGenerateAssistantFromTail(tail: TreeNode | null): boolean {
 }
 
 // Stricter than canGenerateAssistantFromTail: only allow appending a
-// blank assistant chunk when the path ends in a finalized user turn.
-// With an unfinished assistant tail, foldChatTurns would merge the new
-// empty node into the existing assistant turn — the focus effect keys
-// off the *first* node of the turn so focus would never land, and the
-// tree would accumulate invisible empty children. The user can edit
-// the in-progress chunk directly in that case.
+// blank assistant chunk when the path ends in a finalized user turn or
+// in the system prompt (a conversation can open with a hand-written
+// assistant greeting). With an unfinished assistant tail, foldChatTurns
+// would merge the new empty node into the existing assistant turn — the
+// focus effect keys off the *first* node of the turn so focus would
+// never land, and the tree would accumulate invisible empty children.
+// The user can edit the in-progress chunk directly in that case.
 export function canAddAssistantChunkFromTail(tail: TreeNode | null): boolean {
-  return tail?.role === "user";
+  if (!tail) return false;
+  return tail.role === "user" || tail.role === "system";
 }
 
 // Apply an edit to a turn that already has descendants. The fork is

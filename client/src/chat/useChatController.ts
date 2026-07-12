@@ -507,20 +507,16 @@ export function useChatController(deps: ChatControllerDeps) {
     }
   }
 
-  async function onSubmitChatUser() {
-    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
-    const text = chatUserDraft;
-    if (!text.trim()) return;
-
-    // Flush any pending turn / system edits first so this new turn
-    // attaches to the freshly-committed tree, not a stale snapshot.
-    const committed = await commitChatDraftsAndPersist();
-    if (!committed) return;
-    const { tree: workingTree, currentId: workingId } = committed;
-    if (!workingTree.nodes[workingId]) return;
-
+  // Build the persisted turn node for the composer's pending user
+  // message. Shared by Send (which follows with a generation) and
+  // Save (which stops after the persist).
+  function buildUserTurnNode(
+    workingTree: Tree,
+    workingId: string,
+    text: string,
+  ): TreeNode {
     const priorText = concatPathText(pathFromRoot(workingTree, workingId));
-    const node: TreeNode = {
+    return {
       id: nodeId(),
       parentId: workingId,
       text,
@@ -534,6 +530,21 @@ export function useChatController(deps: ChatControllerDeps) {
       createdAt: nowEpoch(),
       priorContextHash: contextHash(priorText),
     };
+  }
+
+  // Persist the composer's pending user message as a turn without
+  // starting a generation. Returns the new tree/currentId, the input
+  // snapshot when there is no pending message, or null on failure.
+  async function persistPendingUserDraft(committed: {
+    tree: Tree;
+    currentId: string;
+  }): Promise<{ tree: Tree; currentId: string } | null> {
+    const text = chatUserDraft;
+    if (!chatCanComposeUser || !text.trim()) return committed;
+    const { tree: workingTree, currentId: workingId } = committed;
+    if (!workingTree.nodes[workingId]) return committed;
+
+    const node = buildUserTurnNode(workingTree, workingId, text);
     const nextTree: Tree = {
       rootId: workingTree.rootId,
       nodes: {
@@ -542,9 +553,32 @@ export function useChatController(deps: ChatControllerDeps) {
       },
     };
     const saved = await persistChatTree(workingTree, nextTree, node.id);
-    if (!saved) return;
+    if (!saved) return null;
     setChatUserDraft("");
-    void startChatAssistantGeneration(nextTree, node.id);
+    return { tree: nextTree, currentId: node.id };
+  }
+
+  // The chat Save action (actionbar button and Cmd+S). Flushes every
+  // dirty turn / system draft, then also ships a pending composer
+  // message as a user turn so a first message typed into a fresh
+  // workbook saves before any generate happens.
+  async function onSaveChat(): Promise<{ tree: Tree; currentId: string } | null> {
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return null;
+    return persistPendingUserDraft(committed);
+  }
+
+  async function onSubmitChatUser() {
+    if (!tree || !currentId || project?.kind !== "chat" || saving || streaming) return;
+    if (!chatUserDraft.trim()) return;
+
+    // Flush any pending turn / system edits first so this new turn
+    // attaches to the freshly-committed tree, not a stale snapshot.
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return;
+    const result = await persistPendingUserDraft(committed);
+    if (!result || result === committed) return;
+    void startChatAssistantGeneration(result.tree, result.currentId);
   }
 
   async function onDeleteChatTurn(turn: ChatTurn) {
@@ -720,17 +754,25 @@ export function useChatController(deps: ChatControllerDeps) {
   async function onEndChatAssistantTurn() {
     if (!tree || !currentId || !chatTailNode || saving || streaming) return;
     if (chatTailNode.role !== "assistant" || chatTailNode.endOfTurn) return;
+    // Flush the draft text typed into the chunk first. Without this
+    // the turn finalizes with the stale persisted text (often empty
+    // for a fresh "Add assistant" chunk) and a reload would drop
+    // what the user wrote.
+    const committed = await commitChatDraftsAndPersist();
+    if (!committed) return;
+    const tail = committed.tree.nodes[committed.currentId];
+    if (!tail || tail.role !== "assistant" || tail.endOfTurn) return;
     const nextTree: Tree = {
-      rootId: tree.rootId,
+      rootId: committed.tree.rootId,
       nodes: {
-        ...tree.nodes,
-        [chatTailNode.id]: {
-          ...chatTailNode,
+        ...committed.tree.nodes,
+        [tail.id]: {
+          ...tail,
           endOfTurn: true,
         },
       },
     };
-    await persistChatTree(tree, nextTree, currentId);
+    await persistChatTree(committed.tree, nextTree, committed.currentId);
   }
 
   // Append an empty assistant chunk the user can type into directly,
@@ -799,6 +841,7 @@ export function useChatController(deps: ChatControllerDeps) {
     setChatSystemExpanded,
     resetChatDrafts,
     onSaveChatSystem,
+    onSaveChat,
     commitChatDraftsAndPersist,
     startChatAssistantGeneration,
     onSubmitChatUser,
