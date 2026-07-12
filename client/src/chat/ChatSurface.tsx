@@ -309,6 +309,18 @@ export default function ChatSurface({
                         setChatTurnDrafts((current) => {
                           const existing = current[turnKey];
                           const baseText = existing?.baseText ?? turn.text;
+                          // Deleting back to the snapshot dissolves the
+                          // draft entirely. A clean draft left in the map
+                          // would keep shadowing the turn's text, so a
+                          // later mutation that extends the turn (using a
+                          // generated candidate) would not show up until
+                          // reload.
+                          if (nextText === baseText) {
+                            if (!existing) return current;
+                            const next = { ...current };
+                            delete next[turnKey];
+                            return next;
+                          }
                           return {
                             ...current,
                             [turnKey]: { text: nextText, baseText },
