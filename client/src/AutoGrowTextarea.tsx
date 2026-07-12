@@ -3,6 +3,7 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  type KeyboardEvent as ReactKeyboardEvent,
   type TextareaHTMLAttributes,
 } from "react";
 
@@ -24,7 +25,41 @@ const supportsFieldSizing =
 export default function AutoGrowTextarea(
   props: TextareaHTMLAttributes<HTMLTextAreaElement>,
 ) {
+  const { onKeyDown, ...textareaProps } = props;
   const ref = useRef<HTMLTextAreaElement | null>(null);
+
+  // Cmd+Up / Cmd+Down natively move the caret to the start or end of the
+  // textarea, but a grown box has no internal scroll, so the transcript
+  // pane never follows and the jump looks like a no-op. Once the caret
+  // lands, bring the box edge it moved to into view.
+  const followCaretEdge = useCallback(
+    (event: ReactKeyboardEvent<HTMLTextAreaElement>) => {
+      if (!event.metaKey || event.altKey || event.ctrlKey) return;
+      if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+      const ta = event.currentTarget;
+      const toStart = event.key === "ArrowUp";
+      requestAnimationFrame(() => {
+        let scroller: HTMLElement | null = ta.parentElement;
+        while (scroller && scroller.scrollHeight <= scroller.clientHeight) {
+          scroller = scroller.parentElement;
+        }
+        if (!scroller) return;
+        const box = ta.getBoundingClientRect();
+        const view = scroller.getBoundingClientRect();
+        // Roughly one line of slack so "visible" means the caret line
+        // is actually readable, and no scroll happens when it is.
+        const margin = 32;
+        if (toStart) {
+          if (box.top < view.top || box.top > view.bottom - margin) {
+            ta.scrollIntoView({ block: "start" });
+          }
+        } else if (box.bottom > view.bottom || box.bottom < view.top + margin) {
+          ta.scrollIntoView({ block: "end" });
+        }
+      });
+    },
+    [],
+  );
 
   const resize = useCallback(() => {
     const ta = ref.current;
@@ -78,5 +113,14 @@ export default function AutoGrowTextarea(
     return () => observer.disconnect();
   }, [resize]);
 
-  return <textarea ref={ref} {...props} />;
+  return (
+    <textarea
+      ref={ref}
+      {...textareaProps}
+      onKeyDown={(event) => {
+        onKeyDown?.(event);
+        if (!event.defaultPrevented) followCaretEdge(event);
+      }}
+    />
+  );
 }
