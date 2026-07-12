@@ -76,8 +76,6 @@ type NodeMapViewProps = {
   onMergeLinearChainDown: (nodeId: string) => void | Promise<void>;
   onMergeNodeIntoParent: (nodeId: string) => void | Promise<void>;
   onMergeNodeWithOnlyChild: (nodeId: string) => void | Promise<void>;
-  onUndoLastDelete: () => void | Promise<void>;
-  canUndoLastDelete: () => boolean;
 };
 
 /**
@@ -115,8 +113,6 @@ export default function NodeMapView({
   onMergeLinearChainDown,
   onMergeNodeIntoParent,
   onMergeNodeWithOnlyChild,
-  onUndoLastDelete,
-  canUndoLastDelete,
 }: NodeMapViewProps) {
   const [mapPan, setMapPan] = useState({ x: 0, y: 0 });
   const [mapScale, setMapScale] = useState(1);
@@ -545,24 +541,6 @@ export default function NodeMapView({
     window.addEventListener("keydown", onMapKeyDown);
     return () => window.removeEventListener("keydown", onMapKeyDown);
   }, [zoomNodeMapRef, setMapFitRequest]);
-
-  // cmd/ctrl+Z restores the most recent map delete. Only swallow the keystroke
-  // when a map delete is actually pending — otherwise native undo (e.g. in an
-  // input layered over the map, like the model panel) must keep working.
-  const onUndoLastDeleteRef = useLatestRef(onUndoLastDelete);
-  const canUndoLastDeleteRef = useLatestRef(canUndoLastDelete);
-  useEffect(() => {
-    function onUndoKeyDown(event: KeyboardEvent) {
-      if (!(event.metaKey || event.ctrlKey)) return;
-      if (event.shiftKey || event.altKey) return;
-      if (event.key !== "z" && event.key !== "Z") return;
-      if (!canUndoLastDeleteRef.current()) return;
-      event.preventDefault();
-      void onUndoLastDeleteRef.current();
-    }
-    window.addEventListener("keydown", onUndoKeyDown);
-    return () => window.removeEventListener("keydown", onUndoKeyDown);
-  }, [onUndoLastDeleteRef, canUndoLastDeleteRef]);
 
   if (!tree || !currentId || !currentNode || !nodeMapLayout) return null;
 

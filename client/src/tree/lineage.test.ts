@@ -103,6 +103,21 @@ describe("prunableDescendants", () => {
     expect(result.sort()).toEqual(["B", "C", "D"]);
   });
 
+  it("does not treat the starred anchor as a descendant lineage seed", () => {
+    const tree = pruneTree();
+    tree.nodes["A"] = { ...tree.nodes["A"]!, starred: true };
+    const result = prunableDescendants(tree, "A", new Set(["root"]));
+    expect(result.sort()).toEqual(["B", "C", "D", "E", "F"]);
+  });
+
+  it("lets a descendant star refine a starred anchor monotonically", () => {
+    const tree = pruneTree();
+    tree.nodes["A"] = { ...tree.nodes["A"]!, starred: true };
+    tree.nodes["E"] = { ...tree.nodes["E"]!, starred: true };
+    const result = prunableDescendants(tree, "A", new Set(["root"]));
+    expect(result.sort()).toEqual(["B", "C", "D"]);
+  });
+
   it("hides every eligible descendant when the subtree has no stars", () => {
     const result = prunableDescendants(pruneTree(), "A", new Set(["root"]));
     expect(result.sort()).toEqual(["B", "C", "D", "E", "F"]);

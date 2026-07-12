@@ -37,6 +37,7 @@ import { useCandidates } from "../generation/useCandidates";
 import { contextHash } from "../tree/hash";
 import { branchNode, nodeId, nowEpoch } from "../tree/nodeFactory";
 import { mutationBatchFromTrees } from "../tree/persistence";
+import { treeHistoryLocation, type RecordTreeHistory } from "../tree/history";
 import type { WorkspaceAction } from "../workspace/workspaceReducer";
 import { concatPathText, pathFromRoot, type Tree, type TreeNode } from "../tree/types";
 import {
@@ -49,9 +50,15 @@ import {
   type ChatTurnDraft,
 } from "./turns";
 
+type ChatTreeHistory =
+  | { kind: "entry"; label: string }
+  | { kind: "boundary"; label: string; reason: string };
+
 type ChatControllerDeps = {
   tree: Tree | null;
   currentId: string | null;
+  mapSelectedId: string | null;
+  mapSelectionIds: string[];
   project: ProjectInfo | null;
   currentPath: TreeNode[];
   saving: boolean;
@@ -64,7 +71,8 @@ type ChatControllerDeps = {
   /** Project ban list to send, already gated by its master switch. */
   activeBannedStrings: string[];
   abortRef: MutableRefObject<AbortController | null>;
-  clearDeleteUndo: () => void;
+  recordTreeHistory: RecordTreeHistory;
+  recordTreeHistoryBoundary: (label: string, reason: string) => void;
   resetRecordedSelectionToEnd: (nextBuffer: string) => void;
 };
 
@@ -81,6 +89,8 @@ export function useChatController(deps: ChatControllerDeps) {
   const {
     tree,
     currentId,
+    mapSelectedId,
+    mapSelectionIds,
     project,
     currentPath,
     saving,
@@ -91,7 +101,8 @@ export function useChatController(deps: ChatControllerDeps) {
     branchControls,
     activeBannedStrings,
     abortRef,
-    clearDeleteUndo,
+    recordTreeHistory,
+    recordTreeHistoryBoundary,
     resetRecordedSelectionToEnd,
   } = deps;
   const {
@@ -212,8 +223,10 @@ export function useChatController(deps: ChatControllerDeps) {
 
   async function persistChatTree(
     beforeTree: Tree,
+    beforeCurrentId: string,
     nextTree: Tree,
     nextCurrentId: string,
+    options: { history: ChatTreeHistory },
   ) {
     if (!beginTreeMutation()) return false;
     const nextBuffer = concatPathText(pathFromRoot(nextTree, nextCurrentId));
@@ -228,7 +241,27 @@ export function useChatController(deps: ChatControllerDeps) {
         buffer: nextBuffer,
       });
       resetRecordedSelectionToEnd(nextBuffer);
-      clearDeleteUndo();
+      if (options.history.kind === "entry") {
+        recordTreeHistory({
+          label: options.history.label,
+          beforeTree,
+          afterTree: nextTree,
+          beforeLocation: treeHistoryLocation(
+            beforeTree,
+            beforeCurrentId,
+            mapSelectedId,
+            mapSelectionIds,
+          ),
+          afterLocation: treeHistoryLocation(
+            nextTree,
+            nextCurrentId,
+            mapSelectedId,
+            mapSelectionIds,
+          ),
+        });
+      } else if (options.history.kind === "boundary") {
+        recordTreeHistoryBoundary(options.history.label, options.history.reason);
+      }
       return true;
     } catch (err) {
       setError(formatError(err));
@@ -306,7 +339,6 @@ export function useChatController(deps: ChatControllerDeps) {
         currentId: result.currentId,
         buffer: concatPathText(pathFromRoot(result.tree, result.currentId)),
       });
-      clearDeleteUndo();
       // Evict only the drafts we actually consumed. The wholesale
       // wipe used to drop any unsaved off-path / sibling-branch
       // drafts on every commit, including the cleanest no-op.
@@ -360,7 +392,9 @@ export function useChatController(deps: ChatControllerDeps) {
           [tail.id]: { ...tail, endOfTurn: false },
         },
       };
-      const saved = await persistChatTree(workingTree, reopenedTree, baseId);
+      const saved = await persistChatTree(workingTree, baseId, reopenedTree, baseId, {
+        history: { kind: "entry", label: "Continue assistant turn" },
+      });
       if (!saved) return;
       workingTree = reopenedTree;
       basePath = pathFromRoot(workingTree, baseId);
@@ -535,10 +569,10 @@ export function useChatController(deps: ChatControllerDeps) {
   // Persist the composer's pending user message as a turn without
   // starting a generation. Returns the new tree/currentId, the input
   // snapshot when there is no pending message, or null on failure.
-  async function persistPendingUserDraft(committed: {
-    tree: Tree;
-    currentId: string;
-  }): Promise<{ tree: Tree; currentId: string } | null> {
+  async function persistPendingUserDraft(
+    committed: { tree: Tree; currentId: string },
+    boundaryLabel: string,
+  ): Promise<{ tree: Tree; currentId: string } | null> {
     const text = chatUserDraft;
     if (!chatCanComposeUser || !text.trim()) return committed;
     const { tree: workingTree, currentId: workingId } = committed;
@@ -552,7 +586,13 @@ export function useChatController(deps: ChatControllerDeps) {
         [node.id]: node,
       },
     };
-    const saved = await persistChatTree(workingTree, nextTree, node.id);
+    const saved = await persistChatTree(workingTree, workingId, nextTree, node.id, {
+      history: {
+        kind: "boundary",
+        label: boundaryLabel,
+        reason: "Saved messages are edited or deleted explicitly.",
+      },
+    });
     if (!saved) return null;
     setChatUserDraft("");
     return { tree: nextTree, currentId: node.id };
@@ -565,7 +605,7 @@ export function useChatController(deps: ChatControllerDeps) {
   async function onSaveChat(): Promise<{ tree: Tree; currentId: string } | null> {
     const committed = await commitChatDraftsAndPersist();
     if (!committed) return null;
-    return persistPendingUserDraft(committed);
+    return persistPendingUserDraft(committed, "Saved chat message");
   }
 
   async function onSubmitChatUser() {
@@ -576,7 +616,7 @@ export function useChatController(deps: ChatControllerDeps) {
     // attaches to the freshly-committed tree, not a stale snapshot.
     const committed = await commitChatDraftsAndPersist();
     if (!committed) return;
-    const result = await persistPendingUserDraft(committed);
+    const result = await persistPendingUserDraft(committed, "Submitted chat message");
     if (!result || result === committed) return;
     void startChatAssistantGeneration(result.tree, result.currentId);
   }
@@ -594,16 +634,20 @@ export function useChatController(deps: ChatControllerDeps) {
       nextNodes[node.id] = { ...node, hidden: true };
     }
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
-    setChatTurnDrafts((current) => {
-      const next = { ...current };
-      for (const node of toHide) delete next[node.id];
-      return next;
+    const saved = await persistChatTree(tree, currentId, nextTree, firstNode.parentId, {
+      history: { kind: "entry", label: "Delete chat turn" },
     });
-    const saved = await persistChatTree(tree, nextTree, firstNode.parentId);
-    // Any open candidates were generated against a path that just lost a
-    // turn — stale either way, so close the picker rather than letting a
-    // later Use attach to a hidden node and bail with a confusing error.
-    if (saved) clearBranchPicker();
+    // Once the turn is persistently hidden, candidates generated against its
+    // old path are stale. A failed delete leaves both the path and picker
+    // untouched so the user can retry without losing either drafts or results.
+    if (saved) {
+      setChatTurnDrafts((current) => {
+        const next = { ...current };
+        for (const node of toHide) delete next[node.id];
+        return next;
+      });
+      clearBranchPicker();
+    }
   }
 
   async function onUseChatCandidate(index: number) {
@@ -664,7 +708,15 @@ export function useChatController(deps: ChatControllerDeps) {
         [node.id]: node,
       },
     };
-    const saved = await persistChatTree(committed.tree, nextTree, node.id);
+    const saved = await persistChatTree(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      node.id,
+      {
+        history: { kind: "entry", label: "Use chat candidate" },
+      },
+    );
     if (saved) clearBranchPicker();
   }
 
@@ -742,6 +794,23 @@ export function useChatController(deps: ChatControllerDeps) {
     try {
       await mutateNodes(mutationBatchFromTrees(baseTree, nextTree, baseCurrentId));
       dispatch({ type: "treeMutated", tree: nextTree });
+      recordTreeHistory({
+        label: "Keep chat candidate",
+        beforeTree: baseTree,
+        afterTree: nextTree,
+        beforeLocation: treeHistoryLocation(
+          baseTree,
+          baseCurrentId,
+          mapSelectedId,
+          mapSelectionIds,
+        ),
+        afterLocation: treeHistoryLocation(
+          nextTree,
+          baseCurrentId,
+          mapSelectedId,
+          mapSelectionIds,
+        ),
+      });
       markKept(index, node.id);
     } catch (err) {
       setError(formatError(err));
@@ -772,7 +841,15 @@ export function useChatController(deps: ChatControllerDeps) {
         },
       },
     };
-    await persistChatTree(committed.tree, nextTree, committed.currentId);
+    await persistChatTree(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      committed.currentId,
+      {
+        history: { kind: "entry", label: "End assistant turn" },
+      },
+    );
   }
 
   // Append an empty assistant chunk the user can type into directly,
@@ -810,7 +887,9 @@ export function useChatController(deps: ChatControllerDeps) {
     };
     clearBranchPicker();
     pendingChatFocusRef.current = node.id;
-    const saved = await persistChatTree(workingTree, nextTree, node.id);
+    const saved = await persistChatTree(workingTree, workingId, nextTree, node.id, {
+      history: { kind: "entry", label: "Add assistant chunk" },
+    });
     // If persistence failed the node never made it into the tree —
     // clearing the focus intent so the effect doesn't sit armed
     // forever, ready to focus a phantom id (or worse, accidentally

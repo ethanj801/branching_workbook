@@ -3,10 +3,13 @@ import type { Tree } from "./types";
 /**
  * The descendants of `anchorId` that a "hide non-starred paths" prune would
  * hide. A descendant survives when it sits on the lineage of a visible star
- * inside the subtree (the spine from the anchor down to the star, plus
- * everything beneath the star) or when it lies on the current path. Already
- * hidden and deleted nodes are excluded since there is nothing to change.
- * With no stars in the subtree every eligible descendant is returned.
+ * strictly below the anchor (the spine from the anchor down to the star, plus
+ * everything beneath the star) or when it lies on the current path. The
+ * anchor itself is deliberately not a star seed: this command evaluates the
+ * competing paths below it, so starring additional descendants can only
+ * preserve more paths. Already hidden and deleted nodes are excluded since
+ * there is nothing to change. With no descendant stars every eligible
+ * descendant is returned.
  */
 export function prunableDescendants(
   tree: Tree,

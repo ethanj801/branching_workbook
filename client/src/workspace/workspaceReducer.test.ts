@@ -150,6 +150,19 @@ describe("workspaceReducer — semantic transitions", () => {
     expect(next.mapLocateRequest).toBe(4);
   });
 
+  it("editPersisted can restore a multi-selection during application undo", () => {
+    const next = workspaceReducer(loaded, {
+      type: "editPersisted",
+      tree: treeB,
+      currentId: "n2",
+      buffer: "next",
+      selectedId: "n1",
+      selectedIds: ["n1", "n2"],
+    });
+    expect(next.mapSelectedId).toBe("n1");
+    expect(next.mapSelectionIds).toEqual(["n1", "n2"]);
+  });
+
   it("treeMutated swaps the tree but deliberately leaves selection put", () => {
     const next = workspaceReducer(loaded, { type: "treeMutated", tree: treeB });
     expect(next.tree).toBe(treeB);

@@ -99,6 +99,14 @@ import {
 } from "./tree/merge";
 import { prunableDescendants } from "./tree/lineage";
 import {
+  replaceTreeHistoryWithBoundary,
+  treeChangesBetween,
+  undoTreeChanges,
+  type RecordTreeHistory,
+  type TreeHistoryEntry,
+  type TreeHistoryItem,
+} from "./tree/history";
+import {
   childrenOf,
   concatPathText,
   pathFromRoot,
@@ -315,6 +323,7 @@ export default function App() {
     startGeneration,
     markUsed,
     markKept,
+    forgetSavedNodes,
     cycleVisibleCandidate,
     dropCandidate,
   } = candidatesApi;
@@ -373,19 +382,15 @@ export default function App() {
   const onSaveChatRef = useRef<
     (() => Promise<{ tree: Tree; currentId: string } | null>) | null
   >(null);
-  // Single-slot undo for the most recent Delete action. Cleared when any
-  // other tree mutation persists, so cmd+Z always restores the last delete
-  // and nothing earlier.
-  const pendingDeleteUndoRef = useRef<{
-    deletedIds: string[];
-    prevCurrentId: string;
-    prevSelectedId: string;
+  // Session-scoped history for persisted tree commands. Text-editor undo is
+  // deliberately separate; this stack records discrete application actions
+  // such as rename, star, hide, delete, merge, and persisted branch creation.
+  const treeHistoryRef = useRef<TreeHistoryItem[]>([]);
+  const nextTreeHistoryIdRef = useRef(1);
+  const [hideToast, setHideToast] = useState<{
+    operationId: number;
+    count: number;
   } | null>(null);
-  // Session-scoped undo stack for hide operations. Every hide (single node,
-  // chain batch, prune) pushes the exact id set it hid. Cmd+Z pops the most
-  // recent entry that still has hidden nodes and unhides just those.
-  const hideUndoStackRef = useRef<string[][]>([]);
-  const [hideToast, setHideToast] = useState<{ count: number } | null>(null);
 
   const contextMax = modelContextMax(currentTabbyModel);
   const maxBranches = maxBranchesForModel(currentTabbyModel);
@@ -596,8 +601,41 @@ export default function App() {
     bufferSelectionArmedRef.current = false;
   }
 
-  const clearDeleteUndo = useCallback(() => {
-    pendingDeleteUndoRef.current = null;
+  const clearTreeHistory = useCallback(() => {
+    treeHistoryRef.current = [];
+    setHideToast(null);
+  }, []);
+
+  const recordTreeHistory: RecordTreeHistory = useCallback(
+    ({ label, beforeTree, afterTree, beforeLocation, afterLocation }) => {
+      const changes = treeChangesBetween(beforeTree, afterTree);
+      if (changes.length === 0) return null;
+      const entry: TreeHistoryEntry = {
+        kind: "entry",
+        id: nextTreeHistoryIdRef.current++,
+        label,
+        changes,
+        beforeLocation: {
+          ...beforeLocation,
+          selectionIds: [...beforeLocation.selectionIds],
+        },
+        afterLocation: {
+          ...afterLocation,
+          selectionIds: [...afterLocation.selectionIds],
+        },
+      };
+      treeHistoryRef.current.push(entry);
+      // A prune toast is only actionable while its operation is the newest
+      // application command. The history entry itself remains after dismissal.
+      setHideToast(null);
+      return entry;
+    },
+    [],
+  );
+
+  const recordTreeHistoryBoundary = useCallback((label: string, reason: string) => {
+    replaceTreeHistoryWithBoundary(treeHistoryRef.current, label, reason);
+    setHideToast(null);
   }, []);
   const {
     chatTurns,
@@ -631,6 +669,8 @@ export default function App() {
   } = useChatController({
     tree,
     currentId,
+    mapSelectedId,
+    mapSelectionIds,
     project,
     currentPath,
     saving,
@@ -642,7 +682,8 @@ export default function App() {
     branchControls,
     activeBannedStrings,
     abortRef,
-    clearDeleteUndo,
+    recordTreeHistory,
+    recordTreeHistoryBoundary,
     resetRecordedSelectionToEnd,
   });
   useEffect(() => {
@@ -678,8 +719,7 @@ export default function App() {
       });
       resetRecordedSelectionToEnd(loadedBuffer);
       setExpandedChains({});
-      hideUndoStackRef.current = [];
-      setHideToast(null);
+      clearTreeHistory();
       // Chat projects render their surface inside compose mode — there's no
       // separate chat workspace mode — so every project opens in "compose".
       setWorkspaceMode("compose");
@@ -708,6 +748,7 @@ export default function App() {
       hydrateBranchControls,
       hydrateBanList,
       clearBranchPicker,
+      clearTreeHistory,
       refreshPresets,
       resetChatDrafts,
       setError,
@@ -950,11 +991,6 @@ export default function App() {
           currentId: reshaped.currentId,
           buffer: nextBuffer,
         });
-        // commitBuffer fires on any non-trivial buffer reshape; if there
-        // were edits to flush, the previous delete-undo is no longer the
-        // last thing the user did.
-        if (reshaped.tree !== tree) pendingDeleteUndoRef.current = null;
-
         return {
           tree: reshaped.tree,
           currentId: reshaped.currentId,
@@ -972,28 +1008,27 @@ export default function App() {
   );
 
   const onGenerateRef = useLatestRef(onGenerate);
-  const onUndoLastHideRef = useLatestRef(onUndoLastHide);
+  const onUndoTreeOperationRef = useLatestRef(onUndoLastTreeOperation);
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (
+        !event.defaultPrevented &&
         (event.metaKey || event.ctrlKey) &&
         !event.shiftKey &&
         !event.altKey &&
+        !event.isComposing &&
         event.key.toLowerCase() === "z"
       ) {
-        // Native text undo wins inside editable fields, and the node map's
-        // own cmd+Z handler wins while a map delete is pending.
-        const target = event.target as HTMLElement | null;
+        // Native/CodeMirror text undo wins anywhere inside an editable field.
+        // Outside editors, one application-level history owns command order.
+        const target = event.target instanceof Element ? event.target : null;
         const inEditable =
           !!target &&
-          (target.tagName === "TEXTAREA" ||
-            target.tagName === "INPUT" ||
-            target.isContentEditable);
-        const mapDeletePending =
-          workspaceMode === "map" && pendingDeleteUndoRef.current !== null;
-        if (!inEditable && !mapDeletePending && hideUndoStackRef.current.length > 0) {
+          (target.closest("textarea, input, [contenteditable='true']") !== null ||
+            (target instanceof HTMLElement && target.isContentEditable));
+        if (!inEditable && !saving && !streaming && treeHistoryRef.current.length > 0) {
           event.preventDefault();
-          void onUndoLastHideRef.current();
+          void onUndoTreeOperationRef.current();
         }
       }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
@@ -1039,9 +1074,11 @@ export default function App() {
     commitBuffer,
     modelPanelOpen,
     onGenerateRef,
-    onUndoLastHideRef,
+    onUndoTreeOperationRef,
     project?.kind,
     samplerOpen,
+    saving,
+    streaming,
     treeMenu,
     workspaceMode,
   ]);
@@ -1282,8 +1319,7 @@ export default function App() {
       dispatchWorkspace({ type: "projectClosed" });
       resetRecordedSelectionToEnd("");
       setExpandedChains({});
-      hideUndoStackRef.current = [];
-      setHideToast(null);
+      clearTreeHistory();
       resetChatDrafts();
       clearBranchPicker();
       // Active preset is per-project; forget it when the project closes so a
@@ -1774,6 +1810,7 @@ export default function App() {
     };
 
     await persistTreeMutation(tree, currentId, nextTree, {
+      historyLabel: "Keep branch",
       onSuccess: () => markKept(index, node.id),
     });
   }
@@ -1909,7 +1946,9 @@ export default function App() {
       },
     };
 
-    await persistTreeMutation(tree, currentId, nextTree);
+    await persistTreeMutation(tree, currentId, nextTree, {
+      historyLabel: "Rename node",
+    });
   }
 
   async function onSetNodeHidden(nodeIdToUpdate: string, hidden: boolean) {
@@ -1930,10 +1969,7 @@ export default function App() {
     };
 
     await persistTreeMutation(tree, currentId, nextTree, {
-      onSuccess: () => {
-        pendingDeleteUndoRef.current = null;
-        if (hidden) hideUndoStackRef.current.push([nodeIdToUpdate]);
-      },
+      historyLabel: hidden ? "Hide node" : "Unhide node",
       onSettled: () => setTreeMenu(null),
     });
   }
@@ -1952,9 +1988,7 @@ export default function App() {
     };
 
     await persistTreeMutation(tree, currentId, nextTree, {
-      onSuccess: () => {
-        pendingDeleteUndoRef.current = null;
-      },
+      historyLabel: starred ? "Star node" : "Unstar node",
       onSettled: () => setTreeMenu(null),
     });
   }
@@ -1980,9 +2014,7 @@ export default function App() {
         nodes: { ...tree.nodes, [tip.id]: { ...tip, starred } },
       },
       {
-        onSuccess: () => {
-          pendingDeleteUndoRef.current = null;
-        },
+        historyLabel: starred ? "Star conversation" : "Unstar conversation",
       },
     );
   }
@@ -1998,17 +2030,47 @@ export default function App() {
     beforeTree: Tree,
     currentNodeId: string,
     nextTree: Tree,
-    options: { onSuccess?: () => void; onSettled?: () => void } = {},
-  ) {
-    if (!beginTreeMutation()) return;
+    options: {
+      historyLabel: string | null;
+      onSuccess?: (entry: TreeHistoryEntry | null) => void;
+      onSettled?: () => void;
+    },
+  ): Promise<boolean> {
+    if (!beginTreeMutation()) return false;
     setSaving(true);
     setError(null);
     try {
       await mutateNodes(mutationBatchFromTrees(beforeTree, nextTree, currentNodeId));
       dispatchWorkspace({ type: "treeMutated", tree: nextTree });
-      options.onSuccess?.();
+      const selectedId =
+        mapSelectedId && beforeTree.nodes[mapSelectedId]
+          ? mapSelectedId
+          : currentNodeId;
+      const validSelectionIds = mapSelectionIds.filter((id) => beforeTree.nodes[id]);
+      const selectionIds =
+        validSelectionIds.length > 0 ? validSelectionIds : [selectedId];
+      const entry = options.historyLabel
+        ? recordTreeHistory({
+            label: options.historyLabel,
+            beforeTree,
+            afterTree: nextTree,
+            beforeLocation: {
+              currentId: currentNodeId,
+              selectedId,
+              selectionIds,
+            },
+            afterLocation: {
+              currentId: currentNodeId,
+              selectedId,
+              selectionIds,
+            },
+          })
+        : null;
+      options.onSuccess?.(entry);
+      return true;
     } catch (err) {
       setError(formatError(err));
+      return false;
     } finally {
       setSaving(false);
       endTreeMutation();
@@ -2022,15 +2084,22 @@ export default function App() {
   // that untouched.
   async function persistTreeEdit(
     beforeTree: Tree,
+    beforeCurrentId: string,
     nextTree: Tree,
     nextCurrentId: string,
     nextSelectedId = nextCurrentId,
-    options: { keepDeleteUndo?: boolean } = {},
-  ) {
+    options: {
+      historyLabel: string | null;
+      beforeSelectedId?: string;
+      beforeSelectionIds?: string[];
+      nextSelectionIds?: string[];
+      onSuccess?: (entry: TreeHistoryEntry | null) => void;
+    },
+  ): Promise<boolean> {
     const nextPath = pathFromRoot(nextTree, nextCurrentId);
     const nextBuffer = concatPathText(nextPath);
 
-    if (!beginTreeMutation()) return;
+    if (!beginTreeMutation()) return false;
     setSaving(true);
     setError(null);
     try {
@@ -2041,11 +2110,43 @@ export default function App() {
         currentId: nextCurrentId,
         buffer: nextBuffer,
         selectedId: nextSelectedId,
+        selectedIds: options.nextSelectionIds,
       });
       resetRecordedSelectionToEnd(nextBuffer);
-      if (!options.keepDeleteUndo) pendingDeleteUndoRef.current = null;
+      const beforeSelectedId =
+        options.beforeSelectedId ??
+        (mapSelectedId && beforeTree.nodes[mapSelectedId]
+          ? mapSelectedId
+          : beforeCurrentId);
+      const validBeforeSelectionIds = (
+        options.beforeSelectionIds ?? mapSelectionIds
+      ).filter((id) => beforeTree.nodes[id]);
+      const beforeSelectionIds =
+        validBeforeSelectionIds.length > 0
+          ? validBeforeSelectionIds
+          : [beforeSelectedId];
+      const entry = options.historyLabel
+        ? recordTreeHistory({
+            label: options.historyLabel,
+            beforeTree,
+            afterTree: nextTree,
+            beforeLocation: {
+              currentId: beforeCurrentId,
+              selectedId: beforeSelectedId,
+              selectionIds: beforeSelectionIds,
+            },
+            afterLocation: {
+              currentId: nextCurrentId,
+              selectedId: nextSelectedId,
+              selectionIds: options.nextSelectionIds ?? [nextSelectedId],
+            },
+          })
+        : null;
+      options.onSuccess?.(entry);
+      return true;
     } catch (err) {
       setError(formatError(err));
+      return false;
     } finally {
       setSaving(false);
       endTreeMutation();
@@ -2106,14 +2207,18 @@ export default function App() {
       nodes: nextNodes,
     };
 
-    pendingDeleteUndoRef.current = {
-      deletedIds: newlyDeletedIds,
-      prevCurrentId: committed.currentId,
-      prevSelectedId: nodeIdToDeleteFromMap,
-    };
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
-      keepDeleteUndo: true,
-    });
+    await persistTreeEdit(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      nextCurrentId,
+      fallbackId,
+      {
+        historyLabel: "Delete node",
+        beforeSelectedId: nodeIdToDeleteFromMap,
+        beforeSelectionIds: [nodeIdToDeleteFromMap],
+      },
+    );
   }
 
   async function onMergeNodeIntoParent(nodeIdToMerge: string) {
@@ -2131,7 +2236,18 @@ export default function App() {
 
     const nextCurrentId =
       committed.currentId === node.id ? parent.id : committed.currentId;
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, parent.id);
+    await persistTreeEdit(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      nextCurrentId,
+      parent.id,
+      {
+        historyLabel: "Merge nodes",
+        beforeSelectedId: nodeIdToMerge,
+        beforeSelectionIds: [nodeIdToMerge],
+      },
+    );
   }
 
   async function onMergeNodeWithOnlyChild(nodeIdToMerge: string) {
@@ -2151,7 +2267,18 @@ export default function App() {
 
     const nextCurrentId =
       committed.currentId === child.id ? node.id : committed.currentId;
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, node.id);
+    await persistTreeEdit(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      nextCurrentId,
+      node.id,
+      {
+        historyLabel: "Merge nodes",
+        beforeSelectedId: nodeIdToMerge,
+        beforeSelectionIds: [nodeIdToMerge],
+      },
+    );
   }
 
   async function onMergeLinearChainDown(startId: string) {
@@ -2184,7 +2311,18 @@ export default function App() {
     const nextCurrentId = deletedIds.has(committed.currentId)
       ? upstreamId
       : committed.currentId;
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, upstreamId);
+    await persistTreeEdit(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      nextCurrentId,
+      upstreamId,
+      {
+        historyLabel: "Merge nodes",
+        beforeSelectedId: analysis.orderedIds[0]!,
+        beforeSelectionIds: analysis.orderedIds,
+      },
+    );
   }
 
   async function onDeleteMapSelection(selectedIdsToDelete: string[]) {
@@ -2226,38 +2364,127 @@ export default function App() {
       : committed.currentId;
     const nextTree: Tree = { rootId: committed.tree.rootId, nodes: nextNodes };
 
-    pendingDeleteUndoRef.current = {
-      deletedIds: newlyDeletedIds,
-      prevCurrentId: committed.currentId,
-      prevSelectedId: eligible[0]!,
-    };
-    await persistTreeEdit(committed.tree, nextTree, nextCurrentId, fallbackId, {
-      keepDeleteUndo: true,
-    });
+    await persistTreeEdit(
+      committed.tree,
+      committed.currentId,
+      nextTree,
+      nextCurrentId,
+      fallbackId,
+      {
+        historyLabel: "Delete nodes",
+        beforeSelectedId: eligible[0]!,
+        beforeSelectionIds: eligible,
+      },
+    );
   }
 
-  async function onUndoLastDelete() {
-    if (!tree || saving || streaming) return;
-    const undo = pendingDeleteUndoRef.current;
-    if (!undo) return;
-    pendingDeleteUndoRef.current = null;
-
-    const restorable = undo.deletedIds.filter((id) => tree.nodes[id]?.deleted === true);
-    if (restorable.length === 0) return;
-
-    const nextNodes = { ...tree.nodes };
-    for (const id of restorable) {
-      const target = nextNodes[id];
-      if (target) nextNodes[id] = { ...target, deleted: false };
+  async function onUndoLastTreeOperation(expectedOperationId?: number) {
+    if (!tree || !currentId || saving || streaming) return;
+    if (dirtyBuffer) {
+      setError("Save or revert text edits before undoing a tree operation.");
+      return;
     }
-    const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
-    const nextCurrentId = nextNodes[undo.prevCurrentId]
-      ? undo.prevCurrentId
-      : (currentId ?? tree.rootId);
-    const nextSelectedId = nextNodes[undo.prevSelectedId]
-      ? undo.prevSelectedId
-      : nextCurrentId;
-    await persistTreeEdit(tree, nextTree, nextCurrentId, nextSelectedId);
+    const stack = treeHistoryRef.current;
+    const item = stack[stack.length - 1];
+    if (!item) return;
+    if (item.kind === "boundary") {
+      if (expectedOperationId !== undefined) {
+        setHideToast(null);
+        return;
+      }
+      setError(`Can't undo past ${item.label}. ${item.reason}`);
+      return;
+    }
+    const entry = item;
+    if (expectedOperationId !== undefined && entry.id !== expectedOperationId) {
+      setHideToast(null);
+      return;
+    }
+
+    const undone = undoTreeChanges(tree, entry.changes);
+    if (!undone.ok) {
+      // Once a newer inverse is unavailable, older operations cannot be
+      // assumed independent. Collapse them behind a boundary rather than
+      // exposing a potentially unsafe operation on the next keypress.
+      replaceTreeHistoryWithBoundary(
+        stack,
+        entry.label,
+        `Later changes made this operation unavailable. ${undone.reason}`,
+      );
+      setHideToast((current) => (current?.operationId === entry.id ? null : current));
+      setError(`${entry.label} can no longer be undone. ${undone.reason}`);
+      return;
+    }
+
+    const currentStillAtCommandResult = currentId === entry.afterLocation.currentId;
+    const nextCurrentId =
+      currentStillAtCommandResult && undone.tree.nodes[entry.beforeLocation.currentId]
+        ? entry.beforeLocation.currentId
+        : undone.tree.nodes[currentId]
+          ? currentId
+          : undone.tree.rootId;
+    const selectionStillAtCommandResult =
+      mapSelectedId === entry.afterLocation.selectedId &&
+      mapSelectionIds.length === entry.afterLocation.selectionIds.length &&
+      mapSelectionIds.every(
+        (id, index) => id === entry.afterLocation.selectionIds[index],
+      );
+    const nextSelectedId =
+      selectionStillAtCommandResult &&
+      undone.tree.nodes[entry.beforeLocation.selectedId]
+        ? entry.beforeLocation.selectedId
+        : mapSelectedId && undone.tree.nodes[mapSelectedId]
+          ? mapSelectedId
+          : nextCurrentId;
+    const currentValidSelectionIds = mapSelectionIds.filter(
+      (id) => undone.tree.nodes[id],
+    );
+    const restoredSelectionIds = entry.beforeLocation.selectionIds.filter(
+      (id) => undone.tree.nodes[id],
+    );
+    const nextSelectionIds = selectionStillAtCommandResult
+      ? restoredSelectionIds.length > 0
+        ? restoredSelectionIds
+        : [nextSelectedId]
+      : currentValidSelectionIds.length > 0
+        ? currentValidSelectionIds
+        : [nextSelectedId];
+
+    await persistTreeEdit(tree, currentId, undone.tree, nextCurrentId, nextSelectedId, {
+      historyLabel: null,
+      nextSelectionIds,
+      onSuccess: () => {
+        const latest = stack[stack.length - 1];
+        if (latest?.kind === "entry" && latest.id === entry.id) stack.pop();
+        const pickerBaseChanged =
+          candidateBaseId !== null &&
+          (!undone.tree.nodes[candidateBaseId] ||
+            entry.changes.some(
+              (change) =>
+                change.type === "update" &&
+                change.nodeId === candidateBaseId &&
+                change.fields.some((field) =>
+                  [
+                    "parentId",
+                    "text",
+                    "role",
+                    "endOfTurn",
+                    "hidden",
+                    "deleted",
+                  ].includes(field.field),
+                ),
+            ));
+        if (pickerBaseChanged) clearBranchPicker();
+        forgetSavedNodes(
+          new Set(
+            entry.changes.flatMap((change) =>
+              change.type === "create" ? [change.node.id] : [],
+            ),
+          ),
+        );
+        setHideToast((current) => (current?.operationId === entry.id ? null : current));
+      },
+    });
   }
 
   // Batch hide, shared by the node map's multi-selection and the sidebar's
@@ -2281,9 +2508,7 @@ export default function App() {
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
     await persistTreeMutation(tree, currentId, nextTree, {
-      onSuccess: () => {
-        hideUndoStackRef.current.push(eligible);
-      },
+      historyLabel: "Hide nodes",
       onSettled: () => setTreeMenu(null),
     });
   }
@@ -2311,38 +2536,14 @@ export default function App() {
     const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
 
     await persistTreeMutation(tree, currentId, nextTree, {
-      onSuccess: () => {
-        hideUndoStackRef.current.push(idsToHide);
-        setHideToast({ count: idsToHide.length });
+      historyLabel: "Hide non-starred paths",
+      onSuccess: (entry) => {
+        if (entry) {
+          setHideToast({ operationId: entry.id, count: idsToHide.length });
+        }
       },
       onSettled: () => setTreeMenu(null),
     });
-  }
-
-  // Pop the most recent hide op that still has hidden nodes and unhide them.
-  // Entries can hollow out when the user unhides nodes by hand, so skip past
-  // entries with nothing left to restore.
-  async function onUndoLastHide() {
-    if (!tree || !currentId || saving || streaming) return;
-
-    const stack = hideUndoStackRef.current;
-    while (stack.length > 0) {
-      const ids = stack.pop()!;
-      const restorable = ids.filter((id) => tree.nodes[id]?.hidden === true);
-      if (restorable.length === 0) continue;
-
-      const nextNodes = { ...tree.nodes };
-      for (const id of restorable) {
-        const node = nextNodes[id];
-        if (node) nextNodes[id] = { ...node, hidden: false };
-      }
-      const nextTree: Tree = { rootId: tree.rootId, nodes: nextNodes };
-
-      await persistTreeMutation(tree, currentId, nextTree, {
-        onSuccess: () => setHideToast(null),
-      });
-      return;
-    }
   }
 
   async function onSetMainThread(nodeIdToPromote: string) {
@@ -2642,16 +2843,17 @@ export default function App() {
           </span>
           <button
             type="button"
-            onClick={() => void onUndoLastHide()}
-            disabled={saving || streaming}
+            onClick={() => void onUndoLastTreeOperation(hideToast.operationId)}
+            disabled={saving || streaming || dirtyBuffer}
+            title={
+              dirtyBuffer
+                ? "Save or revert text edits before undoing this hide."
+                : undefined
+            }
           >
             Undo
           </button>
-          <button
-            type="button"
-            aria-label="Dismiss"
-            onClick={() => setHideToast(null)}
-          >
+          <button type="button" aria-label="Dismiss" onClick={() => setHideToast(null)}>
             ✕
           </button>
         </div>
@@ -2918,8 +3120,6 @@ export default function App() {
                   onMergeLinearChainDown={onMergeLinearChainDown}
                   onMergeNodeIntoParent={onMergeNodeIntoParent}
                   onMergeNodeWithOnlyChild={onMergeNodeWithOnlyChild}
-                  onUndoLastDelete={onUndoLastDelete}
-                  canUndoLastDelete={() => pendingDeleteUndoRef.current !== null}
                 />
               ) : (
                 <>

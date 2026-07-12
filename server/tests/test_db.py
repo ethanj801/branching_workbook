@@ -218,6 +218,32 @@ async def test_batch_updates_and_deletes(
     assert nodes["A"]["text"] == "hello"
 
 
+async def test_batch_recreates_deleted_nodes_for_structural_undo(
+    client: AsyncClient, project_path: Path
+):
+    await client.post("/api/projects", json={"path": str(project_path)})
+    a = _mk("A", "root", "a")
+    b = _mk("B", "A", "b")
+    await client.post("/api/nodes/batch", json={"creates": [a, b]})
+
+    deleted = await client.post(
+        "/api/nodes/batch",
+        json={"deletes": ["B", "A"], "main_path": ["root"]},
+    )
+    assert deleted.status_code == 200
+
+    restored = await client.post(
+        "/api/nodes/batch",
+        json={"creates": [a, b], "main_path": ["root", "A", "B"]},
+    )
+    assert restored.status_code == 200
+    nodes = {n["id"]: n for n in (await client.get("/api/nodes")).json()}
+    assert nodes["A"]["parent_id"] == "root"
+    assert nodes["B"]["parent_id"] == "A"
+    assert nodes["A"]["is_main_path"] is True
+    assert nodes["B"]["is_main_path"] is True
+
+
 async def test_node_name_roundtrip(client: AsyncClient, project_path: Path):
     await client.post("/api/projects", json={"path": str(project_path)})
     a = _mk("A", "root", "chapter text", name="Chapter One")

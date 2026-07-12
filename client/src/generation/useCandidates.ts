@@ -149,6 +149,16 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
     setSavedCandidateIds((current) => ({ ...current, [index]: nodeId }));
   }
 
+  /** Forget kept markers whose persisted nodes were removed by application undo. */
+  function forgetSavedNodes(nodeIds: ReadonlySet<string>) {
+    if (nodeIds.size === 0) return;
+    setSavedCandidateIds((current) =>
+      Object.fromEntries(
+        Object.entries(current).filter(([, nodeId]) => !nodeIds.has(nodeId)),
+      ),
+    );
+  }
+
   function cycleVisibleCandidate(delta: 1 | -1): boolean {
     if (!branchPickerOpen || candidates.length <= 1) return false;
     setVisibleCandidateIndex((current) =>
@@ -202,6 +212,7 @@ export function useCandidates({ streaming, saving }: UseCandidatesArgs) {
     startGeneration,
     markUsed,
     markKept,
+    forgetSavedNodes,
     cycleVisibleCandidate,
     dropCandidate,
   };

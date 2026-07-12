@@ -75,6 +75,7 @@ export type WorkspaceAction =
       currentId: string;
       buffer: string;
       selectedId: string;
+      selectedIds?: string[];
     }
   | { type: "treeMutated"; tree: Tree };
 
@@ -142,7 +143,7 @@ export function workspaceReducer(
         currentId: action.currentId,
         buffer: action.buffer,
         mapSelectedId: action.selectedId,
-        mapSelectionIds: [action.selectedId],
+        mapSelectionIds: action.selectedIds ?? [action.selectedId],
         mapLocateRequest: state.mapLocateRequest + 1,
       };
     case "treeMutated":
