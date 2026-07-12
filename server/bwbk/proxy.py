@@ -17,6 +17,11 @@ router = APIRouter()
 DEFAULT_TABBY_BASE_URL = "http://127.0.0.1:5000"
 DEFAULT_TABBY_COMPLETIONS_URL = "http://127.0.0.1:5000/v1/completions"
 DEFAULT_TABBY_STREAM_READ_TIMEOUT_SECONDS = 60.0
+# A long prompt spends minutes in prefill before the model emits its
+# first token, and nothing arrives on the wire in that window. The
+# first-data deadline covers that silent phase; the shorter read
+# timeout above takes over once tokens are flowing.
+DEFAULT_TABBY_STREAM_FIRST_DATA_TIMEOUT_SECONDS = 1800.0
 
 
 def _tabby_completions_url() -> str:
@@ -49,24 +54,41 @@ def _tabby_headers() -> dict[str, str]:
     return {"x-api-key": api_key}
 
 
-def _tabby_stream_read_timeout_seconds() -> float:
-    raw = os.getenv("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS")
+def _positive_float_env(name: str, default: float) -> float:
+    raw = os.getenv(name)
     if raw is None:
-        return DEFAULT_TABBY_STREAM_READ_TIMEOUT_SECONDS
+        return default
     try:
         value = float(raw)
     except ValueError as ex:
-        raise RuntimeError("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS must be a number") from ex
+        raise RuntimeError(f"{name} must be a number") from ex
     if value <= 0:
-        raise RuntimeError("BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS must be greater than zero")
+        raise RuntimeError(f"{name} must be greater than zero")
     return value
 
 
+def _tabby_stream_read_timeout_seconds() -> float:
+    return _positive_float_env(
+        "BWBK_TABBY_STREAM_READ_TIMEOUT_SECONDS",
+        DEFAULT_TABBY_STREAM_READ_TIMEOUT_SECONDS,
+    )
+
+
+def _tabby_stream_first_data_timeout_seconds() -> float:
+    return _positive_float_env(
+        "BWBK_TABBY_STREAM_FIRST_DATA_TIMEOUT_SECONDS",
+        DEFAULT_TABBY_STREAM_FIRST_DATA_TIMEOUT_SECONDS,
+    )
+
+
 def _tabby_stream_timeout() -> httpx.Timeout:
-    read_timeout = _tabby_stream_read_timeout_seconds()
+    # Reads are unbounded at the httpx layer. The two-phase deadline in
+    # _stream_tabby_post enforces them instead, because httpx has a
+    # single read timeout and cannot give the silent prefill window a
+    # longer budget than the steady token stream that follows it.
     return httpx.Timeout(
         connect=10.0,
-        read=read_timeout,
+        read=None,
         write=30.0,
         pool=10.0,
     )
@@ -122,24 +144,34 @@ async def _request_json(
 
 async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
     read_timeout = _tabby_stream_read_timeout_seconds()
+    first_data_timeout = _tabby_stream_first_data_timeout_seconds()
     client = httpx.AsyncClient(timeout=_tabby_stream_timeout())
     upstream: httpx.Response | None = None
 
     try:
-        upstream = await client.send(
-            client.build_request(
-                "POST",
-                _tabby_url(path),
-                json=body,
-                headers=_tabby_headers(),
+        # Response headers can lag the full prefill on some backends,
+        # so the header wait gets the generous first-data budget.
+        upstream = await asyncio.wait_for(
+            client.send(
+                client.build_request(
+                    "POST",
+                    _tabby_url(path),
+                    json=body,
+                    headers=_tabby_headers(),
+                ),
+                stream=True,
             ),
-            stream=True,
+            timeout=first_data_timeout,
         )
-    except httpx.TimeoutException as ex:
+    except (TimeoutError, httpx.TimeoutException) as ex:
         await client.aclose()
         raise HTTPException(
             status_code=504,
-            detail=f"TabbyAPI stream timed out after {read_timeout:g}s without a response",
+            detail=(
+                f"TabbyAPI sent no response within {first_data_timeout:g}s. "
+                "A very long prompt may still be prefilling — raise "
+                "BWBK_TABBY_STREAM_FIRST_DATA_TIMEOUT_SECONDS if it needs more time."
+            ),
         ) from ex
     except httpx.HTTPError as ex:
         await client.aclose()
@@ -155,16 +187,34 @@ async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
         )
 
     async def stream_upstream():
+        # Prefill produces no bytes, so the wait for the first chunk
+        # gets the long first-data budget. Once data flows, a stall
+        # longer than the read timeout means a wedged stream.
+        streamed_any = False
+        chunks = upstream.aiter_bytes()
         try:
             try:
-                async for chunk in upstream.aiter_bytes():
+                while True:
+                    budget = read_timeout if streamed_any else first_data_timeout
+                    try:
+                        chunk = await asyncio.wait_for(anext(chunks), timeout=budget)
+                    except StopAsyncIteration:
+                        break
+                    streamed_any = True
                     if await request.is_disconnected():
                         break
                     yield chunk
-            except httpx.TimeoutException:
-                yield _sse_error_frame(
-                    f"TabbyAPI stream timed out after {read_timeout:g}s without data"
-                )
+            except (TimeoutError, httpx.TimeoutException):
+                if streamed_any:
+                    yield _sse_error_frame(
+                        f"TabbyAPI stream timed out after {read_timeout:g}s without data"
+                    )
+                else:
+                    yield _sse_error_frame(
+                        f"TabbyAPI sent no data within {first_data_timeout:g}s. "
+                        "A very long prompt may still be prefilling — raise "
+                        "BWBK_TABBY_STREAM_FIRST_DATA_TIMEOUT_SECONDS if it needs more time."
+                    )
             except httpx.HTTPError as ex:
                 yield _sse_error_frame(f"TabbyAPI stream failed: {ex}")
         finally:
@@ -175,6 +225,8 @@ async def _stream_tabby_post(path: str, request: Request, body: dict[str, Any]):
         stream_upstream(),
         media_type=upstream.headers.get("content-type", "text/event-stream"),
     )
+
+
 @router.post("/api/completions")
 async def completions(request: Request, body: dict[str, Any]):
     payload = {**body, "stream": True}
