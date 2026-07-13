@@ -32,6 +32,16 @@ RUN cd /app && \
       patch -p1 --fuzz=0 < /tmp/tabbyapi-continue-final-message.patch; } && \
     rm /tmp/tabbyapi-continue-final-message.patch
 
+# Makes ban_eos_token mask EOS and banned_tokens mask listed token IDs during
+# sampling on the exl3 backend until the upstream base image carries it
+# (fork branch ethanj801/tabbyAPI fix-exl3-ban-eos-token).
+# Idempotent. It is a no-op once the base already has the feature.
+COPY tabbyapi-exl3-ban-eos-token.patch /tmp/
+RUN cd /app && \
+    { grep -q SS_BanTokens backends/exllamav3/sampler.py || \
+      patch -p1 --fuzz=0 < /tmp/tabbyapi-exl3-ban-eos-token.patch; } && \
+    rm /tmp/tabbyapi-exl3-ban-eos-token.patch
+
 COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 RUN chmod +x /usr/local/bin/runpod-entrypoint.sh
 

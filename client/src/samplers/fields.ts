@@ -370,6 +370,13 @@ export const SAMPLER_SECTIONS: SamplerSection[] = [
         step: 1,
         neutral: 0,
       },
+      {
+        kind: "checkbox",
+        key: "ban_eos_token",
+        label: "ban_eos_token",
+        neutral: false,
+        info: "Prevent the model from stopping on its end token, so generation runs to max_tokens.",
+      },
     ],
   },
 ];
