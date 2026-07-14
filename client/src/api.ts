@@ -108,6 +108,11 @@ export type CompletionRequestBody = {
   stop?: string[];
   banned_strings?: string[];
   ban_eos_token?: boolean;
+  // ExllamaV3 only. Compute logprobs from the sampled distribution, after the
+  // logit mask and sampler steps, so masked or banned tokens read as zero
+  // probability. The seeding probe sets it to keep the end token out of the
+  // opening pool.
+  post_sampling_probs?: boolean;
   // Seeding asks for the first token's distribution. TabbyAPI populates the
   // response top_logprobs only when both are positive. top_logprobs sets how
   // many candidates to return, logprobs gates the per-token logprob collection.

@@ -61,6 +61,7 @@ import {
   buildSamplerSnapshot,
   clampMinTokens,
   fetchProseOpenings,
+  neutralProbeSampler,
   runSeededFanOut,
   SEEDED_BRANCH_CAP,
 } from "./generation/seeding";
@@ -1524,10 +1525,9 @@ export default function App() {
           clearBranchPicker,
           bannedStrings: activeBannedStrings,
           seedCount: seededCount,
-          samplerBody: samplerSnapshot,
           fetchOpenings: (probeSignal, prefixText) =>
             fetchProseOpenings(
-              { prompt: promptSnapshot + prefixText, ...samplerSnapshot },
+              { prompt: promptSnapshot + prefixText, ...neutralProbeSampler() },
               probeSignal,
             ),
           beginSeeded: (seeds) => {

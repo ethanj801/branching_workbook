@@ -5,6 +5,7 @@ import {
   clampMinTokens,
   dropBannedOpenings,
   growSeeds,
+  mergeOpenings,
   rankChatTop,
   rankCompletionTop,
   runSeededFanOut,
@@ -147,7 +148,7 @@ describe("dropBannedOpenings", () => {
 
 describe("allocateSeedSlots", () => {
   it("gives every survivor a slot and sums to the count", () => {
-    const slots = allocateSeedSlots(pool(" A", " B", " C"), 6, 1);
+    const slots = allocateSeedSlots(pool(" A", " B", " C"), 6);
     expect(slots).toHaveLength(3);
     expect(slots.reduce((a, b) => a + b, 0)).toBe(6);
     expect(Math.min(...slots)).toBeGreaterThanOrEqual(1);
@@ -158,28 +159,37 @@ describe("allocateSeedSlots", () => {
       { token: " A", logprob: Math.log(0.8) },
       { token: " B", logprob: Math.log(0.2) },
     ];
-    expect(allocateSeedSlots(survivors, 6, 1)).toEqual([4, 2]);
+    expect(allocateSeedSlots(survivors, 6)).toEqual([4, 2]);
+  });
+});
+
+describe("mergeOpenings", () => {
+  it("sums the mass of candidates that share a token string", () => {
+    const merged = mergeOpenings([
+      { token: " A", logprob: Math.log(0.4) },
+      { token: " The", logprob: Math.log(0.3) },
+      { token: " The", logprob: Math.log(0.3) },
+    ]);
+    // " The" merges to 0.6 and outranks " A" at 0.4.
+    expect(merged.map((o) => o.token)).toEqual([" The", " A"]);
+    expect(merged.map((o) => Math.exp(o.logprob))).toEqual([
+      expect.closeTo(0.6),
+      expect.closeTo(0.4),
+    ]);
   });
 });
 
 describe("sampleOpenings", () => {
-  it("returns the most likely openings in order at temperature zero", () => {
-    const out = sampleOpenings(pool(" The", " It", " A", " He"), 2, {
-      temperature: 0,
-    });
-    expect(out).toEqual([" The", " It"]);
-  });
-
   it("draws every opening exactly once when asked for the whole pool", () => {
     const tokens = [" The", " It", " A", " He"];
-    const out = sampleOpenings(pool(...tokens), 4, { temperature: 1 });
+    const out = sampleOpenings(pool(...tokens), 4);
     expect([...out].sort()).toEqual([...tokens].sort());
   });
 
   it("orders by likelihood under a constant rng", () => {
     // Identical noise on every candidate shifts all keys by the same amount,
     // so the draw reduces to the likelihood order.
-    const out = sampleOpenings(pool(" The", " It", " A"), 2, {}, () => 0.5);
+    const out = sampleOpenings(pool(" The", " It", " A"), 2, () => 0.5);
     expect(out).toEqual([" The", " It"]);
   });
 
@@ -188,97 +198,26 @@ describe("sampleOpenings", () => {
       { token: " A", logprob: Math.log(0.9) },
       { token: " B", logprob: Math.log(0.1) },
     ];
-    const out = sampleOpenings(candidates, 1, {}, sequenceRng([0.0001, 0.999]));
+    const out = sampleOpenings(candidates, 1, sequenceRng([0.0001, 0.999]));
     expect(out).toEqual([" B"]);
   });
 
-  it("limits eligible openings to top_k", () => {
-    const out = sampleOpenings(pool(" The", " It", " A", " He"), 4, { top_k: 2 });
-    expect(out).toHaveLength(2);
-    expect([...out].sort()).toEqual([" It", " The"]);
-  });
-
-  it("drops candidates far below the peak with min_p", () => {
-    const candidates: Opening[] = [
-      { token: " The", logprob: Math.log(0.5) },
-      { token: " It", logprob: Math.log(0.4) },
-      { token: " A", logprob: Math.log(0.001) },
-    ];
-    const out = sampleOpenings(candidates, 3, { min_p: 0.5 });
-    expect(out).toHaveLength(2);
-    expect(out).not.toContain(" A");
-  });
-
-  it("keeps only tokens whose cumulative raw mass stays within top_p", () => {
-    // The engine drops the token that crosses the top_p boundary, keeping the
-    // most likely token unconditionally.
-    const candidates: Opening[] = [
-      { token: " The", logprob: Math.log(0.6) },
-      { token: " It", logprob: Math.log(0.3) },
-      { token: " A", logprob: Math.log(0.1) },
-    ];
-    expect(sampleOpenings(candidates, 3, { top_p: 0.7 })).toEqual([" The"]);
-  });
-
-  it("keeps the whole pool when its raw mass never reaches top_p", () => {
-    // The pool holds 0.6 of the true mass, so the real nucleus extends past
-    // it and every returned candidate is inside. Normalizing within the pool
-    // would wrongly cut at 0.9 of the pool.
-    const candidates: Opening[] = [
-      { token: " The", logprob: Math.log(0.3) },
-      { token: " It", logprob: Math.log(0.2) },
-      { token: " A", logprob: Math.log(0.1) },
-    ];
-    expect(sampleOpenings(candidates, 3, { top_p: 0.9 })).toHaveLength(3);
-  });
-
-  it("cuts top_p against the top_k survivors when top_k lands in the pool", () => {
-    // The engine renormalizes after top_k. The same pool and top_p that stay
-    // intact above now cut down to one token, because the two top_k survivors
-    // become the whole mass base and the second one crosses 0.9.
-    const candidates: Opening[] = [
-      { token: " The", logprob: Math.log(0.3) },
-      { token: " It", logprob: Math.log(0.2) },
-      { token: " A", logprob: Math.log(0.1) },
-    ];
-    expect(sampleOpenings(candidates, 3, { top_k: 2, top_p: 0.9 })).toEqual([" The"]);
-  });
-
-  it("applies temperature before truncation unless temperature_last is set", () => {
-    // At temperature 5 the ratios flatten, so every candidate clears a 0.5
-    // min_p bar. With temperature_last the bar applies to the raw ratios and
-    // the weakest candidate falls below it.
-    const candidates: Opening[] = [
-      { token: " The", logprob: Math.log(0.5) },
-      { token: " It", logprob: Math.log(0.3) },
-      { token: " A", logprob: Math.log(0.2) },
-    ];
-    const tempFirst = sampleOpenings(candidates, 3, { temperature: 5, min_p: 0.5 });
-    expect(tempFirst).toHaveLength(3);
-    const tempLast = sampleOpenings(candidates, 3, {
-      temperature: 5,
-      min_p: 0.5,
-      temperature_last: true,
-    });
-    expect(tempLast).toHaveLength(2);
-    expect(tempLast).not.toContain(" A");
-  });
-
-  it("merges candidates that share a token string, summing their mass", () => {
+  it("merges candidates that share a token string before drawing", () => {
     // First-wins dedupe would leave " The" at 0.3 and pick " A". Merged mass
-    // makes " The" 0.6 and it wins the greedy draw.
+    // makes " The" 0.6, so it wins the likelihood-ordered draw, and the pool
+    // holds two distinct openings.
     const candidates: Opening[] = [
       { token: " A", logprob: Math.log(0.4) },
       { token: " The", logprob: Math.log(0.3) },
       { token: " The", logprob: Math.log(0.3) },
     ];
-    expect(sampleOpenings(candidates, 1, { temperature: 0 })).toEqual([" The"]);
-    expect(sampleOpenings(candidates, 3, {})).toHaveLength(2);
+    expect(sampleOpenings(candidates, 1, () => 0.5)).toEqual([" The"]);
+    expect(sampleOpenings(candidates, 3)).toHaveLength(2);
   });
 
   it("returns nothing for an empty pool or a zero count", () => {
-    expect(sampleOpenings([], 3, {})).toEqual([]);
-    expect(sampleOpenings(pool(" The"), 0, {})).toEqual([]);
+    expect(sampleOpenings([], 3)).toEqual([]);
+    expect(sampleOpenings(pool(" The"), 0)).toEqual([]);
   });
 });
 
@@ -288,9 +227,9 @@ describe("growSeeds", () => {
       prefix: "",
       depth: 0,
       count: 3,
-      // Temperature zero makes draws deterministic, so tests can assert exact
-      // seed sets.
-      samplerBody: { temperature: 0 } as SamplerBody,
+      // A constant rng gives every candidate the same Gumbel term, so the draw
+      // falls back to likelihood order and tests can assert exact seed sets.
+      rng: () => 0.5,
       bannedStrings: [],
       maxDepth: 8,
       probe: async (): Promise<Opening[]> => {
@@ -416,9 +355,9 @@ describe("runSeededFanOut", () => {
       clearBranchPicker: noop,
       bannedStrings: [],
       seedCount: 3,
-      // Temperature zero makes the draw deterministic, so tests can assert
-      // exact seed sets.
-      samplerBody: { temperature: 0 } as SamplerBody,
+      // A constant rng gives every candidate the same Gumbel term, so the draw
+      // falls back to likelihood order and tests can assert exact seed sets.
+      rng: () => 0.5,
       beginSeeded: noop,
       setCandidates: noop,
       setError: noop,

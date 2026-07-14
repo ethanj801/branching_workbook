@@ -1,0 +1,34 @@
+diff --git a/backends/exllamav3/model.py b/backends/exllamav3/model.py
+index d5e0292..1b3074f 100644
+--- a/backends/exllamav3/model.py
++++ b/backends/exllamav3/model.py
+@@ -1194,6 +1194,7 @@ class ExllamaV3Container(BaseModelContainer):
+             embeddings=mm_embeddings_content,
+             return_top_tokens=params.top_logprobs,
+             return_probs=bool(params.logprobs) or bool(params.top_logprobs),
++            post_sampling_probs=params.post_sampling_probs,
+             max_rq_tokens=self.max_rq_tokens,
+             stop_on_loop=params.get_stop_on_loop(),
+             filters=grammar_handler.filters,
+diff --git a/common/sampling.py b/common/sampling.py
+index a665b7d..7654c69 100644
+--- a/common/sampling.py
++++ b/common/sampling.py
+@@ -273,6 +273,17 @@ class BaseSamplerRequest(BaseModel):
+         ge=0,
+     )
+ 
++    post_sampling_probs: Optional[bool] = Field(
++        default_factory=lambda: get_default_sampler_value(
++            "post_sampling_probs", False
++        ),
++        description=(
++            "ExLlamaV3 only. Compute logprobs from the sampled distribution, after "
++            "the logit mask and sampler steps, instead of from the raw logits. Masked "
++            "or banned tokens then read as zero probability."
++        ),
++    )
++
+     adaptive_target: Optional[float] = Field(
+         default_factory=lambda: get_default_sampler_value("adaptive_target", 1.0)
+     )

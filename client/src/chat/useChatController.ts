@@ -28,6 +28,7 @@ import {
   buildSamplerSnapshot,
   clampMinTokens,
   fetchChatOpenings,
+  neutralProbeSampler,
   runSeededFanOut,
   SEEDED_BRANCH_CAP,
 } from "../generation/seeding";
@@ -418,7 +419,6 @@ export function useChatController(deps: ChatControllerDeps) {
           clearBranchPicker,
           bannedStrings: activeBannedStrings,
           seedCount: seededCount,
-          samplerBody: samplerSnapshot,
           fetchOpenings: (probeSignal, prefixText) =>
             fetchChatOpenings(
               {
@@ -428,7 +428,7 @@ export function useChatController(deps: ChatControllerDeps) {
                 response_prefix: prefixText || undefined,
                 add_generation_prompt: !continueFinalMessage,
                 continue_final_message: continueFinalMessage,
-                ...samplerSnapshot,
+                ...neutralProbeSampler(),
               },
               probeSignal,
             ),

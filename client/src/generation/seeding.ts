@@ -23,9 +23,9 @@ export const SEEDED_BRANCH_CAP = 6;
  * How many first-token candidates the probe requests. Seeds are sampled from
  * this pool rather than taken as its head, so the pool needs enough candidates
  * beyond SEEDED_BRANCH_CAP that sampling can differ from a plain top-k cut,
- * with headroom left for ban filtering and the truncation samplers. A token
- * outside the pool can never become a seed, but tokens this deep carry
- * near-zero probability and would almost never be drawn anyway. The backends
+ * with headroom left for ban filtering. A token outside the pool can never
+ * become a seed, but tokens this deep carry near-zero probability and would
+ * almost never be drawn anyway. The backends
  * we target accept any top_logprobs count, the exllamav3 generator sorts the
  * full vocabulary regardless of k, and the pool rides in a single one-token
  * response, so a generous pool is effectively free. A strictly OpenAI
@@ -34,7 +34,7 @@ export const SEEDED_BRANCH_CAP = 6;
  */
 export const SEEDED_POOL_SIZE = 128;
 
-/** One candidate opening from the probe. The logprob is the raw model value. */
+/** One candidate opening from the probe, with the probe's returned logprob. */
 export type Opening = { token: string; logprob: number };
 
 /**
@@ -121,37 +121,12 @@ function logAddExp(a: number, b: number): number {
   return m + Math.log(Math.exp(a - m) + Math.exp(b - m));
 }
 
-// sanitizeSamplerBody strips fields sitting at their neutral no-op values, so
-// an absent key means the field is neutral. Resolve absent keys from the field
-// catalog instead of restating the neutral values here.
-const NEUTRALS = neutralBody();
-
-function resolveNumber(value: number | undefined, neutral: unknown): number {
-  if (value !== undefined) return value;
-  return typeof neutral === "number" ? neutral : 0;
-}
-
 /**
- * Merge and truncate the probed pool the way the engine's own sampler would,
- * returning the candidates a draw may pick from, most likely first.
- *
- * The pool logprobs are reshaped by the sampler settings that are pure
- * functions of a single position's distribution, in the order TabbyAPI's
- * exllamav3 sampler builder applies them. Temperature rescales the weights,
- * then top_k, top_p, and min_p truncate them. temperature_last defers the
- * rescale until after the truncations, which then see the unscaled
- * distribution. Samplers that need information the probe cannot carry shape
- * only the continuations. Dynamic temperature, typical, and tfs need
- * full-vocabulary statistics, DRY and the repetition penalties need the
- * prompt, and mirostat needs cross-step state. XTC has a per-position closed
- * form but is left out to keep the replicated set small and unambiguous.
- *
- * Candidates that decode to the same token string are merged up front with
- * their probability mass summed, so two byte-distinct tokens cannot yield two
- * identical branches. A temperature of zero skips truncation entirely because
- * the draw degenerates to the deterministic top of the merged pool.
+ * Merge pool candidates that decode to the same token string, summing their
+ * probability mass, and return them most likely first. Two byte-distinct token
+ * ids that share a string would otherwise seed two identical branches.
  */
-export function surviveTruncation(pool: Opening[], sampler: SamplerBody): Opening[] {
+export function mergeOpenings(pool: Opening[]): Opening[] {
   const mergedMass = new Map<string, number>();
   for (const opening of pool) {
     const prev = mergedMass.get(opening.token);
@@ -160,127 +135,49 @@ export function surviveTruncation(pool: Opening[], sampler: SamplerBody): Openin
       prev === undefined ? opening.logprob : logAddExp(prev, opening.logprob),
     );
   }
-  const byLikelihood = [...mergedMass]
+  return [...mergedMass]
     .map(([token, logprob]) => ({ token, logprob }))
     .sort((a, b) => b.logprob - a.logprob);
-  const temp = resolveNumber(sampler.temperature, NEUTRALS.temperature);
-  if (temp <= 0) {
-    return byLikelihood;
-  }
-
-  // The truncations inspect the distribution the engine would truncate. That
-  // is the temperature-scaled one, unless temperature_last defers the scale to
-  // after truncation, and then they see the unscaled one. Weights are relative
-  // to the most likely candidate for numerical stability. The pool is sorted
-  // most likely first, so each truncation keeps a prefix. Gumbel keys shift by
-  // the same constant under any rescaling of the weights, so no
-  // renormalization is needed anywhere.
-  const tempLast = sampler.temperature_last ?? NEUTRALS.temperature_last ?? false;
-  const truncTemp = tempLast ? 1 : temp;
-  const maxLogprob = byLikelihood[0]?.logprob ?? 0;
-  let survivors = byLikelihood.map((opening) => ({
-    ...opening,
-    weight: Math.exp((opening.logprob - maxLogprob) / truncTemp),
-  }));
-
-  const topK = resolveNumber(sampler.top_k, NEUTRALS.top_k);
-  const topKWithinPool = topK > 0 && topK <= survivors.length;
-  if (topK > 0 && topK < survivors.length) {
-    survivors = survivors.slice(0, topK);
-  }
-
-  const topP = resolveNumber(sampler.top_p, NEUTRALS.top_p);
-  if (topP > 0 && topP < 1) {
-    // The engine renormalizes between truncations, so its nucleus cut runs
-    // against the top_k survivors when top_k truncated first, and against the
-    // whole vocabulary otherwise. When top_k lands within the pool the
-    // survivor set is fully known and its relative weights give the exact
-    // mass base at any temperature. Without that, the raw logprobs are
-    // already normalized over the vocabulary, so at a truncation temperature
-    // of 1 the plain sum of raw probabilities is the exact cumulative mass,
-    // and a pool that never reaches top_p lies wholly inside the nucleus and
-    // is kept intact. A tempered truncation without top_k has no computable
-    // base because the tail mass is not in the probe. Normalizing within the
-    // pool is then a deliberate approximation, near exact when temperature
-    // sharpens below 1 and biased toward the head when it flattens above 1.
-    // The cut keeps tokens whose inclusive cumulative mass stays within
-    // top_p and always keeps the most likely token, matching the engine's
-    // SS_TopP boundary behavior.
-    const usePoolMass = topKWithinPool || truncTemp !== 1;
-    const mass = usePoolMass ? survivors.reduce((a, s) => a + s.weight, 0) : 1;
-    let cumulative = 0;
-    const firstBeyond = survivors.findIndex((s) => {
-      cumulative += usePoolMass ? s.weight / mass : Math.exp(s.logprob);
-      return cumulative > topP;
-    });
-    if (firstBeyond !== -1) {
-      survivors = survivors.slice(0, Math.max(firstBeyond, 1));
-    }
-  }
-
-  const minP = resolveNumber(sampler.min_p, NEUTRALS.min_p);
-  if (minP > 0) {
-    const peak = Math.max(...survivors.map((s) => s.weight));
-    survivors = survivors.filter((s) => s.weight >= minP * peak);
-  }
-
-  return survivors.map(({ token, logprob }) => ({ token, logprob }));
 }
 
 /**
  * Draw up to `count` distinct seeds from the probed pool.
  *
- * surviveTruncation reshapes the pool first, so the draw runs over exactly the
- * candidates the engine's own sampler could pick. The draw itself is the
- * Gumbel top-k trick. Add independent Gumbel noise to each surviving log
- * weight and keep the `count` largest keys. That is exactly the
- * sampling-without-replacement distribution, the same as repeatedly drawing
- * one seed, removing it, and rescaling the rest. A temperature of zero
- * degenerates to the deterministic top `count`, matching greedy decoding.
- * Truncation can leave fewer than `count` survivors, and then every survivor
- * is drawn.
+ * mergeOpenings collapses duplicate token strings first, then the draw is the
+ * Gumbel top-k trick at temperature one. Add independent Gumbel noise to each
+ * merged log weight and keep the `count` largest keys. That is sampling without
+ * replacement from the pool's own distribution, the same as repeatedly drawing
+ * one seed, removing it, and rescaling the rest. The probe already removed the
+ * end token and the truncation samplers, so the draw runs over the full
+ * distribution and its diversity comes from the without-replacement draw alone.
+ * A pool smaller than `count` yields every candidate.
  */
 export function sampleOpenings(
   pool: Opening[],
   count: number,
-  sampler: SamplerBody,
   rng: () => number = Math.random,
 ): string[] {
-  const survivors = surviveTruncation(pool, sampler);
+  const survivors = mergeOpenings(pool);
   if (survivors.length === 0 || count <= 0) return [];
-  const temp = resolveNumber(sampler.temperature, NEUTRALS.temperature);
-  if (temp <= 0) {
-    return survivors.slice(0, count).map((opening) => opening.token);
-  }
-
-  // The key uses the logprob at the drawing temperature rather than the
-  // truncation weight, so with temperature_last the draw is still tempered.
   const keyed = survivors.map((s) => {
     // Math.random can return exactly zero, which would make the Gumbel term
     // infinite. Clamp to the smallest positive double.
     const u = rng() || Number.MIN_VALUE;
-    return { token: s.token, key: s.logprob / temp - Math.log(-Math.log(u)) };
+    return { token: s.token, key: s.logprob - Math.log(-Math.log(u)) };
   });
   keyed.sort((a, b) => b.key - a.key);
   return keyed.slice(0, count).map((entry) => entry.token);
 }
 
 /**
- * Split `count` branch slots across truncation survivors when there are fewer
- * survivors than slots. Every survivor keeps at least one slot, and the extras
- * go out proportionally to probability mass at the drawing temperature, by
- * largest remainder. A survivor holding more than one slot gets split at the
- * next token position by growSeeds. A non-positive temperature has no drawing
- * distribution to weight by, so the mass is taken at temperature one.
+ * Split `count` branch slots across the pool candidates when there are fewer of
+ * them than slots. Every candidate keeps at least one slot, and the extras go
+ * out proportionally to probability mass, by largest remainder. A candidate
+ * holding more than one slot gets split at the next token position by growSeeds.
  */
-export function allocateSeedSlots(
-  survivors: Opening[],
-  count: number,
-  temperature: number,
-): number[] {
-  const temp = temperature > 0 ? temperature : 1;
+export function allocateSeedSlots(survivors: Opening[], count: number): number[] {
   const peak = survivors[0]?.logprob ?? 0;
-  const weights = survivors.map((s) => Math.exp((s.logprob - peak) / temp));
+  const weights = survivors.map((s) => Math.exp(s.logprob - peak));
   const mass = weights.reduce((total, w) => total + w, 0);
   const extra = count - survivors.length;
   const quotas = weights.map((w) => (extra * w) / mass);
@@ -317,8 +214,6 @@ export type GrowSeedsArgs = {
   pool: Opening[];
   /** How many branch slots this subtree should fill. */
   count: number;
-  /** The request's sampler settings, which shape truncation and the draw. */
-  samplerBody: SamplerBody;
   /** Active project bans. A pool candidate that is itself banned never seeds. */
   bannedStrings: string[];
   /** Depth at which growth stops and the branch count may fall short. */
@@ -333,30 +228,29 @@ export type GrowSeedsArgs = {
  * Grow up to `count` distinct seeds from the probed pool, going deeper when
  * one position cannot supply enough options.
  *
- * When the truncated pool holds at least `count` candidates this is a plain
- * one-token draw. When it holds fewer, every survivor becomes a prefix, the
- * missing slots are split across the survivors by probability mass, and each
- * prefix owing more than one branch is probed one token further and grown
- * recursively. A split prefix never stays as a branch of its own, its slots
- * are always filled by its extensions, so the finished seeds are pairwise
- * distinct at their first diverging token. A prefix whose deeper pool comes
- * back empty or unreachable falls back to being a single bare seed. The
- * recursion stops at maxDepth and returns fewer seeds when the distribution
- * never widens. An abort during a deeper probe re-raises so Stop stays silent.
+ * When the merged pool holds at least `count` candidates this is a plain
+ * one-token draw. When it holds fewer, every candidate becomes a prefix, the
+ * missing slots are split across them by probability mass, and each prefix
+ * owing more than one branch is probed one token further and grown recursively.
+ * A split prefix never stays as a branch of its own, its slots are always
+ * filled by its extensions, so the finished seeds are pairwise distinct at
+ * their first diverging token. A prefix whose deeper pool comes back empty or
+ * unreachable falls back to being a single bare seed. The recursion stops at
+ * maxDepth and returns fewer seeds when the distribution never widens. An abort
+ * during a deeper probe re-raises so Stop stays silent.
  */
 export async function growSeeds(args: GrowSeedsArgs): Promise<Seed[]> {
   const filtered = dropBannedOpenings(args.pool, args.bannedStrings);
-  const survivors = surviveTruncation(filtered, args.samplerBody);
+  const survivors = mergeOpenings(filtered);
   if (survivors.length === 0 || args.count <= 0) return [];
   const nextDepth = args.depth + 1;
   if (survivors.length >= args.count || nextDepth >= args.maxDepth) {
-    return sampleOpenings(filtered, args.count, args.samplerBody, args.rng).map(
+    return sampleOpenings(filtered, args.count, args.rng).map(
       (token) => ({ text: args.prefix + token, tokenCount: nextDepth }),
     );
   }
 
-  const temp = resolveNumber(args.samplerBody.temperature, NEUTRALS.temperature);
-  const slots = allocateSeedSlots(survivors, args.count, temp);
+  const slots = allocateSeedSlots(survivors, args.count);
   const grown = await Promise.all(
     survivors.map(async (survivor, i): Promise<Seed[]> => {
       const text = args.prefix + survivor.token;
@@ -401,12 +295,24 @@ export function clampMinTokens<T extends { min_tokens?: number }>(
 }
 
 /**
+ * The sampler the opening probe sends, fixed and independent of the user's
+ * settings. Every truncation and temperature sits at its neutral no-op, so the
+ * probe reads the model's true next-token distribution, and post_sampling_probs
+ * with ban_eos_token removes the end token from it by id. Diversity comes from
+ * the without-replacement draw over this full distribution, so the user's
+ * truncation never narrows the pool. The neutral values are sent explicitly so
+ * no preset or server-side default reshapes the probe.
+ */
+export function neutralProbeSampler(): SamplerBody {
+  return { ...neutralBody(), ban_eos_token: true, post_sampling_probs: true };
+}
+
+/**
  * Run a one-token completion that returns the first token's distribution, then
- * return the candidate openings with their raw logprobs, most likely first (up
- * to `k`, which defaults to the seeded pool size). The candidates come from
- * the raw model distribution, so the probe returns `k` of them whenever the
- * backend reports logprobs at all. An empty result means it reported none, and
- * the caller falls back to a plain n-sample generation.
+ * return the candidate openings with their logprobs, most likely first (up to
+ * `k`, which defaults to the seeded pool size). The probe returns `k` of them
+ * whenever the backend reports logprobs at all. An empty result means it
+ * reported none, and the caller falls back to a plain n-sample generation.
  */
 export async function fetchProseOpenings(
   body: Omit<CompletionRequestBody, "n" | "max_tokens" | "logprobs" | "top_logprobs">,
@@ -487,8 +393,6 @@ export type SeededFanOut = {
   bannedStrings: string[];
   /** How many seeds to draw from the pool. */
   seedCount: number;
-  /** The request's sampler settings, which shape the seed draw. */
-  samplerBody: SamplerBody;
   /** Uniform RNG for the seed draw. Tests inject a fixed sequence. */
   rng?: () => number;
   /** Open the picker for the seeded slots: startGeneration plus seededCandidates. */
@@ -528,16 +432,14 @@ export async function runSeededFanOut(opts: SeededFanOut): Promise<boolean> {
     pool = [];
   }
 
-  // Grow the seeds with the request's sampler settings shaping the weights.
-  // An empty result means the backend reported no logprobs or every candidate
-  // was banned or truncated away, so fall back to the plain n-sample path.
-  // A seed never grows past the branch token budget.
+  // Grow one seed per branch from the pool. An empty result means the backend
+  // reported no logprobs or every candidate was banned, so fall back to the
+  // plain n-sample path. A seed never grows past the branch token budget.
   const seeds = await growSeeds({
     prefix: "",
     depth: 0,
     pool,
     count: opts.seedCount,
-    samplerBody: opts.samplerBody,
     bannedStrings: opts.bannedStrings,
     maxDepth: Math.max(1, Math.min(SEED_DEPTH_CAP, opts.resolvedMaxTokens)),
     probe: (prefixText) => opts.fetchOpenings(opts.signal, prefixText),

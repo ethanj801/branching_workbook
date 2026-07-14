@@ -42,6 +42,25 @@ RUN cd /app && \
       patch -p1 --fuzz=0 < /tmp/tabbyapi-exl3-ban-eos-token.patch; } && \
     rm /tmp/tabbyapi-exl3-ban-eos-token.patch
 
+# Adds the post_sampling_probs request field and passes it to the exl3 job
+# until the upstream base image carries it.
+# Idempotent. It is a no-op once the base already has the field.
+COPY tabbyapi-exl3-post-sampling-probs.patch /tmp/
+RUN cd /app && \
+    { grep -q post_sampling_probs common/sampling.py || \
+      patch -p1 --fuzz=0 < /tmp/tabbyapi-exl3-post-sampling-probs.patch; } && \
+    rm /tmp/tabbyapi-exl3-post-sampling-probs.patch
+
+# Computes the return_top_tokens and return_probs logprobs from the processed
+# distribution when post_sampling_probs is set, in the installed exllamav3
+# library, until it carries the change.
+# Idempotent. It is a no-op once the installed library already has the feature.
+COPY exllamav3-post-sampling-probs.patch /tmp/
+RUN SITE="$(python3 -c 'import os, importlib.util; print(os.path.dirname(os.path.dirname(importlib.util.find_spec("exllamav3").origin)))')" && \
+    { grep -q vocab_probs "$SITE/exllamav3/generator/sampler/custom.py" || \
+      patch -p1 -d "$SITE" --fuzz=0 < /tmp/exllamav3-post-sampling-probs.patch; } && \
+    rm /tmp/exllamav3-post-sampling-probs.patch
+
 COPY runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint.sh
 RUN chmod +x /usr/local/bin/runpod-entrypoint.sh
 

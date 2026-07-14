@@ -1,0 +1,193 @@
+diff --git a/exllamav3/generator/job.py b/exllamav3/generator/job.py
+index 2e77c9d..91bb20c 100644
+--- a/exllamav3/generator/job.py
++++ b/exllamav3/generator/job.py
+@@ -60,6 +60,7 @@ class Job:
+         max_rq_tokens: int | None = None,
+         stop_on_loop: tuple[int, int] = None,
+         rq_state: dict | None = None,
++        post_sampling_probs: bool = False,
+         **kwargs
+     ):
+         """
+@@ -98,14 +99,16 @@ class Job:
+             If False, special tokens will still be respected as stop conditions.
+ 
+         :param return_top_tokens:
+-            Number of top tokens to return, along with their final sampling probabilities. There is some
+-            performance penalty for enabling this.
++            Number of top tokens to return, along with their probabilities. By default the probabilities
++            are computed from a softmax over the raw logits, before any logit mask or sampler steps are
++            applied. Set post_sampling_probs to compute them from the sampled distribution instead. There
++            is some performance penalty for enabling this.
+ 
+         :param return_logits:
+             Return pre-sampling logits along with output tokens.
+ 
+         :param return_probs:
+-            Return final sampling probability for each chosen token.
++            Return the probability for each chosen token, from the same distribution as return_top_tokens.
+ 
+         :param filters:
+             List of Filters to apply during generation.
+@@ -135,6 +138,13 @@ class Job:
+         :param rq_state:
+             Internal, passed when job requeues itself
+ 
++        :param post_sampling_probs:
++            Compute the probabilities for return_top_tokens and return_probs from the sampled
++            distribution, after the logit mask and the sampler's distribution steps, instead of from a
++            softmax over the raw logits. Tokens removed by truncation samplers or a logit mask then have
++            probability zero. Requires a sampler whose forward supports return_processed_probs, which
++            includes CustomSampler and every sampler derived from it.
++
+         :param kwargs:
+         """
+ 
+@@ -208,6 +218,7 @@ class Job:
+         self.return_top_tokens = return_top_tokens
+         self.return_logits = return_logits
+         self.return_probs = return_probs
++        self.post_sampling_probs = post_sampling_probs
+ 
+         # Stop conditions
+         self.stop_strings = rq_state.get("stop_strings", set())
+@@ -428,18 +439,31 @@ class Job:
+         # assert self.is_prefill_done()
+         # assert all(seq.live for seq in self.sequences)
+ 
+-        next_token = self.sampler.forward(
+-            logits,
+-            self.current_pinned_ids,
+-            self.rng.randint(0, (1<<32)-1),
+-            self.generator.tokenizer,
+-            logit_mask = self.device_logit_mask
+-        )
++        probs = None
++
++        if self.post_sampling_probs and (self.return_probs or self.return_top_tokens > 0):
++            next_token, probs = self.sampler.forward(
++                logits,
++                self.current_pinned_ids,
++                self.rng.randint(0, (1<<32)-1),
++                self.generator.tokenizer,
++                logit_mask = self.device_logit_mask,
++                return_processed_probs = True
++            )
++        else:
++            next_token = self.sampler.forward(
++                logits,
++                self.current_pinned_ids,
++                self.rng.randint(0, (1<<32)-1),
++                self.generator.tokenizer,
++                logit_mask = self.device_logit_mask
++            )
+ 
+         next_prob, next_k_tokens, next_k_probs = None, None, None
+ 
+         if self.return_probs or self.return_top_tokens > 0:
+-            probs = torch.softmax(logits.float(), dim = -1)
++            if probs is None:
++                probs = torch.softmax(logits.float(), dim = -1)
+ 
+             if self.return_probs:
+                 next_prob = torch.gather(probs.squeeze(0), dim = 1, index = next_token)
+@@ -858,6 +882,7 @@ class Job:
+             return_top_tokens = self.return_top_tokens,
+             return_logits = self.return_logits,
+             return_probs = self.return_probs,
++            post_sampling_probs = self.post_sampling_probs,
+             filters = self.filters,  # Carries over state
+             token_healing = False,  # Token healed on first round
+             identifier = self.identifier,
+diff --git a/exllamav3/generator/sampler/custom.py b/exllamav3/generator/sampler/custom.py
+index b7cffc4..20a9fe1 100644
+--- a/exllamav3/generator/sampler/custom.py
++++ b/exllamav3/generator/sampler/custom.py
+@@ -54,6 +54,31 @@ class SamplingState:
+             return self.logits
+         return torch.empty((self.bsz, self.dim), dtype = torch.float, device = self.in_logits.device)
+ 
++    def vocab_probs(self):
++        """
++        Compute the distribution currently described by the state, as normalized probabilities over the
++        full vocabulary, shape (bsz, dim). Tokens removed by truncation steps have probability zero.
++        """
++        compact = None
++        match self.state:
++            case SS.INIT:
++                return torch.softmax(self.in_logits.float(), dim = -1)
++            case SS.LOGITS:
++                return torch.softmax(self.logits.float(), dim = -1)
++            case SS.LOGITS_S:
++                compact = torch.softmax(self.logits.float(), dim = -1)
++            case SS.PROBS | SS.PROBS_N:
++                probs = self.probs.float()
++                return probs / probs.sum(dim = -1, keepdim = True)
++            case SS.PROBS_S | SS.PROBS_N_S:
++                compact = self.probs.float()
++                compact = compact / compact.sum(dim = -1, keepdim = True)
++            case _:
++                raise ValueError("Sampling logic error")
++        full = torch.zeros((self.bsz, self.dim), dtype = torch.float, device = self.in_logits.device)
++        full.scatter_(-1, self.indices, compact)
++        return full
++
+ 
+ class SS_Base:
+     def run(self, state: SamplingState):
+@@ -564,8 +589,16 @@ class CustomSampler(Sampler):
+         rand_u32: int | None = None,
+         tokenizer: Tokenizer | None = None,
+         logit_mask: torch.Tensor | None = None,
+-        return_state: bool = False
++        return_state: bool = False,
++        return_processed_probs: bool = False
+     ):
++        """
++        If return_processed_probs is set, also return the normalized distribution over the full
++        vocabulary as it stands after the logit mask and every distribution step, captured just before
++        the final sampling step.
++        A fused step that transforms and samples in one pass, such as SS_AdaptiveP, is not reflected in
++        the captured distribution. Ignored when return_state is set.
++        """
+         out_shape = logits.shape[:-1]
+ 
+         if tokenizer is not None:
+@@ -596,9 +629,18 @@ class CustomSampler(Sampler):
+             past_ids = sequence_ids,
+         )
+ 
+-        for ss in self.steps:
++        processed_probs = None
++        last_step = len(self.steps) - 1
++        for i, ss in enumerate(self.steps):
+             assert state.state != SS.DONE, "Sampling logic error"
++            if return_processed_probs and not return_state and i == last_step:
++                processed_probs = state.vocab_probs()
+             ss.run(state)
+         assert return_state or state.state == SS.DONE, "Sampling logic error"
+ 
+-        return state if return_state else state.sample.view(out_shape)
+\ No newline at end of file
++        if return_state:
++            return state
++        sample = state.sample.view(out_shape)
++        if return_processed_probs:
++            return sample, processed_probs.view(*out_shape, state.dim)
++        return sample
+\ No newline at end of file
+diff --git a/exllamav3/generator/sampler/sampler.py b/exllamav3/generator/sampler/sampler.py
+index f0d29c2..22beee9 100644
+--- a/exllamav3/generator/sampler/sampler.py
++++ b/exllamav3/generator/sampler/sampler.py
+@@ -16,6 +16,7 @@ class Sampler:
+         tokenizer: Tokenizer | None = None,
+         blocked_tokens: list[int] | None = None,
+         allowed_tokens: list[int] | None = None,
+-        return_state: bool = False
++        return_state: bool = False,
++        return_processed_probs: bool = False
+     ):
+         pass
+\ No newline at end of file
